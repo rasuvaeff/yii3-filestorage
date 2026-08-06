@@ -20,7 +20,7 @@ final class DeliveryOptionsTest
     public function carriesTheFilesNameAndTypeAndTheGroupsDisposition(): void
     {
         $options = DeliveryOptions::fromFile(
-            self::file(originalName: 'report.pdf', mimeType: 'application/pdf'),
+            $this->file(originalName: 'report.pdf', mimeType: 'application/pdf'),
             new DeliveryPolicy(forceDownload: true),
         );
 
@@ -35,7 +35,7 @@ final class DeliveryOptionsTest
      */
     public function anUnknownTypeBecomesAnOpaqueStream(): void
     {
-        $options = DeliveryOptions::fromFile(self::file(mimeType: null), new DeliveryPolicy());
+        $options = DeliveryOptions::fromFile($this->file(mimeType: null), new DeliveryPolicy());
 
         Assert::same($options->responseMediaType, 'application/octet-stream');
     }
@@ -43,7 +43,7 @@ final class DeliveryOptionsTest
     public function forceDownloadFollowsThePolicy(): void
     {
         Assert::false(
-            DeliveryOptions::fromFile(self::file(), new DeliveryPolicy(forceDownload: false))->forceDownload,
+            DeliveryOptions::fromFile($this->file(), new DeliveryPolicy(forceDownload: false))->forceDownload,
         );
     }
 
@@ -54,7 +54,7 @@ final class DeliveryOptionsTest
     #[DataProvider('injectionProvider')]
     public function lineBreaksAndNulsAreStrippedFromTheName(string $name, string $expected): void
     {
-        $options = DeliveryOptions::fromFile(self::file(originalName: $name), new DeliveryPolicy());
+        $options = DeliveryOptions::fromFile($this->file(originalName: $name), new DeliveryPolicy());
 
         Assert::same($options->downloadName, $expected);
     }
@@ -76,12 +76,12 @@ final class DeliveryOptionsTest
      */
     public function aNameThatStripsToNothingFallsBack(): void
     {
-        $options = DeliveryOptions::fromFile(self::file(originalName: "\r\n\0"), new DeliveryPolicy());
+        $options = DeliveryOptions::fromFile($this->file(originalName: "\r\n\0"), new DeliveryPolicy());
 
         Assert::same($options->downloadName, 'file');
     }
 
-    private static function file(string $originalName = 'thing.bin', ?string $mimeType = 'text/plain'): File
+    private function file(string $originalName = 'thing.bin', ?string $mimeType = 'text/plain'): File
     {
         return File::create(
             id: 'f-1',

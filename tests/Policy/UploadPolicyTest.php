@@ -13,8 +13,8 @@ use Rasuvaeff\Yii3Filestorage\Exception\PolicyViolationException;
 use Rasuvaeff\Yii3Filestorage\Policy\UploadPolicy;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Testo\Assert;
-use Testo\Codecov\Covers;
 use Testo\Assert\ExpectNoAssertions;
+use Testo\Codecov\Covers;
 use Testo\Expect;
 use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
@@ -103,21 +103,21 @@ final class UploadPolicyTest
 
         Expect::exception(PolicyViolationException::class)->withMessageContaining('over the 100 pixel limit');
 
-        $policy->assertAcceptable($this->upload(self::png(width: 40, height: 40)), 'image/png');
+        $policy->assertAcceptable($this->upload($this->png(width: 40, height: 40)), 'image/png');
     }
 
     #[ExpectNoAssertions]
     public function anImageUnderThePixelCapPasses(): void
     {
         (new UploadPolicy(maxPixels: 10_000))
-            ->assertAcceptable($this->upload(self::png(width: 40, height: 40)), 'image/png');
+            ->assertAcceptable($this->upload($this->png(width: 40, height: 40)), 'image/png');
     }
 
     #[ExpectNoAssertions]
     public function aZeroPixelCapDisablesTheCheck(): void
     {
         (new UploadPolicy(maxPixels: 0))
-            ->assertAcceptable($this->upload(self::png(width: 40, height: 40)), 'image/png');
+            ->assertAcceptable($this->upload($this->png(width: 40, height: 40)), 'image/png');
     }
 
     /**
@@ -161,11 +161,11 @@ final class UploadPolicyTest
 
     public function theDimensionCheckRewindsTheStream(): void
     {
-        $upload = $this->upload(self::png(width: 4, height: 4));
+        $upload = $this->upload($this->png(width: 4, height: 4));
 
         (new UploadPolicy(maxPixels: 1_000))->assertAcceptable($upload, 'image/png');
 
-        Assert::same($upload->stream()->getContents(), self::png(width: 4, height: 4));
+        Assert::same($upload->stream()->getContents(), $this->png(width: 4, height: 4));
     }
 
     public function aNegativeMaxBytesIsRejected(): void
@@ -234,7 +234,7 @@ final class UploadPolicyTest
     /**
      * A real PNG header, so `getimagesizefromstring()` has something to parse.
      */
-    private static function png(int $width, int $height): string
+    private function png(int $width, int $height): string
     {
         $ihdr = pack('NN', $width, $height) . "\x08\x02\x00\x00\x00";
 

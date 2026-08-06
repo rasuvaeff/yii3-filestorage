@@ -13,15 +13,15 @@ use Rasuvaeff\Yii3Filestorage\Policy\PolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Repository\RepositoryInterface;
 use Rasuvaeff\Yii3Filestorage\Storage;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
-use Rasuvaeff\Yii3Filestorage\Test\FixedClock;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
 use Rasuvaeff\Yii3Filestorage\Upload;
+use Yiisoft\Test\Support\Clock\StaticClock;
 
 require __DIR__ . '/../vendor/autoload.php';
 
 $factory = new Psr17Factory();
-$clock = new FixedClock('2026-08-06T12:00:00.000000+00:00');
+$clock = new StaticClock(new DateTimeImmutable('2026-08-06T12:00:00.000000+00:00'));
 
 $store = new InMemoryStore('memory', $factory, $clock);
 $repository = new MemoryRepository();
@@ -57,7 +57,7 @@ echo "untestable, and it is the branch most likely to be wrong in your code.\n\n
 
 // --- Compensation -------------------------------------------------------
 
-$failing = new class () implements RepositoryInterface {
+$failing = new class implements RepositoryInterface {
     public function find(string $id): ?File
     {
         return null;

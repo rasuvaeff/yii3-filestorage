@@ -12,15 +12,15 @@ use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\PolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Storage;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
-use Rasuvaeff\Yii3Filestorage\Test\FixedClock;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
 use Rasuvaeff\Yii3Filestorage\Upload;
+use Yiisoft\Test\Support\Clock\StaticClock;
 
 require __DIR__ . '/../vendor/autoload.php';
 
 $factory = new Psr17Factory();
-$clock = new FixedClock();
+$clock = new StaticClock(new DateTimeImmutable('2026-01-01T00:00:00.000000+00:00'));
 $store = new InMemoryStore('memory', $factory);
 
 // The same shape you would write in config/common/params.php.
@@ -57,7 +57,7 @@ function attempt(Storage $storage, InMemoryStore $store, string $label, string $
     try {
         $file = $storage->add($upload, groupName: $group);
         echo "  OK      {$label} -> {$file->relativePath}\n";
-    } catch (PolicyViolationException | UploadTooLargeException $e) {
+    } catch (PolicyViolationException|UploadTooLargeException $e) {
         $written = $store->writeCount() - $before;
         echo '  REJECT  ' . $label . ' -> ' . $e->getMessage() . "\n";
         echo "          objects written: {$written}\n";

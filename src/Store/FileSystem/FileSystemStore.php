@@ -69,7 +69,7 @@ final readonly class FileSystemStore implements
         string $name,
         string $rootPath,
         private StreamFactoryInterface $streamFactory,
-        private int $directoryMode = 0775,
+        private int $directoryMode = 0o775,
     ) {
         if ($name === '' || preg_match(self::NAME_PATTERN, $name) !== 1) {
             throw new InvalidArgumentException("Invalid store name \"{$name}\"");
@@ -125,6 +125,7 @@ final readonly class FileSystemStore implements
         }
 
         $directory = \dirname($target);
+
         try {
             FileHelper::ensureDirectory($directory, $this->directoryMode);
         } catch (\Throwable $e) {
@@ -254,6 +255,7 @@ final readonly class FileSystemStore implements
         $target = $this->rootPath . '/' . (new StoredObjectId($relativePath))->relativePath;
 
         $directory = \dirname($target);
+
         try {
             FileHelper::ensureDirectory($directory, $this->directoryMode);
         } catch (\Throwable $e) {
@@ -341,6 +343,7 @@ final readonly class FileSystemStore implements
         }
 
         $written = 0;
+
         try {
             while (!$source->eof()) {
                 $chunk = $source->read(self::CHUNK);

@@ -151,7 +151,7 @@ final readonly class Storage implements StorageInterface
     public function remove(string $id): bool
     {
         $file = $this->repository->find($id);
-        if ($file === null) {
+        if (!$file instanceof \Rasuvaeff\Yii3Filestorage\File) {
             return false;
         }
 
@@ -231,7 +231,7 @@ final readonly class Storage implements StorageInterface
     public function content(File $file): ?string
     {
         $stream = $this->stream($file);
-        if ($stream === null) {
+        if (!$stream instanceof \Psr\Http\Message\StreamInterface) {
             return null;
         }
 
@@ -288,6 +288,7 @@ final readonly class Storage implements StorageInterface
         }
 
         $stream->rewind();
+
         return hash_final($context);
     }
 

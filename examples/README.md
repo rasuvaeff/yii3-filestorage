@@ -13,8 +13,9 @@ php examples/store-and-read.php
 | [`store-and-read.php`](store-and-read.php) | Wiring `Storage` over a temporary filesystem store, storing three files, streaming them back, deleting one | No |
 | [`policies.php`](policies.php) | Per-group accept rules: an allow-list rejecting a spoofed extension, a byte cap, and a pixel cap catching a decompression bomb | No |
 | [`signed-urls.php`](signed-urls.php) | Minting and verifying a download token, tamper rejection, expiry, and key rotation keeping old URLs alive | No |
-| [`testing-doubles.php`](testing-doubles.php) | Testing an upload flow with `InMemoryStore`, `MemoryRepository` and `FixedClock` — no disk, no clock | No |
+| [`testing-doubles.php`](testing-doubles.php) | Testing an upload flow with `InMemoryStore`, `MemoryRepository` and a PSR-20 `StaticClock` — no disk, no database, no wall clock | No |
 
-The scripts use `nyholm/psr7` as the PSR-17 implementation because it is a
-development dependency of this package. Any PSR-17 implementation works; the
-package never names one.
+The scripts use `nyholm/psr7` as the PSR-17 implementation and
+`yiisoft/test-support` for its `StaticClock`, because both are development
+dependencies of this package. Any PSR-17 implementation and any PSR-20 clock
+work; the package never names one.

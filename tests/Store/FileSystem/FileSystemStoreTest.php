@@ -72,7 +72,7 @@ final class FileSystemStoreTest
     {
         $this->store->write($this->upload('hello'), 'docs', new RandomPathGenerator(), 'text/plain');
 
-        Assert::same(self::filesUnder($this->root, '.part'), []);
+        Assert::same($this->filesUnder($this->root, '.part'), []);
     }
 
     /**
@@ -82,7 +82,7 @@ final class FileSystemStoreTest
      */
     public function aPathCollisionIsAnErrorRatherThanSilentSharing(): void
     {
-        $fixed = new class () implements PathGeneratorInterface {
+        $fixed = new class implements PathGeneratorInterface {
             #[Override]
             public function generate(string $groupName, Upload $upload, ?string $mediaType): string
             {
@@ -114,7 +114,7 @@ final class FileSystemStoreTest
             Assert::true(false, 'the write should have been refused');
         } catch (UploadTooLargeException $e) {
             Assert::true(str_contains($e->getMessage(), '10 byte limit'));
-            Assert::same(self::filesUnder($this->root), [], 'nothing at all was left behind');
+            Assert::same($this->filesUnder($this->root), [], 'nothing at all was left behind');
         }
     }
 
@@ -245,7 +245,7 @@ final class FileSystemStoreTest
             Assert::true(false, 'the derivative should have been refused');
         } catch (UploadTooLargeException) {
             Assert::false($this->store->hasDerivative($file, $thumb));
-            Assert::same(self::filesUnder($this->root, '.part'), []);
+            Assert::same($this->filesUnder($this->root, '.part'), []);
         }
     }
 
@@ -256,7 +256,7 @@ final class FileSystemStoreTest
         file_put_contents($this->root . '/' . $first->directory() . '/leftover.abc123.part', 'junk');
 
         $paths = array_map(
-            static fn (StoredObjectId $id): string => $id->relativePath,
+            static fn(StoredObjectId $id): string => $id->relativePath,
             iterator_to_array($this->store->objects(), false),
         );
 
@@ -385,7 +385,7 @@ final class FileSystemStoreTest
     /**
      * @return list<string>
      */
-    private static function filesUnder(string $root, string $suffix = ''): array
+    private function filesUnder(string $root, string $suffix = ''): array
     {
         if (!is_dir($root)) {
             return [];

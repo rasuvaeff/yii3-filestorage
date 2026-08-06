@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Filestorage\Tests\Id;
 
 use Rasuvaeff\Yii3Filestorage\Id\Uuid7IdGenerator;
-use Rasuvaeff\Yii3Filestorage\Test\FixedClock;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\MovableClock;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Lifecycle\BeforeTest;
@@ -15,13 +15,13 @@ use Testo\Test;
 #[Covers(Uuid7IdGenerator::class)]
 final class Uuid7IdGeneratorTest
 {
-    private FixedClock $clock;
+    private MovableClock $clock;
     private Uuid7IdGenerator $generator;
 
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->clock = new FixedClock('2026-08-06T12:00:00.000000+00:00');
+        $this->clock = new MovableClock('2026-08-06T12:00:00.000000+00:00');
         $this->generator = new Uuid7IdGenerator($this->clock);
     }
 

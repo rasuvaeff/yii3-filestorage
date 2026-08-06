@@ -26,7 +26,12 @@ and `PublicFileSystemStore`; `Repository\RepositoryInterface` and
 `Url\UrlSignerInterface` / `HmacUrlSigner` / `SigningKeyRing` / `SignedPayload` /
 `ProxyUrlGeneratorInterface`; `Stream\LimitedStream`; `Command\CheckCommand`;
 the `Exception\*` family behind the `FilestorageException` marker; and the
-`Test\*` doubles.
+`Test\InMemoryStore` / `Test\MemoryRepository` doubles.
+
+**No clock double ships here.** Everything takes a PSR-20 clock, and a Yii
+application already has `Yiisoft\Test\Support\Clock\StaticClock`. Tests that
+need time to *move* within one test use `tests/Support/MovableClock`, which is
+`@internal` on purpose — a movable clock is a test concern, not public API.
 
 **The `Test\` namespace is public API and lives in `src/`.** `.gitattributes`
 export-ignores `tests/`, so a double placed there would not be installed by a

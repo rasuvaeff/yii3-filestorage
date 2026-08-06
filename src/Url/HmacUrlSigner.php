@@ -55,11 +55,9 @@ final readonly class HmacUrlSigner implements UrlSignerInterface
         $signedPart = self::VERSION
             . '.' . $keyId
             . '.' . $expiresAt->getTimestamp()
-            . '.' . self::base64UrlEncode($payload->toCanonicalJson());
+            . '.' . $this->base64UrlEncode($payload->toCanonicalJson());
 
-        return $signedPart . '.' . self::base64UrlEncode(
-            hash_hmac(self::ALGORITHM, $signedPart, $secret, binary: true),
-        );
+        return $signedPart . '.' . $this->base64UrlEncode(hash_hmac(self::ALGORITHM, $signedPart, $secret, binary: true));
     }
 
     #[Override]
@@ -87,7 +85,7 @@ final readonly class HmacUrlSigner implements UrlSignerInterface
         }
 
         $secret = $this->keys->secretFor($keyId);
-        $signature = self::base64UrlDecode($encodedSignature);
+        $signature = $this->base64UrlDecode($encodedSignature);
         if ($secret === null || $signature === null) {
             return null;
         }
@@ -106,7 +104,7 @@ final readonly class HmacUrlSigner implements UrlSignerInterface
             return null;
         }
 
-        $payload = self::base64UrlDecode($encodedPayload);
+        $payload = $this->base64UrlDecode($encodedPayload);
         if ($payload === null || strlen($payload) > self::MAX_PAYLOAD_LENGTH) {
             return null;
         }
@@ -117,7 +115,7 @@ final readonly class HmacUrlSigner implements UrlSignerInterface
     /**
      * @return non-empty-string
      */
-    private static function base64UrlEncode(string $value): string
+    private function base64UrlEncode(string $value): string
     {
         $encoded = rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
         \assert($encoded !== '');
@@ -128,7 +126,7 @@ final readonly class HmacUrlSigner implements UrlSignerInterface
     /**
      * @return string|null Null unless the input is the one canonical encoding of its bytes.
      */
-    private static function base64UrlDecode(string $value): ?string
+    private function base64UrlDecode(string $value): ?string
     {
         $padded = strtr($value, '-_', '+/') . str_repeat('=', (4 - strlen($value) % 4) % 4);
         $decoded = base64_decode($padded, strict: true);
@@ -138,6 +136,6 @@ final readonly class HmacUrlSigner implements UrlSignerInterface
 
         // A second encoding of the same bytes must be byte-identical, otherwise
         // two different tokens would carry the same payload past the signature.
-        return self::base64UrlEncode($decoded) === $value ? $decoded : null;
+        return $this->base64UrlEncode($decoded) === $value ? $decoded : null;
     }
 }

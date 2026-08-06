@@ -245,10 +245,12 @@ All implement `Exception\FilestorageException`:
 
 ### Test doubles (`src/Test/`, installed with the package)
 
-`InMemoryStore(string $name, StreamFactoryInterface $f, ?FixedClock $clock = null)` —
+`InMemoryStore(string $name, StreamFactoryInterface $f, ?ClockInterface $clock = null)` —
 plus `bytesAt()`, `paths()`, `writeCount()`, `corrupt()`, `clear()`.
 `MemoryRepository()` — plus `count()`, `all()`, `clear()`.
-`FixedClock(DateTimeImmutable|string $now)` — `set()`, `advance()`, `advanceSeconds()`.
+
+No clock double ships here. Everything takes a PSR-20 clock; use
+`Yiisoft\Test\Support\Clock\StaticClock` from `yiisoft/test-support`.
 
 ### Console
 

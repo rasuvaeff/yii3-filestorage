@@ -47,7 +47,7 @@ final readonly class SignedPayload
      */
     public function __construct(string $fileId, ?string $variant = null, ?string $scopeId = null)
     {
-        if ($fileId === '' || strlen($fileId) > self::MAX_ID_LENGTH || !self::isUtf8($fileId)) {
+        if ($fileId === '' || strlen($fileId) > self::MAX_ID_LENGTH || !$this->isUtf8($fileId)) {
             throw new InvalidArgumentException('Invalid signed file id');
         }
         if ($variant !== null && ($variant === '' || preg_match(self::VARIANT_PATTERN, $variant) !== 1)) {
@@ -55,7 +55,7 @@ final readonly class SignedPayload
         }
         if (
             $scopeId !== null
-            && ($scopeId === '' || strlen($scopeId) > self::MAX_ID_LENGTH || !self::isUtf8($scopeId))
+            && ($scopeId === '' || strlen($scopeId) > self::MAX_ID_LENGTH || !$this->isUtf8($scopeId))
         ) {
             throw new InvalidArgumentException('Invalid signed scope');
         }
@@ -70,7 +70,7 @@ final readonly class SignedPayload
      */
     public function toCanonicalJson(): string
     {
-        $json = json_encode(
+        return json_encode(
             [
                 'fileId' => $this->fileId,
                 'variant' => $this->variant,
@@ -78,8 +78,6 @@ final readonly class SignedPayload
             ],
             JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
         );
-
-        return $json;
     }
 
     /**
@@ -98,11 +96,8 @@ final readonly class SignedPayload
             return null;
         }
 
-        /** @var mixed $fileId */
         $fileId = $data['fileId'] ?? null;
-        /** @var mixed $variant */
         $variant = $data['variant'] ?? null;
-        /** @var mixed $scopeId */
         $scopeId = $data['scopeId'] ?? null;
 
         if (
@@ -125,7 +120,7 @@ final readonly class SignedPayload
         return $result->toCanonicalJson() === $payload ? $result : null;
     }
 
-    private static function isUtf8(string $value): bool
+    private function isUtf8(string $value): bool
     {
         return preg_match('//u', $value) === 1;
     }

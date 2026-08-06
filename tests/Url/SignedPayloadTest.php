@@ -91,38 +91,38 @@ final class SignedPayloadTest
      */
     public static function invalidConstructionProvider(): iterable
     {
-        yield 'empty file id' => ['Invalid signed file id', static fn (): SignedPayload => new SignedPayload('')];
+        yield 'empty file id' => ['Invalid signed file id', static fn(): SignedPayload => new SignedPayload('')];
         yield 'over-long file id' => [
             'Invalid signed file id',
-            static fn (): SignedPayload => new SignedPayload(str_repeat('a', 256)),
+            static fn(): SignedPayload => new SignedPayload(str_repeat('a', 256)),
         ];
         yield 'invalid utf-8 file id' => [
             'Invalid signed file id',
-            static fn (): SignedPayload => new SignedPayload("\xC3\x28"),
+            static fn(): SignedPayload => new SignedPayload("\xC3\x28"),
         ];
         yield 'empty variant' => [
             'Invalid signed variant',
-            static fn (): SignedPayload => new SignedPayload('f-1', variant: ''),
+            static fn(): SignedPayload => new SignedPayload('f-1', variant: ''),
         ];
         yield 'uppercase variant' => [
             'Invalid signed variant',
-            static fn (): SignedPayload => new SignedPayload('f-1', variant: 'Thumb'),
+            static fn(): SignedPayload => new SignedPayload('f-1', variant: 'Thumb'),
         ];
         yield 'variant with a slash' => [
             'Invalid signed variant',
-            static fn (): SignedPayload => new SignedPayload('f-1', variant: '../original'),
+            static fn(): SignedPayload => new SignedPayload('f-1', variant: '../original'),
         ];
         yield 'over-long variant' => [
             'Invalid signed variant',
-            static fn (): SignedPayload => new SignedPayload('f-1', variant: str_repeat('a', 65)),
+            static fn(): SignedPayload => new SignedPayload('f-1', variant: str_repeat('a', 65)),
         ];
         yield 'empty scope' => [
             'Invalid signed scope',
-            static fn (): SignedPayload => new SignedPayload('f-1', scopeId: ''),
+            static fn(): SignedPayload => new SignedPayload('f-1', scopeId: ''),
         ];
         yield 'over-long scope' => [
             'Invalid signed scope',
-            static fn (): SignedPayload => new SignedPayload('f-1', scopeId: str_repeat('a', 256)),
+            static fn(): SignedPayload => new SignedPayload('f-1', scopeId: str_repeat('a', 256)),
         ];
     }
 

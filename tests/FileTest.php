@@ -146,84 +146,84 @@ final class FileTest
      */
     public static function invalidFieldProvider(): iterable
     {
-        yield 'empty id' => ['id must not be empty', static fn (): File => self::file(id: '')];
+        yield 'empty id' => ['id must not be empty', static fn(): File => self::file(id: '')];
         yield 'empty original name' => [
             'originalName must not be empty',
-            static fn (): File => self::file(originalName: ''),
+            static fn(): File => self::file(originalName: ''),
         ];
-        yield 'empty store name' => ['Invalid store name', static fn (): File => self::file(storeName: '')];
+        yield 'empty store name' => ['Invalid store name', static fn(): File => self::file(storeName: '')];
         yield 'store name with a slash' => [
             'Invalid store name',
-            static fn (): File => self::file(storeName: 'up/load'),
+            static fn(): File => self::file(storeName: 'up/load'),
         ];
         yield 'store name starting with a dash' => [
             'Invalid store name',
-            static fn (): File => self::file(storeName: '-upload'),
+            static fn(): File => self::file(storeName: '-upload'),
         ];
         yield 'store name over 64 characters' => [
             'Invalid store name',
-            static fn (): File => self::file(storeName: str_repeat('a', 65)),
+            static fn(): File => self::file(storeName: str_repeat('a', 65)),
         ];
-        yield 'empty group name' => ['Invalid group name', static fn (): File => self::file(groupName: '')];
-        yield 'negative size' => ['Size must not be negative', static fn (): File => self::file(size: -1)];
+        yield 'empty group name' => ['Invalid group name', static fn(): File => self::file(groupName: '')];
+        yield 'negative size' => ['Size must not be negative', static fn(): File => self::file(size: -1)];
         yield 'empty relative path' => [
             'Invalid relative path',
-            static fn (): File => self::file(relativePath: ''),
+            static fn(): File => self::file(relativePath: ''),
         ];
         yield 'absolute relative path' => [
             'Invalid relative path',
-            static fn (): File => self::file(relativePath: '/etc/passwd'),
+            static fn(): File => self::file(relativePath: '/etc/passwd'),
         ];
         yield 'traversal segment' => [
             'Invalid relative path',
-            static fn (): File => self::file(relativePath: 'a/../../etc/passwd'),
+            static fn(): File => self::file(relativePath: 'a/../../etc/passwd'),
         ];
         yield 'leading traversal' => [
             'Invalid relative path',
-            static fn (): File => self::file(relativePath: '../secret'),
+            static fn(): File => self::file(relativePath: '../secret'),
         ];
         yield 'trailing traversal' => [
             'Invalid relative path',
-            static fn (): File => self::file(relativePath: 'a/b/..'),
+            static fn(): File => self::file(relativePath: 'a/b/..'),
         ];
         yield 'NUL byte in path' => [
             'Invalid relative path',
-            static fn (): File => self::file(relativePath: "a/b\0.png"),
+            static fn(): File => self::file(relativePath: "a/b\0.png"),
         ];
         yield 'empty external id' => [
             'externalId must be null or non-empty',
-            static fn (): File => self::file(externalId: ''),
+            static fn(): File => self::file(externalId: ''),
         ];
         yield 'empty mime type' => [
             'mimeType must be null or non-empty',
-            static fn (): File => self::file(mimeType: ''),
+            static fn(): File => self::file(mimeType: ''),
         ];
         yield 'short content hash' => [
             'Invalid SHA-256 content hash',
-            static fn (): File => self::file(contentHash: 'abc'),
+            static fn(): File => self::file(contentHash: 'abc'),
         ];
         yield 'uppercase content hash' => [
             'Invalid SHA-256 content hash',
-            static fn (): File => self::file(contentHash: str_repeat('A', 64)),
+            static fn(): File => self::file(contentHash: str_repeat('A', 64)),
         ];
         yield 'updatedAt before createdAt' => [
             'updatedAt must not precede createdAt',
-            static fn (): File => self::file(
+            static fn(): File => self::file(
                 createdAt: new DateTimeImmutable('2026-08-06T12:00:00+00:00'),
                 updatedAt: new DateTimeImmutable('2026-08-06T11:00:00+00:00'),
             ),
         ];
         yield 'integer metadata key' => [
             'File metadata keys must be non-empty strings',
-            static fn (): File => self::file(metadata: [0 => 'x']),
+            static fn(): File => self::file(metadata: [0 => 'x']),
         ];
         yield 'empty metadata key' => [
             'File metadata keys must be non-empty strings',
-            static fn (): File => self::file(metadata: ['' => 'x']),
+            static fn(): File => self::file(metadata: ['' => 'x']),
         ];
         yield 'array metadata value' => [
             'must be scalar or null',
-            static fn (): File => self::file(metadata: ['a' => ['nested']]),
+            static fn(): File => self::file(metadata: ['a' => ['nested']]),
         ];
     }
 

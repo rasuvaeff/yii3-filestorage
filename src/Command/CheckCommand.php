@@ -82,7 +82,7 @@ final class CheckCommand extends Command
             $rows[] = [
                 $name . ($name === $this->stores->defaultName() ? ' (default)' : ''),
                 $store::class,
-                implode(', ', self::capabilities($store)) ?: 'base only',
+                implode(', ', $this->capabilities($store)) ?: 'base only',
             ];
         }
         $io->table(['Name', 'Class', 'Capabilities'], $rows);
@@ -115,7 +115,7 @@ final class CheckCommand extends Command
                 $delivery->allowDirectPublicUrl ? 'direct public URL' : 'signed only',
             ];
 
-            $unsafe = self::unsafeDirectDelivery($group, $upload->allowedMimeTypes, $delivery->allowDirectPublicUrl);
+            $unsafe = $this->unsafeDirectDelivery($group, $upload->allowedMimeTypes, $delivery->allowDirectPublicUrl);
             if ($unsafe !== null) {
                 $errors[] = $unsafe;
             }
@@ -141,7 +141,7 @@ final class CheckCommand extends Command
     /**
      * @param list<non-empty-string> $allowedMimeTypes
      */
-    private static function unsafeDirectDelivery(string $group, array $allowedMimeTypes, bool $allowDirect): ?string
+    private function unsafeDirectDelivery(string $group, array $allowedMimeTypes, bool $allowDirect): ?string
     {
         if (!$allowDirect) {
             return null;
@@ -166,7 +166,7 @@ final class CheckCommand extends Command
     /**
      * @return list<string>
      */
-    private static function capabilities(StoreInterface $store): array
+    private function capabilities(StoreInterface $store): array
     {
         $capabilities = [];
         if ($store instanceof StoreUrlProviderInterface) {

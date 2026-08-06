@@ -162,8 +162,8 @@ final readonly class File
             'description' => $this->description,
             'contentHash' => $this->contentHash,
             'metadata' => $this->metadata,
-            'createdAt' => self::formatTimestamp($this->createdAt),
-            'updatedAt' => self::formatTimestamp($this->updatedAt),
+            'createdAt' => $this->formatTimestamp($this->createdAt),
+            'updatedAt' => $this->formatTimestamp($this->updatedAt),
         ];
     }
 
@@ -302,7 +302,7 @@ final readonly class File
     /**
      * @return non-empty-string
      */
-    private static function formatTimestamp(DateTimeImmutable $timestamp): string
+    private function formatTimestamp(DateTimeImmutable $timestamp): string
     {
         return $timestamp->format(self::TIMESTAMP_FORMAT);
     }

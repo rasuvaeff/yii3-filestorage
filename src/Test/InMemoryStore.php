@@ -7,6 +7,7 @@ namespace Rasuvaeff\Yii3Filestorage\Test;
 use DateTimeImmutable;
 use InvalidArgumentException;
 use Override;
+use Psr\Clock\ClockInterface;
 use Psr\Http\Message\StreamFactoryInterface;
 use Psr\Http\Message\StreamInterface;
 use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
@@ -44,12 +45,17 @@ final class InMemoryStore implements MaintenanceStoreInterface
     private int $writes = 0;
 
     /** @var non-empty-string */
-    private string $name;
+    private readonly string $name;
 
+    /**
+     * @param ClockInterface|null $clock Pin object timestamps. Any PSR-20 clock
+     *        works — `Yiisoft\Test\Support\Clock\StaticClock` is the obvious
+     *        one in a Yii application. Without it the system clock is used.
+     */
     public function __construct(
         string $name,
         private readonly StreamFactoryInterface $streamFactory,
-        private readonly ?FixedClock $clock = null,
+        private readonly ?ClockInterface $clock = null,
     ) {
         if ($name === '' || preg_match(self::NAME_PATTERN, $name) !== 1) {
             throw new InvalidArgumentException("Invalid store name \"{$name}\"");

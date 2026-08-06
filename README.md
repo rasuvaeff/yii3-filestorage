@@ -250,10 +250,14 @@ Test doubles ship in `src/`, not `tests/`, so they are actually installed:
 |---|---|
 | `Test\InMemoryStore` | A store with no disk. Implements the base contract and maintenance only — **not** URLs or ranges, so you can test what your code does when a store cannot presign |
 | `Test\MemoryRepository` | Metadata in an array |
-| `Test\FixedClock` | A clock that moves only when you move it |
+
+There is deliberately no clock double here: `InMemoryStore` and `Storage` take
+any PSR-20 clock, and a Yii application already has
+`Yiisoft\Test\Support\Clock\StaticClock`. Shipping a second one would be
+duplication, not convenience.
 
 ```php
-$store = new InMemoryStore('test', $streamFactory);
+$store = new InMemoryStore('test', $streamFactory, new StaticClock($now));
 $storage = new Storage(
     stores: new StoreRegistry([$store]),
     repository: new MemoryRepository(),

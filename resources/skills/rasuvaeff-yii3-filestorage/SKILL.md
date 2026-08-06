@@ -5,9 +5,9 @@ description: >-
   facade, File and Upload value objects, StoreInterface plus its optional
   URL/range/content-addressable/maintenance/derivative capabilities,
   RepositoryInterface, path generators, finfo MIME detection, per-group upload
-  and delivery policies, HMAC signed tokens, and InMemoryStore/MemoryRepository/
-  FixedClock test doubles. Use when writing, reviewing or debugging file upload,
-  storage or download code in a project that has this package installed.
+  and delivery policies, HMAC signed tokens, and the InMemoryStore and
+  MemoryRepository test doubles. Use when writing, reviewing or debugging file
+  upload, storage or download code in a project that has this package installed.
 ---
 
 # rasuvaeff/yii3-filestorage
@@ -62,6 +62,8 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
   adapters that differ at runtime.
 - `Test\InMemoryStore` deliberately implements neither URLs nor ranges. That is
   how you test what your code does when a store cannot presign.
+- No clock double ships with the package. Everything takes a PSR-20 clock —
+  use `Yiisoft\Test\Support\Clock\StaticClock` rather than adding another.
 - Timestamps serialise as `Y-m-d\TH:i:s.uP`. `DateTimeInterface::ATOM` drops
   microseconds and breaks the `File` round-trip against a PSR-20 clock.
 - `add()` is all-or-nothing per file. There is no `addMany()`, because an atomic

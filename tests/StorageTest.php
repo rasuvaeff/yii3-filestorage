@@ -27,12 +27,11 @@ use Rasuvaeff\Yii3Filestorage\Repository\RepositoryInterface;
 use Rasuvaeff\Yii3Filestorage\Storage;
 use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
-use Rasuvaeff\Yii3Filestorage\Test\FixedClock;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\FailingRepository;
-use Rasuvaeff\Yii3Filestorage\Tests\Support\UrlAwareStore;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\UndeletableStore;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\UrlAwareStore;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Rasuvaeff\Yii3Filestorage\Url\ProxyUrlGeneratorInterface;
 use Testo\Assert;
@@ -40,13 +39,14 @@ use Testo\Codecov\Covers;
 use Testo\Expect;
 use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
+use Yiisoft\Test\Support\Clock\StaticClock;
 
 #[Test]
 #[Covers(Storage::class)]
 final class StorageTest
 {
     private Psr17Factory $factory;
-    private FixedClock $clock;
+    private StaticClock $clock;
     private InMemoryStore $store;
     private MemoryRepository $repository;
 
@@ -54,7 +54,7 @@ final class StorageTest
     public function setUp(): void
     {
         $this->factory = new Psr17Factory();
-        $this->clock = new FixedClock('2026-08-06T12:00:00.123456+00:00');
+        $this->clock = new StaticClock(new DateTimeImmutable('2026-08-06T12:00:00.123456+00:00'));
         $this->store = new InMemoryStore('memory', $this->factory, $this->clock);
         $this->repository = new MemoryRepository();
     }
@@ -371,11 +371,11 @@ final class StorageTest
      */
     public function urlForFallsBackToTheProxyGenerator(): void
     {
-        $proxy = new class () implements ProxyUrlGeneratorInterface {
+        $proxy = new class implements ProxyUrlGeneratorInterface {
             public ?DateTimeImmutable $expiresAt = null;
 
             #[Override]
-            public function url(File $file, DateTimeImmutable $expiresAt): ?string
+            public function url(File $file, DateTimeImmutable $expiresAt): string
             {
                 $this->expiresAt = $expiresAt;
 
@@ -396,11 +396,11 @@ final class StorageTest
 
     public function urlForHonoursAnExplicitExpiry(): void
     {
-        $proxy = new class () implements ProxyUrlGeneratorInterface {
+        $proxy = new class implements ProxyUrlGeneratorInterface {
             public ?DateTimeImmutable $expiresAt = null;
 
             #[Override]
-            public function url(File $file, DateTimeImmutable $expiresAt): ?string
+            public function url(File $file, DateTimeImmutable $expiresAt): string
             {
                 $this->expiresAt = $expiresAt;
 

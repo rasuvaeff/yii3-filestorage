@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Rasuvaeff\Yii3Filestorage\Test;
+namespace Rasuvaeff\Yii3Filestorage\Tests\Support;
 
 use DateInterval;
 use DateTimeImmutable;
@@ -10,19 +10,20 @@ use Override;
 use Psr\Clock\ClockInterface;
 
 /**
- * A clock that only moves when a test moves it.
+ * A clock that moves when a test moves it.
  *
- * Not `readonly`, unlike almost everything else in this package: the whole
- * point is to advance it, and expiry, ordering and TTL tests are unreliable
- * against a real clock.
+ * `Yiisoft\Test\Support\Clock\StaticClock` covers everything that only needs
+ * time pinned, and it is what this package's tests use by default. This exists
+ * for the handful of cases where time has to advance *within* one test — token
+ * expiry at the boundary, key rotation, id ordering — which a static clock
+ * cannot express without rebuilding the object under test.
  *
- * Shipped in `src/` rather than `tests/` on purpose — `.gitattributes`
- * export-ignores `tests/`, so a consumer installing this package would not
- * receive it.
+ * Test-only, deliberately: consumers who need a movable clock have their own,
+ * and this package should not ship a second one next to `yiisoft/test-support`.
  *
- * @api
+ * @internal
  */
-final class FixedClock implements ClockInterface
+final class MovableClock implements ClockInterface
 {
     private DateTimeImmutable $now;
 

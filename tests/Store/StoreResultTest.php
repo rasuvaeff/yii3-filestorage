@@ -65,15 +65,15 @@ final class StoreResultTest
     {
         yield 'empty path' => [
             'relativePath must not be empty',
-            static fn (): StoreResult => new StoreResult('', 1),
+            static fn(): StoreResult => new StoreResult('', 1),
         ];
         yield 'empty external id' => [
             'externalId must be null or non-empty',
-            static fn (): StoreResult => new StoreResult('a', 1, ''),
+            static fn(): StoreResult => new StoreResult('a', 1, ''),
         ];
         yield 'negative size' => [
             'size must not be negative',
-            static fn (): StoreResult => new StoreResult('a', -1),
+            static fn(): StoreResult => new StoreResult('a', -1),
         ];
     }
 }

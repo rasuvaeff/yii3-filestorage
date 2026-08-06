@@ -8,7 +8,7 @@ use Nyholm\Psr7\Factory\Psr17Factory;
 use Rasuvaeff\Yii3Filestorage\Id\Uuid7IdGenerator;
 use Rasuvaeff\Yii3Filestorage\Path\DatePathGenerator;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
-use Rasuvaeff\Yii3Filestorage\Test\FixedClock;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\MovableClock;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Testo\Assert;
 use Testo\Codecov\Covers;
@@ -20,7 +20,7 @@ use Testo\Test;
 final class DatePathGeneratorTest
 {
     private Upload $upload;
-    private FixedClock $clock;
+    private MovableClock $clock;
     private DatePathGenerator $generator;
 
     #[BeforeTest]
@@ -28,7 +28,7 @@ final class DatePathGeneratorTest
     {
         $factory = new Psr17Factory();
         $this->upload = Upload::fromStream($factory->createStream('x'), 'thing.bin', $factory);
-        $this->clock = new FixedClock('2026-08-06T12:00:00.000000+00:00');
+        $this->clock = new MovableClock('2026-08-06T12:00:00.000000+00:00');
         $this->generator = new DatePathGenerator($this->clock, new Uuid7IdGenerator($this->clock));
     }
 

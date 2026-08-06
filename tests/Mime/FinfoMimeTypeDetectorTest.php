@@ -28,7 +28,7 @@ final class FinfoMimeTypeDetectorTest
 
     public function detectsAPngFromItsSignature(): void
     {
-        Assert::same((new FinfoMimeTypeDetector())->detect($this->upload(self::png())), 'image/png');
+        Assert::same((new FinfoMimeTypeDetector())->detect($this->upload($this->png())), 'image/png');
     }
 
     public function detectsPlainText(): void
@@ -50,11 +50,11 @@ final class FinfoMimeTypeDetectorTest
      */
     public function detectionRewindsTheStream(): void
     {
-        $upload = $this->upload(self::png());
+        $upload = $this->upload($this->png());
 
         (new FinfoMimeTypeDetector())->detect($upload);
 
-        Assert::same($upload->stream()->getContents(), self::png());
+        Assert::same($upload->stream()->getContents(), $this->png());
     }
 
     /**
@@ -65,7 +65,7 @@ final class FinfoMimeTypeDetectorTest
      */
     public function aSignatureBeyondTheWindowIsNotFound(): void
     {
-        $body = str_repeat("\x00", 4_096) . self::png();
+        $body = str_repeat("\x00", 4_096) . $this->png();
 
         Assert::same(
             (new FinfoMimeTypeDetector(sniffBytes: 512))->detect($this->upload($body)),
@@ -115,7 +115,7 @@ final class FinfoMimeTypeDetectorTest
         return Upload::fromStream($this->factory->createStream($body), 'thing.bin', $this->factory);
     }
 
-    private static function png(): string
+    private function png(): string
     {
         return (string) base64_decode(
             'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',

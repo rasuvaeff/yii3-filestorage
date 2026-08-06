@@ -219,7 +219,7 @@ final class UploadTest
 
     public function sizeIsNullWhenTheStreamCannotReportIt(): void
     {
-        $stream = new class () extends ForwardOnlyStream {
+        $stream = new class extends ForwardOnlyStream {
             public function __construct()
             {
                 parent::__construct('x');

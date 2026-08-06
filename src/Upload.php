@@ -40,7 +40,6 @@ final readonly class Upload
     ) {}
 
     /**
-     * @param int $maxSpoolBytes
      *
      * @throws UploadFailedException When PHP reports the upload itself failed.
      * @throws UploadTooLargeException
@@ -92,8 +91,6 @@ final readonly class Upload
     }
 
     /**
-     * @param int $maxSpoolBytes
-     *
      * @throws UploadTooLargeException
      */
     public static function fromPath(

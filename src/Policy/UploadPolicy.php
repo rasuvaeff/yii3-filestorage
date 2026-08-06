@@ -118,7 +118,7 @@ final readonly class UploadPolicy
         if ($this->maxPixels === 0 && !$this->requireImageDimensions) {
             return;
         }
-        if ($detectedMimeType === null || !self::isRaster($detectedMimeType)) {
+        if ($detectedMimeType === null || !$this->isRaster($detectedMimeType)) {
             return;
         }
 
@@ -148,7 +148,7 @@ final readonly class UploadPolicy
         }
     }
 
-    private static function isRaster(string $mediaType): bool
+    private function isRaster(string $mediaType): bool
     {
         return str_starts_with($mediaType, 'image/') && $mediaType !== 'image/svg+xml';
     }

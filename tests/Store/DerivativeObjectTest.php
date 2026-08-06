@@ -45,15 +45,15 @@ final class DerivativeObjectTest
     {
         yield 'empty path' => [
             'relativePath must not be empty',
-            static fn (): DerivativeObject => new DerivativeObject('', 1, 'image/webp'),
+            static fn(): DerivativeObject => new DerivativeObject('', 1, 'image/webp'),
         ];
         yield 'negative size' => [
             'size must not be negative',
-            static fn (): DerivativeObject => new DerivativeObject('a', -1, 'image/webp'),
+            static fn(): DerivativeObject => new DerivativeObject('a', -1, 'image/webp'),
         ];
         yield 'empty media type' => [
             'mediaType must not be empty',
-            static fn (): DerivativeObject => new DerivativeObject('a', 1, ''),
+            static fn(): DerivativeObject => new DerivativeObject('a', 1, ''),
         ];
     }
 }

@@ -251,10 +251,14 @@ final readonly class QuotaStorage implements StorageInterface
 |---|---|
 | `Test\InMemoryStore` | Хранилище без диска. Реализует только базовый контракт и maintenance — **не** URL и не Range, чтобы можно было проверить поведение кода, когда хранилище не умеет presign |
 | `Test\MemoryRepository` | Метаданные в массиве |
-| `Test\FixedClock` | Часы, которые двигаются только вручную |
+
+Двойника часов здесь сознательно нет: `InMemoryStore` и `Storage` принимают
+любые PSR-20-часы, а в Yii-приложении уже есть
+`Yiisoft\Test\Support\Clock\StaticClock`. Свой второй был бы дублированием,
+а не удобством.
 
 ```php
-$store = new InMemoryStore('test', $streamFactory);
+$store = new InMemoryStore('test', $streamFactory, new StaticClock($now));
 $storage = new Storage(
     stores: new StoreRegistry([$store]),
     repository: new MemoryRepository(),

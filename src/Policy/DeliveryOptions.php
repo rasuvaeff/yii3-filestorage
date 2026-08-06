@@ -25,24 +25,11 @@ final readonly class DeliveryOptions
     /** @var non-empty-string */
     public const string DEFAULT_DOWNLOAD_NAME = 'file';
 
-    /** @var non-empty-string */
-    public string $responseMediaType;
-
-    /** @var non-empty-string CR/LF-free fallback name for `Content-Disposition`. */
-    public string $downloadName;
-
     /**
      * @param non-empty-string $responseMediaType
      * @param non-empty-string $downloadName
      */
-    private function __construct(
-        public bool $forceDownload,
-        string $responseMediaType,
-        string $downloadName,
-    ) {
-        $this->responseMediaType = $responseMediaType;
-        $this->downloadName = $downloadName;
-    }
+    private function __construct(public bool $forceDownload, public string $responseMediaType, public string $downloadName) {}
 
     public static function fromFile(File $file, DeliveryPolicy $policy): self
     {

@@ -66,9 +66,9 @@ final readonly class PublicFileSystemStore implements
     }
 
     #[Override]
-    public function publicUrl(File $file): ?string
+    public function publicUrl(File $file): string
     {
-        return $this->baseUrl . '/' . self::encodePath($file->relativePath);
+        return $this->baseUrl . '/' . $this->encodePath($file->relativePath);
     }
 
     /**
@@ -81,9 +81,9 @@ final readonly class PublicFileSystemStore implements
     }
 
     #[Override]
-    public function publicDerivativeUrl(File $file, DerivativeDescriptor $derivative): ?string
+    public function publicDerivativeUrl(File $file, DerivativeDescriptor $derivative): string
     {
-        return $this->baseUrl . '/' . self::encodePath($file->directory() . '/' . $derivative->fileName());
+        return $this->baseUrl . '/' . $this->encodePath($file->directory() . '/' . $derivative->fileName());
     }
 
     /**
@@ -188,7 +188,7 @@ final readonly class PublicFileSystemStore implements
     /**
      * @return non-empty-string
      */
-    private static function encodePath(string $relativePath): string
+    private function encodePath(string $relativePath): string
     {
         return implode('/', array_map(rawurlencode(...), explode('/', $relativePath)));
     }

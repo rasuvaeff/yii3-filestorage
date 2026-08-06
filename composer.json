@@ -44,7 +44,9 @@
         "symfony/uid": "^6.4 || ^7.0 || ^8.0",
         "testo/bridge-infection": "^0.1.6",
         "testo/testo": "^0.10.25",
-        "vimeo/psalm": "^6.16"
+        "vimeo/psalm": "^6.16",
+        "yiisoft/di": "^1.4",
+        "yiisoft/test-support": "^3.0"
     },
     "suggest": {
         "ramsey/uuid": "Bind RamseyUuidIdGenerator to mint file ids with ramsey/uuid instead of the built-in generator",

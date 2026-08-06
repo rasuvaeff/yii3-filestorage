@@ -72,7 +72,7 @@ final class LimitedStream implements StreamInterface
     }
 
     #[Override]
-    public function getSize(): ?int
+    public function getSize(): int
     {
         $size = $this->stream->getSize();
         if ($size === null) {

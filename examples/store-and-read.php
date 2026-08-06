@@ -11,15 +11,15 @@ use Rasuvaeff\Yii3Filestorage\Policy\PolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Storage;
 use Rasuvaeff\Yii3Filestorage\Store\FileSystem\FileSystemStore;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
-use Rasuvaeff\Yii3Filestorage\Test\FixedClock;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
 use Rasuvaeff\Yii3Filestorage\Upload;
+use Yiisoft\Test\Support\Clock\StaticClock;
 
 require __DIR__ . '/../vendor/autoload.php';
 
 $root = sys_get_temp_dir() . '/filestorage-example-' . bin2hex(random_bytes(6));
 $factory = new Psr17Factory();
-$clock = new FixedClock();
+$clock = new StaticClock(new DateTimeImmutable('2026-01-01T00:00:00.000000+00:00'));
 
 $store = new FileSystemStore(name: 'upload', rootPath: $root, streamFactory: $factory);
 

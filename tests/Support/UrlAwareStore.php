@@ -34,13 +34,13 @@ final class UrlAwareStore implements StoreUrlProviderInterface
     ) {}
 
     #[Override]
-    public function publicUrl(File $file): ?string
+    public function publicUrl(File $file): string
     {
         return $this->baseUrl . '/' . $file->relativePath;
     }
 
     #[Override]
-    public function temporaryUrl(File $file, DateTimeImmutable $expiresAt, DeliveryOptions $options): ?string
+    public function temporaryUrl(File $file, DateTimeImmutable $expiresAt, DeliveryOptions $options): string
     {
         $this->lastOptions = $options;
 

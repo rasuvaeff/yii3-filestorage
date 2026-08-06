@@ -8,7 +8,7 @@ use DateInterval;
 use Rasuvaeff\PropertyTesting\ArbitraryInterface;
 use Rasuvaeff\PropertyTesting\Gen;
 use Rasuvaeff\PropertyTesting\Property;
-use Rasuvaeff\Yii3Filestorage\Test\FixedClock;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\MovableClock;
 use Rasuvaeff\Yii3Filestorage\Url\HmacUrlSigner;
 use Rasuvaeff\Yii3Filestorage\Url\SignedPayload;
 use Rasuvaeff\Yii3Filestorage\Url\SigningKeyRing;
@@ -25,13 +25,13 @@ final class HmacUrlSignerTest
     private const string ACTIVE = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
     private const string PREVIOUS = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
-    private FixedClock $clock;
+    private MovableClock $clock;
     private HmacUrlSigner $signer;
 
     #[BeforeTest]
     public function setUp(): void
     {
-        $this->clock = new FixedClock('2026-08-06T12:00:00.000000+00:00');
+        $this->clock = new MovableClock('2026-08-06T12:00:00.000000+00:00');
         $this->signer = new HmacUrlSigner($this->clock, new SigningKeyRing('active', [
             'active' => self::ACTIVE,
             'previous' => self::PREVIOUS,
@@ -75,7 +75,7 @@ final class HmacUrlSignerTest
         $token = $this->sign();
 
         $this->clock->advanceSeconds(3_600);
-        Assert::true($this->signer->verify($token) !== null, 'still valid at the expiry second');
+        Assert::true($this->signer->verify($token) instanceof \Rasuvaeff\Yii3Filestorage\Url\SignedPayload, 'still valid at the expiry second');
 
         $this->clock->advanceSeconds(1);
         Assert::null($this->signer->verify($token));
@@ -92,7 +92,7 @@ final class HmacUrlSignerTest
      */
     public static function tamperProvider(): iterable
     {
-        yield 'version bumped' => ['version', static fn (string $t): string => 'v2' . substr($t, 2)];
+        yield 'version bumped' => ['version', static fn(string $t): string => 'v2' . substr($t, 2)];
         yield 'expiry extended' => ['expiry', static function (string $t): string {
             $p = explode('.', $t);
             $p[2] = (string) ((int) $p[2] + 86_400);
@@ -119,9 +119,9 @@ final class HmacUrlSignerTest
 
             return implode('.', $p);
         }];
-        yield 'segment dropped' => ['shape', static fn (string $t): string => substr($t, strpos($t, '.') + 1)];
-        yield 'segment added' => ['shape', static fn (string $t): string => $t . '.extra'];
-        yield 'empty token' => ['empty', static fn (string $t): string => ''];
+        yield 'segment dropped' => ['shape', static fn(string $t): string => substr($t, strpos($t, '.') + 1)];
+        yield 'segment added' => ['shape', static fn(string $t): string => $t . '.extra'];
+        yield 'empty token' => ['empty', static fn(string $t): string => ''];
         yield 'padded base64' => ['non-canonical encoding', static function (string $t): string {
             $p = explode('.', $t);
             $p[3] .= '=';
@@ -274,6 +274,6 @@ final class HmacUrlSignerTest
 
     private function expiry(): \DateTimeImmutable
     {
-        return (new FixedClock('2026-08-06T12:00:00.000000+00:00'))->now()->add(new DateInterval('PT1H'));
+        return (new MovableClock('2026-08-06T12:00:00.000000+00:00'))->now()->add(new DateInterval('PT1H'));
     }
 }
