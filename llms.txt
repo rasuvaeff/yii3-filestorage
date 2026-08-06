@@ -1,0 +1,277 @@
+# rasuvaeff/yii3-filestorage
+
+DI-native file storage for Yii3. One facade over a swappable physical store and
+a swappable metadata repository. PSR-7 streaming, authoritative MIME detection,
+per-group accept and delivery policies. Namespace `Rasuvaeff\Yii3Filestorage\`.
+
+Status `0.x`: the API may still change. The path layout and token format are frozen.
+
+## Install
+
+```bash
+composer require rasuvaeff/yii3-filestorage
+```
+
+Core does NOT bind `StoreInterface` or `RepositoryInterface`. Install a backend
+(`-db`, `-flysystem`, `-web`) or bind them in the application.
+
+## Rules
+
+1. **Never trust the client media type.** `Upload::$clientMediaTypeHint` is
+   diagnostics only. Only `MimeTypeDetectorInterface::detect()` output reaches a
+   policy, a path extension or a response header.
+2. **Never build a path from user input.** Paths come from a
+   `PathGeneratorInterface`; `StoredObjectId` rejects `..`, NUL, backslashes and
+   absolute paths. `File::$originalName` is metadata and never enters a path.
+3. **Layout is frozen: `<…>/<key>/original.<ext>`, a directory per file.**
+   `StoreInterface::delete()` removes the directory, so derivatives cannot leak.
+   The extension comes from the detected media type via `symfony/mime`; unknown
+   becomes `original.bin`.
+4. **Token format is frozen:** `v1.<key-id>.<expires>.<b64url payload>.<b64url hmac>`.
+   Payload is canonical JSON `{fileId, variant, scopeId}`, all covered by the HMAC.
+5. **`urlFor()` is the method application code calls.** `url()` and
+   `temporaryUrl()` are raw capabilities that ignore delivery policy.
+6. **Direct public URLs are opt-in per group** and unsafe with active content
+   (HTML, SVG, XML). `filestorage:check` fails on that combination.
+7. **`add()` is all-or-nothing per file.** There is no `addMany()`.
+8. **Capabilities are `instanceof` checks, not nullable methods** — except
+   `StoreUrlProviderInterface`, whose methods return null because URL support
+   varies per adapter at runtime, not per class.
+
+## API reference
+
+### `StorageInterface` (facade)
+
+```php
+public function add(Upload $upload, ?string $groupName = null, ?string $storeName = null, ?string $description = null, array $metadata = []): File;
+public function find(string $id): ?File;
+public function remove(string $id): bool;
+public function exists(File $file): bool;
+public function url(File $file): ?string;                                        // raw permanent
+public function temporaryUrl(File $file, DateTimeImmutable $expiresAt): ?string; // raw presigned
+public function urlFor(File $file, ?DateTimeImmutable $expiresAt = null): ?string; // policy-aware; use this
+public function stream(File $file): ?StreamInterface;
+public function content(File $file): ?string;                                    // capped
+```
+
+Implementation: `Storage` (`final readonly`). Throws `PolicyViolationException`
+before touching the store, `AddException` when metadata fails after the write,
+`RemoveException` when the object survives its row, `ContentTooLargeException`
+from `content()`.
+
+```php
+$file = $storage->add(
+    Upload::fromUploadedFile($psrUploadedFile, $streamFactory),
+    groupName: 'avatars',
+);
+
+$stream = $storage->stream($file);
+$url = $storage->urlFor($file);
+$storage->remove($file->id);
+```
+
+### `File` (immutable VO)
+
+```php
+File::create(
+    string $id, string $storeName, string $groupName, string $relativePath,
+    string $originalName, int $size, DateTimeImmutable $createdAt,
+    ?string $externalId = null, ?string $mimeType = null, ?string $description = null,
+    ?string $contentHash = null, array $metadata = [], ?DateTimeImmutable $updatedAt = null,
+): self;
+
+File::fromArray(array $row): self;      // exact round-trip with toArray()
+$file->toArray(): array;
+$file->withMetadata(array $metadata, DateTimeImmutable $updatedAt): self;
+$file->directory(): string;             // the parent directory holding derivatives
+File::TIMESTAMP_FORMAT;                 // 'Y-m-d\TH:i:s.uP' — ATOM would drop microseconds
+```
+
+Public readonly properties: `id`, `storeName`, `externalId`, `groupName`,
+`relativePath`, `originalName`, `mimeType`, `size`, `description`,
+`contentHash`, `metadata`, `createdAt`, `updatedAt`.
+
+### `Upload` (ingress VO)
+
+```php
+Upload::fromUploadedFile(UploadedFileInterface $file, StreamFactoryInterface $f, int $maxSpoolBytes = 268435456): self;
+Upload::fromStream(StreamInterface $s, string $originalName, StreamFactoryInterface $f, int $maxSpoolBytes = 268435456, ?string $clientMediaTypeHint = null): self;
+Upload::fromPath(string $path, StreamFactoryInterface $f, ?string $originalName = null, int $maxSpoolBytes = 268435456): self;
+
+$upload->stream(): StreamInterface;  // always rewound and seekable
+$upload->size(): ?int;
+$upload->originalName;               // non-empty-string
+$upload->clientMediaTypeHint;        // diagnostics only — never authoritative
+```
+
+`fromUploadedFile()` throws `UploadFailedException` unless `getError()` is
+`UPLOAD_ERR_OK`. A non-seekable stream is spooled to `php://temp` and throws
+`UploadTooLargeException` past the cap. Hand the `Upload` to `Storage`; do not
+call `moveTo()` yourself, it invalidates the stream.
+
+### Stores
+
+```php
+interface StoreInterface {
+    public function name(): string;
+    public function write(Upload $u, string $groupName, PathGeneratorInterface $g, ?string $mediaType = null, int $maxBytes = 0): StoreResult;
+    public function delete(File $file): void;   // deletes the DIRECTORY
+    public function exists(File $file): bool;
+    public function size(File $file): ?int;
+    public function lastModified(File $file): ?DateTimeImmutable;
+    public function stream(File $file): ?StreamInterface;
+}
+```
+
+Optional capabilities, all extending `StoreInterface`:
+
+| Interface | Adds |
+|---|---|
+| `StoreUrlProviderInterface` | `publicUrl()`, `temporaryUrl(File, DateTimeImmutable, DeliveryOptions)` — both nullable |
+| `RangeReadableStoreInterface` | `streamRange(File, int $offset, int $length)` |
+| `ContentAddressableStoreInterface` | `putIfAbsent(Upload, StoredObjectId, int $maxBytes = 0)` — atomic, immutable |
+| `MaintenanceStoreInterface` | `objects(?string $afterPath, int $limit)`, `deleteObject(StoredObjectId)` |
+| `DerivativeAwareStoreInterface` | `hasDerivative()`, `derivativeStream()`, `writeDerivative()` |
+| `DerivativeUrlProviderInterface` | `publicDerivativeUrl()`, `temporaryDerivativeUrl()` |
+
+Implementations: `Store\FileSystem\FileSystemStore` (derivatives, maintenance,
+range), `Store\FileSystem\PublicFileSystemStore` (the above plus public URLs;
+`temporaryUrl()` is always null — a web server has no signature to check),
+`Test\InMemoryStore` (base + maintenance only, deliberately no URL/range).
+
+`StoreRegistry`: `get(?string $name)`, `has()`, `names()`, `defaultName()`.
+Built by core from the one `StoreInterface` a backend binds.
+
+`StoreResult(string $relativePath, int $size, ?string $externalId = null, bool $created = true)`.
+
+`StoredObjectId(string $relativePath)` — validated path VO.
+`BlobId::create(string $storeName, string $relativePath)` — physical identity for dedup.
+
+### Repository
+
+```php
+interface RepositoryInterface {
+    public function find(string $id): ?File;    // null, not an exception
+    public function save(File $file): void;     // void: the id was assigned before the write
+    public function delete(string $id): bool;
+}
+
+interface MaintenanceRepositoryInterface extends RepositoryInterface {
+    public function files(?string $afterId = null, int $limit = 1000): iterable;
+    public function updateContentHash(string $id, string $contentHash): bool;
+}
+```
+
+### Paths
+
+```php
+interface PathGeneratorInterface {
+    public function generate(string $groupName, Upload $upload, ?string $mediaType): string;
+}
+```
+
+| Implementation | Layout |
+|---|---|
+| `RandomPathGenerator` | `<group>/<2 hex>/<2 hex>/<32 hex>/original.<ext>` |
+| `DatePathGenerator` | `<group>/<YYYY>/<MM>/<DD>/<uuidv7>/original.<ext>` |
+| `Sha256KeyGenerator` (`ContentAddressedKeyGeneratorInterface`) | `<scope>/<hash[0:2]>/<hash[2:4]>/<hash>/original` — no extension, dedup only |
+
+### MIME
+
+```php
+interface MimeTypeDetectorInterface { public function detect(Upload $upload): ?string; }
+new FinfoMimeTypeDetector(int $sniffBytes = 4096);   // minimum 512
+new ExtensionMap(array $overrides = [], ?MimeTypesInterface $mimeTypes = null);
+$map->extensionFor(?string $mediaType): string;      // 'bin' when unknown
+```
+
+`symfony/mime` supplies the media-type ⇒ extension table. It is *not* used for
+detection: `MimeTypes::guessMimeType()` takes a path and reads the whole file,
+while ingress here is a stream and the sniff window is bounded.
+
+### Ids
+
+```php
+interface IdGeneratorInterface { public function generate(): string; }
+```
+
+`Uuid7IdGenerator(ClockInterface)` is the dependency-free default.
+`SymfonyUidIdGenerator` and `RamseyUuidIdGenerator` are optional adapters —
+bind one explicitly, nothing auto-detects.
+
+### Policies
+
+```php
+new UploadPolicy(array $allowedMimeTypes = [], int $maxBytes = 0, int $maxPixels = 40_000_000, bool $requireImageDimensions = false);
+$policy->assertAcceptable(Upload $upload, ?string $detectedMimeType): void;  // throws PolicyViolationException
+
+new PolicyRegistry(array $policies);       PolicyRegistry::fromArray(array $params);
+new DeliveryPolicy(bool $allowDirectPublicUrl = false, bool $forceDownload = true);
+new DeliveryPolicyRegistry(array $policies); DeliveryPolicyRegistry::fromArray(array $params);
+DeliveryOptions::fromFile(File $file, DeliveryPolicy $policy): self;
+```
+
+Key `'*'` is the fallback group in both registries.
+
+### URLs
+
+```php
+interface UrlSignerInterface {
+    public function sign(SignedPayload $payload, DateTimeImmutable $expiresAt): string;
+    public function verify(string $token): ?SignedPayload;   // null for anything invalid
+}
+
+new SigningKeyRing(string $activeKeyId, array $keys);   // key ids /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}\z/, secrets >= 32 bytes
+new HmacUrlSigner(ClockInterface $clock, SigningKeyRing $keys);
+new SignedPayload(string $fileId, ?string $variant = null, ?string $scopeId = null);
+
+interface ProxyUrlGeneratorInterface { public function url(File $file, DateTimeImmutable $expiresAt): ?string; }
+```
+
+Local only: the same application signs and verifies. S3 presigning is
+`StoreUrlProviderInterface`, not this — S3 validates its own signatures.
+
+### Streams
+
+`Stream\LimitedStream(StreamInterface $stream, int $offset, int $length)` —
+read-only PSR-7 window for `206` responses, no buffering.
+
+### Exceptions
+
+All implement `Exception\FilestorageException`:
+`AddException`, `RemoveException`, `StoreException`, `ContentTooLargeException`,
+`UploadTooLargeException`, `UploadFailedException`, `PolicyViolationException`,
+`InvalidConfigException`.
+
+### Test doubles (`src/Test/`, installed with the package)
+
+`InMemoryStore(string $name, StreamFactoryInterface $f, ?FixedClock $clock = null)` —
+plus `bytesAt()`, `paths()`, `writeCount()`, `corrupt()`, `clear()`.
+`MemoryRepository()` — plus `count()`, `all()`, `clear()`.
+`FixedClock(DateTimeImmutable|string $now)` — `set()`, `advance()`, `advanceSeconds()`.
+
+### Console
+
+`Command\CheckCommand` → `filestorage:check`. Reports wiring, per-store
+capabilities and per-group rules; exits non-zero on an unsafe delivery combination.
+
+## Configuration
+
+```php
+'rasuvaeff/yii3-filestorage' => [
+    'defaultGroup' => 'common',
+    'maxInlineBytes' => 8_388_608,
+    'maxSpoolBytes' => 268_435_456,
+    'integrityHashMaxBytes' => 0,
+    'defaultUrlTtl' => 'PT1H',
+    'extensionOverrides' => [],
+    'policies' => ['*' => ['maxBytes' => 20_971_520]],
+    'delivery' => ['*' => ['allowDirectPublicUrl' => false, 'forceDownload' => true]],
+],
+```
+
+Core `config/di.php` binds `StorageInterface`, `StoreRegistry`,
+`PathGeneratorInterface`, `MimeTypeDetectorInterface`, `IdGeneratorInterface`,
+`ExtensionMap`, both policy registries and `CheckCommand`. It binds neither
+`StoreInterface` nor `RepositoryInterface` — one vendor package owns each key,
+and two binding the same one is a `yiisoft/config` `Duplicate key` error by design.
