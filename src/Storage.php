@@ -13,6 +13,7 @@ use Psr\Http\Message\StreamInterface;
 use Rasuvaeff\Yii3Filestorage\Exception\AddException;
 use Rasuvaeff\Yii3Filestorage\Exception\ContentTooLargeException;
 use Rasuvaeff\Yii3Filestorage\Exception\RemoveException;
+use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
 use Rasuvaeff\Yii3Filestorage\Id\IdGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Mime\MimeTypeDetectorInterface;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
@@ -243,7 +244,11 @@ final readonly class Storage implements StorageInterface
         while (!$stream->eof()) {
             $chunk = $stream->read(self::CHUNK);
             if ($chunk === '') {
-                break;
+                if ($stream->eof()) {
+                    break;
+                }
+
+                throw new StoreException("Could not read file \"{$file->id}\" before EOF");
             }
 
             $contents .= $chunk;
@@ -274,7 +279,11 @@ final readonly class Storage implements StorageInterface
         while (!$stream->eof()) {
             $chunk = $stream->read(self::CHUNK);
             if ($chunk === '') {
-                break;
+                if ($stream->eof()) {
+                    break;
+                }
+
+                throw new StoreException('Could not hash upload: the stream returned no bytes before EOF');
             }
 
             $read += \strlen($chunk);

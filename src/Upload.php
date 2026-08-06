@@ -139,23 +139,55 @@ final readonly class Upload
     ): StreamInterface {
         $buffered = $streamFactory->createStreamFromFile('php://temp', 'w+b');
         $written = 0;
-        while (!$stream->eof()) {
-            $chunk = $stream->read(self::CHUNK);
-            if ($chunk === '') {
-                break;
-            }
-            $written += strlen($chunk);
-            if ($maxSpoolBytes > 0 && $written > $maxSpoolBytes) {
-                $buffered->close();
 
-                throw new UploadTooLargeException(
-                    "Non-seekable upload exceeds the spool cap of {$maxSpoolBytes} bytes",
-                );
+        try {
+            while (!$stream->eof()) {
+                $chunk = $stream->read(self::CHUNK);
+                if ($chunk === '') {
+                    if ($stream->eof()) {
+                        break;
+                    }
+
+                    throw new UploadFailedException('Upload stream returned no bytes before EOF');
+                }
+                $written += strlen($chunk);
+                if ($maxSpoolBytes > 0 && $written > $maxSpoolBytes) {
+                    throw new UploadTooLargeException(
+                        "Non-seekable upload exceeds the spool cap of {$maxSpoolBytes} bytes",
+                    );
+                }
+                self::writeAll($buffered, $chunk);
             }
-            $buffered->write($chunk);
+        } catch (\Throwable $e) {
+            $buffered->close();
+
+            throw $e;
         }
         $buffered->rewind();
 
         return $buffered;
+    }
+
+    /**
+     * PSR-7 permits a writable stream to accept fewer bytes than requested.
+     * Keep writing the remainder; accepting zero bytes would otherwise loop
+     * forever and is therefore an explicit ingress failure.
+     *
+     * @throws UploadFailedException
+     */
+    private static function writeAll(StreamInterface $stream, string $contents): void
+    {
+        $offset = 0;
+        $length = strlen($contents);
+
+        while ($offset < $length) {
+            $remaining = substr($contents, $offset);
+            $accepted = $stream->write($remaining);
+            if ($accepted <= 0 || $accepted > strlen($remaining)) {
+                throw new UploadFailedException('Upload spool accepted an invalid number of bytes');
+            }
+
+            $offset += $accepted;
+        }
     }
 }

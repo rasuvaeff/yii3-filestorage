@@ -190,6 +190,10 @@ final class FileTest
             'Invalid relative path',
             static fn(): File => self::file(relativePath: "a/b\0.png"),
         ];
+        yield 'Windows traversal' => [
+            'Invalid relative path',
+            static fn(): File => self::file(relativePath: '..\\..\\secret'),
+        ];
         yield 'empty external id' => [
             'externalId must be null or non-empty',
             static fn(): File => self::file(externalId: ''),

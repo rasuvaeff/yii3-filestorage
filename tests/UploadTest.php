@@ -6,7 +6,10 @@ namespace Rasuvaeff\Yii3Filestorage\Tests;
 
 use InvalidArgumentException;
 use Nyholm\Psr7\Factory\Psr17Factory;
+use Nyholm\Psr7\Stream;
 use Nyholm\Psr7\UploadedFile;
+use Psr\Http\Message\StreamFactoryInterface;
+use Psr\Http\Message\StreamInterface;
 use Rasuvaeff\PropertyTesting\ArbitraryInterface;
 use Rasuvaeff\PropertyTesting\Gen;
 use Rasuvaeff\PropertyTesting\Property;
@@ -69,6 +72,90 @@ final class UploadTest
         Assert::true($upload->stream()->isSeekable());
         Assert::same($upload->stream()->getContents(), 'streamed bytes');
         Assert::same($upload->stream()->getContents(), 'streamed bytes', 'the copy is re-readable');
+    }
+
+    /**
+     * PSR-7 allows an empty read while EOF is still false. Treating that as a
+     * completed upload would persist a valid-looking prefix as the whole file.
+     */
+    public function anEmptyReadBeforeEofIsRefusedInsteadOfSilentlyTruncated(): void
+    {
+        $stream = new class ('remaining bytes') extends ForwardOnlyStream {
+            private bool $stalled = true;
+
+            #[\Override]
+            public function read(int $length): string
+            {
+                if ($this->stalled) {
+                    $this->stalled = false;
+
+                    return '';
+                }
+
+                return parent::read($length);
+            }
+        };
+
+        Expect::exception(UploadFailedException::class)->withMessageContaining('no bytes before EOF');
+
+        Upload::fromStream($stream, 'a.txt', $this->factory);
+    }
+
+    /**
+     * A PSR-7 write may accept fewer bytes than requested. Spooling must keep
+     * writing the remainder instead of losing the tail of every chunk.
+     */
+    public function spoolingCompletesShortWrites(): void
+    {
+        $handle = fopen('php://temp', 'w+b');
+        \assert($handle !== false);
+
+        $buffer = new class ($handle) extends Stream {
+            #[\Override]
+            public function write(mixed $string): int
+            {
+                \assert(\is_string($string));
+
+                return parent::write(substr($string, 0, 2));
+            }
+        };
+
+        $factory = new class (
+            $this->factory,
+            $buffer,
+        ) implements StreamFactoryInterface {
+            public function __construct(
+                private readonly StreamFactoryInterface $delegate,
+                private readonly StreamInterface $shortWrites,
+            ) {}
+
+            #[\Override]
+            public function createStream(string $content = ''): StreamInterface
+            {
+                return $this->delegate->createStream($content);
+            }
+
+            #[\Override]
+            public function createStreamFromFile(string $filename, string $mode = 'r'): StreamInterface
+            {
+                return $this->shortWrites;
+            }
+
+            #[\Override]
+            public function createStreamFromResource(mixed $resource): StreamInterface
+            {
+                return $this->delegate->createStreamFromResource($resource);
+            }
+        };
+
+        $upload = Upload::fromStream(
+            new ForwardOnlyStream('short writes preserve every byte'),
+            'a.txt',
+            $factory,
+        );
+
+        Assert::same($upload->stream()->getContents(), 'short writes preserve every byte');
+        $upload->stream()->close();
     }
 
     public function spoolingStopsAtTheCap(): void

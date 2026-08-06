@@ -90,7 +90,11 @@ final class InMemoryStore implements MaintenanceStoreInterface
         while (!$stream->eof()) {
             $chunk = $stream->read(self::CHUNK);
             if ($chunk === '') {
-                break;
+                if ($stream->eof()) {
+                    break;
+                }
+
+                throw new StoreException("Could not read \"{$object->relativePath}\" before EOF");
             }
 
             $bytes .= $chunk;

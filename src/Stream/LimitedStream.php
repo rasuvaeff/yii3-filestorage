@@ -163,7 +163,11 @@ final class LimitedStream implements StreamInterface
         while (!$this->eof()) {
             $chunk = $this->read(self::CHUNK);
             if ($chunk === '') {
-                break;
+                if ($this->eof()) {
+                    break;
+                }
+
+                throw new RuntimeException('Underlying stream returned no bytes before EOF');
             }
             $contents .= $chunk;
         }

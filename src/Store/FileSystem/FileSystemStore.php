@@ -362,7 +362,11 @@ final readonly class FileSystemStore implements
             while (!$source->eof()) {
                 $chunk = $source->read(self::CHUNK);
                 if ($chunk === '') {
-                    break;
+                    if ($source->eof()) {
+                        break;
+                    }
+
+                    throw new StoreException("Could not read \"{$relativePath}\" before EOF");
                 }
 
                 $written += \strlen($chunk);
@@ -372,8 +376,16 @@ final readonly class FileSystemStore implements
                     );
                 }
 
-                if (@fwrite($handle, $chunk) === false) {
-                    throw new StoreException("Could not write \"{$relativePath}\" to store \"{$this->name}\"");
+                $offset = 0;
+                $length = \strlen($chunk);
+                while ($offset < $length) {
+                    $remaining = substr($chunk, $offset);
+                    $accepted = @fwrite($handle, $remaining);
+                    if ($accepted === false || $accepted <= 0 || $accepted > \strlen($remaining)) {
+                        throw new StoreException("Could not write \"{$relativePath}\" to store \"{$this->name}\"");
+                    }
+
+                    $offset += $accepted;
                 }
             }
         } catch (\Throwable $e) {
@@ -456,6 +468,7 @@ final readonly class FileSystemStore implements
 
     private function isContained(string $resolved): bool
     {
-        return $resolved === $this->rootPath || str_starts_with($resolved, $this->rootPath . '/');
+        return $resolved === $this->rootPath
+            || str_starts_with($resolved, $this->rootPath . \DIRECTORY_SEPARATOR);
     }
 }

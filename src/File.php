@@ -255,6 +255,7 @@ final readonly class File
             $value === ''
             || str_starts_with($value, '/')
             || str_contains($value, "\0")
+            || str_contains($value, '\\')
             || preg_match(self::TRAVERSAL_PATTERN, $value) === 1
         ) {
             throw new InvalidArgumentException("Invalid relative path \"{$value}\"");

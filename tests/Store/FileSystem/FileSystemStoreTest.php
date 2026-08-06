@@ -16,6 +16,7 @@ use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeDescriptor;
 use Rasuvaeff\Yii3Filestorage\Store\FileSystem\FileSystemStore;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\ForwardOnlyStream;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Testo\Assert;
 use Testo\Codecov\Covers;
@@ -115,6 +116,53 @@ final class FileSystemStoreTest
         } catch (UploadTooLargeException $e) {
             Assert::true(str_contains($e->getMessage(), '10 byte limit'));
             Assert::same($this->filesUnder($this->root), [], 'nothing at all was left behind');
+        }
+    }
+
+    /**
+     * A temporary empty read is not EOF. Publishing the prefix in that state
+     * would turn a stalled source into a successful but truncated object.
+     */
+    public function anEmptyReadBeforeEofRemovesThePartialOutput(): void
+    {
+        $stream = new class ('remaining bytes') extends ForwardOnlyStream {
+            private bool $stalled = true;
+
+            #[Override]
+            public function isSeekable(): bool
+            {
+                return true;
+            }
+
+            #[Override]
+            public function rewind(): void {}
+
+            #[Override]
+            public function read(int $length): string
+            {
+                if ($this->stalled) {
+                    $this->stalled = false;
+
+                    return '';
+                }
+
+                return parent::read($length);
+            }
+        };
+
+        $upload = Upload::fromStream($stream, 'thing.txt', $this->factory);
+
+        try {
+            $this->store->write(
+                $upload,
+                'docs',
+                new RandomPathGenerator(),
+                'text/plain',
+            );
+            Assert::true(false, 'the stalled write should have been refused');
+        } catch (StoreException $e) {
+            Assert::true(str_contains($e->getMessage(), 'before EOF'));
+            Assert::same($this->filesUnder($this->root), [], 'the partial output was removed');
         }
     }
 
@@ -307,7 +355,11 @@ final class FileSystemStoreTest
     {
         $outside = sys_get_temp_dir() . '/fs-outside-write-' . bin2hex(random_bytes(6));
         mkdir($outside);
-        symlink($outside, $this->root . '/docs');
+        if (!$this->createSymlink($outside, $this->root . '/docs')) {
+            FileHelper::removeDirectory($outside);
+
+            return;
+        }
 
         $fixed = new class implements PathGeneratorInterface {
             #[Override]
@@ -338,7 +390,11 @@ final class FileSystemStoreTest
         $outside = sys_get_temp_dir() . '/fs-outside-leaf-' . bin2hex(random_bytes(6));
         mkdir($outside);
         mkdir($this->root . '/docs/xx/yy', 0o775, true);
-        symlink($outside, $this->root . '/docs/xx/yy/key');
+        if (!$this->createSymlink($outside, $this->root . '/docs/xx/yy/key')) {
+            FileHelper::removeDirectory($outside);
+
+            return;
+        }
 
         $fixed = new class implements PathGeneratorInterface {
             #[Override]
@@ -391,7 +447,11 @@ final class FileSystemStoreTest
         $outside = sys_get_temp_dir() . '/fs-outside-' . bin2hex(random_bytes(6));
         file_put_contents($outside, 'secret');
         mkdir($this->root . '/docs/escape', 0o775, true);
-        symlink($outside, $this->root . '/docs/escape/original.txt');
+        if (!$this->createSymlink($outside, $this->root . '/docs/escape/original.txt')) {
+            unlink($outside);
+
+            return;
+        }
 
         try {
             $file = $this->file('docs/escape/original.txt');
@@ -414,7 +474,11 @@ final class FileSystemStoreTest
         mkdir($outside);
         file_put_contents($outside . '/secret.txt', 'secret');
         mkdir($this->root . '/docs', 0o775, true);
-        symlink($outside, $this->root . '/docs/linked');
+        if (!$this->createSymlink($outside, $this->root . '/docs/linked')) {
+            FileHelper::removeDirectory($outside);
+
+            return;
+        }
 
         try {
             Assert::same(iterator_to_array($this->store->objects(), false), []);
@@ -436,10 +500,28 @@ final class FileSystemStoreTest
      */
     public function anUncreatableRootFailsWithAnActionableMessage(): void
     {
+        $blockingPath = $this->root . '/not-a-directory';
+        file_put_contents($blockingPath, 'x');
+
         Expect::exception(StoreException::class)
             ->withMessageContaining('does not exist and could not be created. Create it and make it writable');
 
-        new FileSystemStore('upload', "/proc/nonexistent/deeper", $this->factory);
+        new FileSystemStore('upload', $blockingPath . '/deeper', $this->factory);
+    }
+
+    private function createSymlink(string $target, string $link): bool
+    {
+        if (@symlink($target, $link)) {
+            return true;
+        }
+
+        Assert::same(
+            \PHP_OS_FAMILY,
+            'Windows',
+            'symlink() unexpectedly failed on a platform that normally permits it',
+        );
+
+        return false;
     }
 
     private function upload(string $body): Upload
