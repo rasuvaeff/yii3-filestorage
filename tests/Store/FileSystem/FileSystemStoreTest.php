@@ -298,6 +298,90 @@ final class FileSystemStoreTest
     }
 
     /**
+     * The containment check is on the *write* path too, not only on reads. A
+     * group directory replaced by a symlink would otherwise let an upload be
+     * written outside the store root — and unlike a read, that one leaves data
+     * behind.
+     */
+    public function writingThroughASymlinkedDirectoryIsRefused(): void
+    {
+        $outside = sys_get_temp_dir() . '/fs-outside-write-' . bin2hex(random_bytes(6));
+        mkdir($outside);
+        symlink($outside, $this->root . '/docs');
+
+        $fixed = new class implements PathGeneratorInterface {
+            #[Override]
+            public function generate(string $groupName, Upload $upload, ?string $mediaType): string
+            {
+                return 'docs/key/original.txt';
+            }
+        };
+
+        try {
+            $this->store->write($this->upload('escaping'), 'docs', $fixed, 'text/plain');
+            Assert::true(false, 'the write should have been refused');
+        } catch (StoreException $e) {
+            Assert::true(str_contains($e->getMessage(), 'escapes the root of store "upload"'));
+            Assert::same(self::filesUnder($outside), [], 'and nothing was written outside');
+        } finally {
+            FileHelper::removeDirectory($outside);
+        }
+    }
+
+    /**
+     * The other shape of the same attack: the *leaf* key directory is the
+     * symlink, so `ensureDirectory()` finds it already there and creates
+     * nothing. The guard has to resolve what is on disk, not just what it made.
+     */
+    public function writingIntoASymlinkedKeyDirectoryIsRefused(): void
+    {
+        $outside = sys_get_temp_dir() . '/fs-outside-leaf-' . bin2hex(random_bytes(6));
+        mkdir($outside);
+        mkdir($this->root . '/docs/xx/yy', 0o775, true);
+        symlink($outside, $this->root . '/docs/xx/yy/key');
+
+        $fixed = new class implements PathGeneratorInterface {
+            #[Override]
+            public function generate(string $groupName, Upload $upload, ?string $mediaType): string
+            {
+                return 'docs/xx/yy/key/original.txt';
+            }
+        };
+
+        try {
+            $this->store->write($this->upload('escaping'), 'docs', $fixed, 'text/plain');
+            Assert::true(false, 'the write should have been refused');
+        } catch (StoreException $e) {
+            Assert::true(str_contains($e->getMessage(), 'escapes the root of store "upload"'));
+            Assert::same(self::filesUnder($outside), []);
+        } finally {
+            FileHelper::removeDirectory($outside);
+        }
+    }
+
+    /**
+     * Two writers racing for one target: the second must be refused rather than
+     * quietly overwriting the first after both staged under different names.
+     */
+    public function aLeftoverStagingFileRefusesASecondWriteToTheSameTarget(): void
+    {
+        $fixed = new class implements PathGeneratorInterface {
+            #[Override]
+            public function generate(string $groupName, Upload $upload, ?string $mediaType): string
+            {
+                return 'docs/key/original.txt';
+            }
+        };
+
+        mkdir($this->root . '/docs/key', 0o775, true);
+        file_put_contents($this->root . '/docs/key/original.txt.part', 'a write in flight');
+
+        Expect::exception(StoreException::class)->withMessageContaining('staging file');
+
+        $this->store->write($this->upload('second writer'), 'docs', $fixed, 'text/plain');
+    }
+
+    /**
      * A symlink planted inside the tree must not become a way to read outside
      * it: the relative path was already validated, but the resolved one is a
      * separate question.
@@ -352,7 +436,8 @@ final class FileSystemStoreTest
      */
     public function anUncreatableRootFailsWithAnActionableMessage(): void
     {
-        Expect::exception(StoreException::class)->withMessageContaining('writable by the web server user');
+        Expect::exception(StoreException::class)
+            ->withMessageContaining('does not exist and could not be created. Create it and make it writable');
 
         new FileSystemStore('upload', "/proc/nonexistent/deeper", $this->factory);
     }

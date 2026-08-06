@@ -107,6 +107,33 @@ pins exactly one string. `variant` is inside the signature, so a token minted
 for a redacted rendition cannot be replayed for the original. A future format
 uses `v2.`; both may be accepted during a bounded migration window.
 
+## Mutation testing
+
+`minMsi` is **89, not 100, and no mutator is ignored** — the threshold is what
+the suite honestly achieves rather than a number propped up by suppressions.
+The survivors fall into five groups, none of which a test can kill without
+trading away something real:
+
+| Group | Example | Why no test kills it |
+|---|---|---|
+| Exception-code arguments | the `0` in `new StoreException($message, 0, $e)` | Nothing asserts an exception code, and asserting one would pin a value that carries no meaning |
+| Unreachable defence in depth | `HmacUrlSigner`'s 2048-byte payload cap | `SignedPayload` caps its three fields at ~600 bytes of canonical JSON, so the cap cannot be reached — lowering it to make it reachable would weaken it |
+| Psalm-narrowing guards | `$keyId === ''` before a pattern that already rejects `''` | Dead at runtime by construction; it exists so psalm can narrow to `non-empty-string` without a suppression |
+| Redundant-but-deliberate rewinds | `FinfoMimeTypeDetector` rewinding after its sniff | `Upload::stream()` rewinds on every call, so the collaborator's own rewind is unobservable — it stays because "leave the stream where you found it" should hold for each collaborator on its own |
+| Equivalent arithmetic | `min($length, $size - $offset)` in `streamRange()` | `LimitedStream` re-clamps the window, so a wrong bound produces identical output |
+
+If a change makes a group disappear, raise `minMsi`. If a change adds an escaped
+mutant *outside* these groups the gate fails at 89 — that is the point. Do not
+ignore mutators to get past it; strengthen the assertion instead.
+
+Two assertions exist purely to kill subtle mutants and must not be weakened.
+`Uuid7IdGeneratorTest::versionAndVariantBytesKeepTheirOwnRandomBits` catches
+byte 6 and byte 8 being built from the same random byte — a neighbouring index
+still produces something that looks like a UUIDv7. Several exception-message
+tests assert a substring that *spans* a concatenation
+(`'does not exist and could not be created. Create it and make it writable'`);
+asserting only one half lets the operands be swapped undetected.
+
 ## Invariants & gotchas
 
 - **Byte caps are enforced during the copy.** `StoreInterface::write()` counts

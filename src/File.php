@@ -308,17 +308,20 @@ final readonly class File
     }
 
     /**
+     * Accepts only a string this class would itself have produced.
+     *
+     * Re-formatting and comparing is the whole check: `createFromFormat()`
+     * happily rolls `2026-02-31` over into March and reports a warning, and it
+     * ignores trailing junk. Both show up as a formatted value that differs
+     * from the input, so the round trip subsumes an explicit `getLastErrors()`
+     * inspection rather than complementing it.
+     *
      * @param non-empty-string $value
      */
     private static function parseTimestamp(string $value): DateTimeImmutable
     {
         $timestamp = DateTimeImmutable::createFromFormat(self::TIMESTAMP_FORMAT, $value);
-        $errors = DateTimeImmutable::getLastErrors();
-        if (
-            $timestamp === false
-            || ($errors !== false && ($errors['warning_count'] > 0 || $errors['error_count'] > 0))
-            || $timestamp->format(self::TIMESTAMP_FORMAT) !== $value
-        ) {
+        if ($timestamp === false || $timestamp->format(self::TIMESTAMP_FORMAT) !== $value) {
             throw new InvalidArgumentException("Invalid timestamp \"{$value}\"");
         }
 

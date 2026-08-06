@@ -146,6 +146,11 @@ Built by core from the one `StoreInterface` a backend binds.
 
 `StoredObjectId(string $relativePath)` — validated path VO.
 `BlobId::create(string $storeName, string $relativePath)` — physical identity for dedup.
+`DerivativeDescriptor(string $name, string $extension, string $mediaType)` — one named
+preset; `fileName()` gives `<name>.<extension>`. Named presets only: free-form dimensions
+make the derivative set unbounded, so a signed URL could force unbounded CPU and storage.
+`DerivativeObject(string $relativePath, int $size, string $mediaType)` — what
+`writeDerivative()` reports. A derivative is a sibling object, never a row.
 
 ### Repository
 

@@ -205,7 +205,11 @@ Two things cannot change after the first release, so they are settled now.
 **Path layout — one directory per file.** Every generator emits
 `<…>/<key>/original.<ext>`, never a bare filename, and `delete()` removes the
 *directory*. That is what lets a thumbnail live at `<key>/thumb.webp` with no
-schema change, and what stops derivatives leaking when a file is deleted. The
+schema change, and what stops derivatives leaking when a file is deleted. A
+rendition is described by a `DerivativeDescriptor` — a *named* preset, never
+free-form dimensions, because free-form parameters turn one upload into an
+unbounded set of addressable derivatives — and a store reports one back as a
+`DerivativeObject`. The
 extension comes from the **detected** media type through the `symfony/mime`
 table; the client filename never contributes it, and an unrecognised type
 becomes `original.bin`.

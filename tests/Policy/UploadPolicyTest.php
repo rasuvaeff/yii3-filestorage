@@ -113,6 +113,40 @@ final class UploadPolicyTest
             ->assertAcceptable($this->upload($this->png(width: 40, height: 40)), 'image/png');
     }
 
+    /**
+     * The cap is inclusive, and one pixel over is not: a limit whose boundary
+     * is off by one rejects legitimate uploads at exactly the size somebody
+     * configured as acceptable.
+     */
+    #[ExpectNoAssertions]
+    public function anImageExactlyAtThePixelCapPasses(): void
+    {
+        (new UploadPolicy(maxPixels: 1_200))
+            ->assertAcceptable($this->upload($this->png(width: 40, height: 30)), 'image/png');
+    }
+
+    public function oneMorePixelThanTheCapIsRefused(): void
+    {
+        $policy = new UploadPolicy(maxPixels: 1_199);
+
+        Expect::exception(PolicyViolationException::class)->withMessageContaining('1200 pixels');
+
+        $policy->assertAcceptable($this->upload($this->png(width: 40, height: 30)), 'image/png');
+    }
+
+    /**
+     * Width and height are reported the right way round. A non-square image is
+     * the only thing that can catch the two being swapped.
+     */
+    public function theRefusalNamesTheDimensionsInTheRightOrder(): void
+    {
+        $policy = new UploadPolicy(maxPixels: 10);
+
+        Expect::exception(PolicyViolationException::class)->withMessageContaining('Image is 40x30 = 1200 pixels');
+
+        $policy->assertAcceptable($this->upload($this->png(width: 40, height: 30)), 'image/png');
+    }
+
     #[ExpectNoAssertions]
     public function aZeroPixelCapDisablesTheCheck(): void
     {

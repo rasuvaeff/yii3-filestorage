@@ -75,4 +75,53 @@ final class Uuid7IdGeneratorTest
     {
         Assert::true($this->generator->generate() !== $this->generator->generate());
     }
+
+    /**
+     * The version and variant nibbles are written into byte 6 and byte 8, and
+     * the *rest* of those bytes stays random. Reading a neighbouring index
+     * would still produce something that looks like a UUIDv7, so this checks
+     * the two bytes carry independent entropy: perfect correlation between
+     * them across many draws means both were built from the same source byte.
+     */
+    public function versionAndVariantBytesKeepTheirOwnRandomBits(): void
+    {
+        $versionLowBits = [];
+        $variantLowBits = [];
+
+        for ($i = 0; $i < 200; ++$i) {
+            $bytes = hex2bin(str_replace('-', '', $this->generator->generate()));
+            \assert($bytes !== false);
+
+            $versionLowBits[] = \ord($bytes[6]) & 0x0F;
+            $variantLowBits[] = \ord($bytes[8]) & 0x3F;
+        }
+
+        Assert::true(count(array_unique($versionLowBits)) > 1, 'byte 6 keeps four random bits');
+        Assert::true(count(array_unique($variantLowBits)) > 1, 'byte 8 keeps six random bits');
+        Assert::true(
+            $versionLowBits !== array_map(static fn(int $b): int => $b & 0x0F, $variantLowBits),
+            'the two bytes are not the same byte read twice',
+        );
+    }
+
+    /**
+     * The timestamp is the *first six* bytes. Taking a different slice of the
+     * packed integer would still yield a plausible-looking id whose ordering is
+     * meaningless, which is the one property v7 is chosen for.
+     */
+    public function theTimestampOccupiesExactlyTheFirstSixBytes(): void
+    {
+        $this->clock->set(new \DateTimeImmutable('@1000000'));
+        $early = $this->generator->generate();
+
+        $this->clock->set(new \DateTimeImmutable('@2000000'));
+        $late = $this->generator->generate();
+
+        // 1 000 000 s = 1 000 000 000 ms = 0x3B9ACA00, so the 48-bit
+        // big-endian prefix is 00 00 3B 9A CA 00.
+        Assert::same(substr($early, 0, 8), '00003b9a');
+        // 2 000 000 s = 2 000 000 000 ms = 0x77359400.
+        Assert::same(substr($late, 0, 8), '00007735');
+        Assert::true(strcmp($early, $late) < 0);
+    }
 }

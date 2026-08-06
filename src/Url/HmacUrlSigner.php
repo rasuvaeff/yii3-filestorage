@@ -128,8 +128,10 @@ final readonly class HmacUrlSigner implements UrlSignerInterface
      */
     private function base64UrlDecode(string $value): ?string
     {
-        $padded = strtr($value, '-_', '+/') . str_repeat('=', (4 - strlen($value) % 4) % 4);
-        $decoded = base64_decode($padded, strict: true);
+        // No padding is re-added: base64_decode() accepts an unpadded input
+        // even in strict mode, and the canonical-encoding check below is what
+        // actually rejects a non-canonical variant.
+        $decoded = base64_decode(strtr($value, '-_', '+/'), strict: true);
         if ($decoded === false || $decoded === '') {
             return null;
         }

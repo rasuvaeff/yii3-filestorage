@@ -51,6 +51,20 @@ final readonly class FileSystemStore implements
     RangeReadableStoreInterface
 {
     private const string NAME_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\z/';
+    /**
+     * The staging name is derived from the target, not randomised. Two writers
+     * racing for one target would otherwise each stage under their own name and
+     * both rename successfully — the loser's bytes silently discarded while its
+     * `StoreResult` claimed success. A fixed name makes `fopen(…, 'xb')` refuse
+     * the second writer instead, which is the honest outcome.
+     *
+     * The cost, recorded so it is a trade rather than an oversight: a crashed
+     * write leaves a `.part` that blocks any later write to *that same target*
+     * until `filestorage:gc` removes the directory. The built-in generators
+     * never reuse a target, so this only bites a consumer whose own
+     * `PathGeneratorInterface` is deterministic — and there, failing loudly on
+     * a leftover from a crash is the behaviour you want anyway.
+     */
     private const string PARTIAL_SUFFIX = '.part';
     private const int CHUNK = 262_144;
 
@@ -133,7 +147,7 @@ final readonly class FileSystemStore implements
         }
         $this->assertContained($directory);
 
-        $partial = $target . '.' . bin2hex(random_bytes(8)) . self::PARTIAL_SUFFIX;
+        $partial = $target . self::PARTIAL_SUFFIX;
         $written = $this->copy($upload->stream(), $partial, $maxBytes, $object->relativePath);
 
         if (!@rename($partial, $target)) {
@@ -263,7 +277,7 @@ final readonly class FileSystemStore implements
         }
         $this->assertContained($directory);
 
-        $partial = $target . '.' . bin2hex(random_bytes(8)) . self::PARTIAL_SUFFIX;
+        $partial = $target . self::PARTIAL_SUFFIX;
         $written = $this->copy($contents, $partial, $maxBytes, $relativePath);
 
         if (!@rename($partial, $target)) {

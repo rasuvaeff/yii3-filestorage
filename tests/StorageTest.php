@@ -113,11 +113,21 @@ final class StorageTest
         Assert::true(str_ends_with($file->relativePath, '/original.txt'));
     }
 
-    public function addRejectsAnInvalidGroupName(): void
+    /**
+     * The group name is checked before anything is written. `File::create()`
+     * would reject it too, but only *after* the object is on disk — so this
+     * asserts the store was never touched, not merely that it threw.
+     */
+    public function addRejectsAnInvalidGroupNameBeforeWritingAnything(): void
     {
-        Expect::exception(InvalidArgumentException::class)->withMessageContaining('Invalid group name');
-
-        $this->storage()->add($this->upload('x'), groupName: 'not/a/group');
+        try {
+            $this->storage()->add($this->upload('x'), groupName: 'not/a/group');
+            Assert::true(false, 'the group name should have been rejected');
+        } catch (InvalidArgumentException $e) {
+            Assert::true(str_contains($e->getMessage(), 'Invalid group name'));
+            Assert::same($this->store->writeCount(), 0);
+            Assert::same($this->repository->count(), 0);
+        }
     }
 
     public function addRejectsAnUnknownStoreAndNamesTheRegisteredOnes(): void
@@ -175,6 +185,42 @@ final class StorageTest
     }
 
     /**
+     * A row that vanishes between the lookup and the delete — another request
+     * removed it — must not go on to delete the object, or the two callers
+     * together destroy a file the survivor still has a row for.
+     */
+    public function aRowThatDisappearsMidRemoveLeavesTheObjectAlone(): void
+    {
+        $storage = $this->storage();
+        $file = $storage->add($this->upload('x'));
+
+        $racing = new readonly class ($this->repository) implements RepositoryInterface {
+            public function __construct(private MemoryRepository $inner) {}
+
+            #[Override]
+            public function find(string $id): ?File
+            {
+                return $this->inner->find($id);
+            }
+
+            #[Override]
+            public function save(File $file): void
+            {
+                $this->inner->save($file);
+            }
+
+            #[Override]
+            public function delete(string $id): bool
+            {
+                return false;
+            }
+        };
+
+        Assert::false($this->storage(repository: $racing)->remove($file->id));
+        Assert::same($this->store->bytesAt($file->relativePath), 'x', 'the object survives');
+    }
+
+    /**
      * Metadata is removed first on purpose: the recoverable failure is an
      * object nobody references, not a row promising bytes that are gone.
      */
@@ -188,7 +234,10 @@ final class StorageTest
             $storage->remove($file->id);
             Assert::true(false, 'remove() should have reported the failure');
         } catch (RemoveException $e) {
-            Assert::true(str_contains($e->getMessage(), 'orphan'));
+            Assert::true(
+                str_contains($e->getMessage(), 'from store "memory"; it is now an orphan'),
+                'the message spans both halves of its concatenation',
+            );
             Assert::null($this->repository->find($file->id), 'the row is gone');
             Assert::same($this->store->bytesAt($file->relativePath), 'x', 'the object is not');
         }
@@ -302,6 +351,27 @@ final class StorageTest
         $storage = $this->storage(integrityHashMaxBytes: 1_000);
 
         Assert::same($storage->add($this->upload('hello'))->contentHash, hash('sha256', 'hello'));
+    }
+
+    /**
+     * The limit is inclusive: a file exactly at it is still hashed. Otherwise
+     * `integrityHashMaxBytes` would silently mean "one byte less than this".
+     */
+    public function contentHashIsComputedForAFileExactlyAtTheLimit(): void
+    {
+        $storage = $this->storage(integrityHashMaxBytes: 5);
+
+        Assert::same($storage->add($this->upload('12345'))->contentHash, hash('sha256', '12345'));
+    }
+
+    /**
+     * Zero means off, including for an empty upload — where hashing nothing
+     * would otherwise produce the digest of the empty string and look like a
+     * real answer.
+     */
+    public function anEmptyUploadIsNotHashedWhenHashingIsDisabled(): void
+    {
+        Assert::null($this->storage()->add($this->upload(''))->contentHash);
     }
 
     /**

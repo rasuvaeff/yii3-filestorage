@@ -57,7 +57,8 @@ final class SigningKeyRingTest
      */
     public function aShortSecretIsRejectedAndTheMessageSaysHowToGenerateOne(): void
     {
-        Expect::exception(InvalidConfigException::class)->withMessageContaining('random_bytes(32)');
+        Expect::exception(InvalidConfigException::class)
+            ->withMessageContaining('is shorter than 32 bytes. Generate one with: php -r "echo bin2hex(random_bytes(32));"');
 
         new SigningKeyRing('k', ['k' => str_repeat('a', 31)]);
     }
@@ -77,7 +78,8 @@ final class SigningKeyRingTest
     #[DataProvider('invalidKeyIdProvider')]
     public function aKeyIdThatCouldBreakTheEnvelopeIsRejected(string $keyId): void
     {
-        Expect::exception(InvalidConfigException::class)->withMessageContaining('Invalid signing key id');
+        Expect::exception(InvalidConfigException::class)
+            ->withMessageContaining('letters, digits, "_" and "-" only');
 
         new SigningKeyRing($keyId, [$keyId => str_repeat('a', 32)]);
     }

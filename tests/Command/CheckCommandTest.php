@@ -57,6 +57,41 @@ final class CheckCommandTest
         Assert::string($tester->getDisplay())->contains('looks sound');
     }
 
+    /**
+     * Every section has to be printed, and each one has to say which thing it
+     * is describing: a report that silently dropped the repository section
+     * would still exit zero.
+     */
+    public function printsEverySectionOfTheReport(): void
+    {
+        $display = $this->run(
+            store: new FileSystemStore('upload', $this->root, $this->factory),
+            repository: new MemoryRepository(),
+        )->getDisplay();
+
+        foreach (['Stores', 'Metadata repository', 'Groups'] as $section) {
+            Assert::string($display)->contains($section);
+        }
+
+        Assert::string($display)->contains(FileSystemStore::class, 'the store class is named');
+        Assert::string($display)->contains(MemoryRepository::class, 'the repository class is named');
+        Assert::string($display)->contains('Capabilities');
+        Assert::string($display)->contains('Max pixels');
+    }
+
+    /**
+     * The default store is marked as such. With several stores configured, the
+     * one an `add()` without a name lands in is the single most useful fact in
+     * the report.
+     */
+    public function onlyTheDefaultStoreIsMarkedAsDefault(): void
+    {
+        $display = $this->run(store: new FileSystemStore('upload', $this->root, $this->factory))->getDisplay();
+
+        Assert::string($display)->contains('upload (default)');
+        Assert::same(substr_count($display, '(default)'), 1);
+    }
+
     public function listsEachStoreWithTheCapabilitiesItActuallyHas(): void
     {
         $display = $this->run(store: new FileSystemStore('upload', $this->root, $this->factory))->getDisplay();
@@ -111,15 +146,34 @@ final class CheckCommandTest
     {
         $display = $this->run(
             policies: new PolicyRegistry([
-                'avatars' => new UploadPolicy(allowedMimeTypes: ['image/png'], maxBytes: 5_000),
+                'avatars' => new UploadPolicy(
+                    allowedMimeTypes: ['image/png', 'image/webp'],
+                    maxBytes: 5_000,
+                    maxPixels: 250,
+                ),
             ]),
             knownGroups: ['avatars'],
         )->getDisplay();
 
         Assert::string($display)->contains('avatars');
-        Assert::string($display)->contains('image/png');
+        Assert::string($display)->contains('image/png, image/webp', 'every accepted type, not just the first');
         Assert::string($display)->contains('5000 B');
+        Assert::string($display)->contains('250 px');
         Assert::string($display)->contains('signed only');
+    }
+
+    /**
+     * The wildcard is always reported, because it is what every group without
+     * an entry of its own actually gets — and it is the one most likely to be
+     * more permissive than the author remembers.
+     */
+    public function theWildcardGroupIsAlwaysReportedAndListedOnce(): void
+    {
+        $display = $this->run(knownGroups: ['avatars', 'avatars', 'documents'])->getDisplay();
+
+        $groups = $this->groupColumn($display);
+
+        Assert::same($groups, ['*', 'avatars', 'documents'], 'the wildcard first, no duplicates');
     }
 
     public function unlimitedRulesAreSpelledOutRatherThanShownAsZero(): void
@@ -183,6 +237,35 @@ final class CheckCommandTest
 
         Assert::same($tester->getStatusCode(), Command::SUCCESS);
         Assert::string($tester->getDisplay())->contains('direct public URL');
+    }
+
+    /**
+     * The first column of the Groups table, in the order it was printed.
+     *
+     * @return list<string>
+     */
+    private function groupColumn(string $display): array
+    {
+        $groups = [];
+        $inTable = false;
+
+        foreach (explode("\n", $display) as $line) {
+            if (str_contains($line, 'Group ') && str_contains($line, 'Accepts')) {
+                $inTable = true;
+
+                continue;
+            }
+            if (!$inTable || !str_contains($line, 'signed only') && !str_contains($line, 'direct public URL')) {
+                continue;
+            }
+
+            $cells = preg_split('/\s{2,}/', trim($line)) ?: [];
+            if ($cells !== [] && $cells[0] !== '') {
+                $groups[] = $cells[0];
+            }
+        }
+
+        return $groups;
     }
 
     /**
