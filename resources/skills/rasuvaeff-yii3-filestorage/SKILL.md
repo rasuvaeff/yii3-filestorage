@@ -5,8 +5,9 @@ description: >-
   facade, File and Upload value objects, StoreInterface plus its optional
   URL/range/content-addressable/maintenance/derivative capabilities,
   RepositoryInterface, path generators, finfo MIME detection, per-group upload
-  and delivery policies, HMAC signed tokens, and the InMemoryStore and
-  MemoryRepository test doubles. Use when writing, reviewing or debugging file
+  and delivery policies, HMAC signed tokens, the BlobLedgerInterface dedup
+  contracts, and the InMemoryStore, MemoryRepository and MemoryBlobLedger test
+  doubles. Use when writing, reviewing or debugging file
   upload, storage or download code in a project that has this package installed.
 ---
 

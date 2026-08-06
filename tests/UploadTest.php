@@ -120,13 +120,13 @@ final class UploadTest
             }
         };
 
-        $factory = new class (
+        $factory = new readonly class (
             $this->factory,
             $buffer,
         ) implements StreamFactoryInterface {
             public function __construct(
-                private readonly StreamFactoryInterface $delegate,
-                private readonly StreamInterface $shortWrites,
+                private StreamFactoryInterface $delegate,
+                private StreamInterface $shortWrites,
             ) {}
 
             #[\Override]

@@ -198,6 +198,46 @@ There is no `addMany()`. An atomic batch is impossible over a filesystem or an
 object store, and a method with that name would promise one. Loop over `add()`
 and handle partial failure explicitly.
 
+### Deduplication contracts
+
+`Storage` never shares bytes: every `add()` owns one unique object, which is
+why compensation may safely delete what it just wrote. Content-addressed
+sharing is a different lifecycle and lives in `rasuvaeff/yii3-filestorage-db` —
+but the contracts it coordinates are declared here, so a consumer can implement
+or fake them without depending on the database package.
+
+| Type | Role |
+|---|---|
+| `Store\BlobLedgerInterface` | Who owns shared bytes, and for how long. Reserve → publish → commit, with removal only ever *scheduling* a blob |
+| `Store\BlobId` | Physical ownership: one object in one store. Never a content hash, which is identical across stores, groups and tenants |
+| `Store\BlobState` | `writing`, `active`, `pending_delete`, `deleting` — the four states every dedup failure happens between |
+| `Store\BlobToken` | An opaque, ledger-issued handle. One per claim, so a crashed writer releases only its own |
+| `Store\BlobReservation` | A writer's expiring claim while bytes are being published. Several may coexist on one blob |
+| `Store\BlobLease` | Exclusive, expiring permission to delete. At most one per blob; stealable once it runs out, which is how a crashed collector is recovered |
+| `Store\BlobRecord` | A read-only snapshot of a ledger row, for `gc`, `verify` and `stat` |
+| `Exception\BlobBusyException` | Transient: the blob is being deleted, retry after the lease ends |
+| `Exception\LedgerException` | Not transient: the reservation, file or content does not match what the ledger holds |
+
+The rule the whole design turns on: **shared bytes are never deleted inside a
+request.** The last release only marks a blob `pending_delete`; only the
+collector deletes, only under a lease, and only while the reference and
+reservation counts are still zero in the same statement that claims it.
+
+### Tenant scope
+
+Two contracts, both optional, both unbound by default:
+
+| Interface | Bound by | Answers |
+|---|---|---|
+| `Repository\FileScopeProviderInterface` | your application | "which tenant is this request?" — from `rasuvaeff/yii3-tenancy`, a session, a subdomain, or a constant |
+| `Repository\ScopedFileResolverInterface` | `rasuvaeff/yii3-filestorage-db` | "give me this file *in this scope*" |
+
+The second exists because a signed download has no ambient tenant — that is the
+point of signing it — and the tempting fix is to turn the tenant filter off for
+downloads. That fix is a cross-tenant read of every file whose id leaks. Instead
+the scope travels inside the signed token (`SignedPayload::$scopeId`) and is
+matched as a second predicate.
+
 ## Frozen decisions
 
 Two things cannot change after the first release, so they are settled now.
@@ -254,6 +294,7 @@ Test doubles ship in `src/`, not `tests/`, so they are actually installed:
 |---|---|
 | `Test\InMemoryStore` | A store with no disk. Implements the base contract and maintenance only — **not** URLs or ranges, so you can test what your code does when a store cannot presign |
 | `Test\MemoryRepository` | Metadata in an array |
+| `Test\MemoryBlobLedger` | The dedup state machine in an array: revival, reservation expiry, lease stealing, conditional completion. What it cannot reproduce is concurrency — a PHP array has no isolation levels — so proving two writers race correctly still needs the database |
 
 There is deliberately no clock double here: `InMemoryStore` and `Storage` take
 any PSR-20 clock, and a Yii application already has

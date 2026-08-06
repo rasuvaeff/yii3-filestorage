@@ -25,8 +25,11 @@ and `PublicFileSystemStore`; `Repository\RepositoryInterface` and
 `PolicyRegistry`, `DeliveryPolicy`, `DeliveryPolicyRegistry`, `DeliveryOptions`;
 `Url\UrlSignerInterface` / `HmacUrlSigner` / `SigningKeyRing` / `SignedPayload` /
 `ProxyUrlGeneratorInterface`; `Stream\LimitedStream`; `Command\CheckCommand`;
+`Store\BlobLedgerInterface` with `BlobState`, `BlobToken`, `BlobReservation`,
+`BlobLease` and `BlobRecord`; `Repository\FileScopeProviderInterface` and
+`ScopedFileResolverInterface`;
 the `Exception\*` family behind the `FilestorageException` marker; and the
-`Test\InMemoryStore` / `Test\MemoryRepository` doubles.
+`Test\InMemoryStore` / `Test\MemoryRepository` / `Test\MemoryBlobLedger` doubles.
 
 **No clock double ships here.** Everything takes a PSR-20 clock, and a Yii
 application already has `Yiisoft\Test\Support\Clock\StaticClock`. Tests that
@@ -121,6 +124,7 @@ trading away something real:
 | Psalm-narrowing guards | `$keyId === ''` before a pattern that already rejects `''` | Dead at runtime by construction; it exists so psalm can narrow to `non-empty-string` without a suppression |
 | Redundant-but-deliberate rewinds | `FinfoMimeTypeDetector` rewinding after its sniff | `Upload::stream()` rewinds on every call, so the collaborator's own rewind is unobservable — it stays because "leave the stream where you found it" should hold for each collaborator on its own |
 | Equivalent arithmetic | `min($length, $size - $offset)` in `streamRange()` | `LimitedStream` re-clamps the window, so a wrong bound produces identical output |
+| Invariant-redundant ledger guards | the seven survivors in `Test\MemoryBlobLedger` | The double keeps `blobs` and `fileBlobs` consistent and never lets a lease exist outside `deleting`, so `\|\|`↔`&&`, the `default` match arm, `max(0, refs - 1)` and the counter re-check in `completeDeletion()` are all unreachable. They mirror `DbBlobLedger`, where the same conditions *are* races and live in SQL |
 
 If a change makes a group disappear, raise `minMsi`. If a change adds an escaped
 mutant *outside* these groups the gate fails at 89 — that is the point. Do not
@@ -166,6 +170,16 @@ asserting only one half lets the operands be swapped undetected.
 - **Deduplication ownership is a `BlobId`, never a hash count.** A hash is
   content identity; it is identical across stores, groups and tenants, so a
   hash-keyed reference count lets one tenant delete bytes another still uses.
+- **Shared bytes are never deleted inside a request.** `BlobLedgerInterface`
+  removal only *schedules*: the last release marks a blob `pending_delete`, and
+  only a collector holding a lease deletes, only while both counters are still
+  zero in the statement that claims it. `commit()` owns the joint file-row and
+  reference transaction for the same reason — sequencing the two in the caller
+  makes one of them an orphan or a leak whenever the other fails.
+- **A signed download must not turn the tenant filter off.** The scope rides in
+  the token (`SignedPayload::$scopeId`) and `ScopedFileResolverInterface` matches
+  it as a second predicate. Disabling the filter is a cross-tenant read of every
+  file whose id leaks.
 - Code: `declare(strict_types=1)`, `final readonly class`, `#[\Override]`,
   explicit types, named arguments, trailing commas.
 - Every validation regex ends with `\z`, never `$` — `$` also matches before a

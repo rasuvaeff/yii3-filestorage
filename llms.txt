@@ -167,6 +167,56 @@ interface MaintenanceRepositoryInterface extends RepositoryInterface {
 }
 ```
 
+Tenant scope — both optional, both unbound by core:
+
+```php
+interface FileScopeProviderInterface {          // bound by the APPLICATION
+    public function currentScopeId(): ?string;  // from yii3-tenancy, a session, a constant
+}
+
+interface ScopedFileResolverInterface {         // bound by -db
+    public function findInScope(string $id, ?string $scopeId): ?File;
+}
+```
+
+`findInScope()` exists because a signed download has no ambient tenant. Never
+disable the tenant filter for downloads — the scope travels inside the token
+(`SignedPayload::$scopeId`) and is matched as a second predicate.
+
+### Blob ledger (dedup coordination)
+
+Declared in core, implemented transactionally by `-db` (`DbBlobLedger`) and in
+memory by `Test\MemoryBlobLedger`. Base `Storage` never touches it.
+
+```php
+interface BlobLedgerInterface {
+    public function reserve(BlobId $b, string $sha256, int $size, DateTimeImmutable $expiresAt): BlobReservation;
+    public function commit(BlobReservation $r, File $file): void;   // ONE transaction: file row + reference
+    public function release(BlobReservation $r, DateTimeImmutable $deleteAfter): void;
+    public function releaseFile(string $fileId, DateTimeImmutable $deleteAfter): bool;
+    public function find(BlobId $b): ?BlobRecord;
+    public function expireReservations(DateTimeImmutable $now, DateTimeImmutable $deleteAfter): int;
+    public function claimForDeletion(DateTimeImmutable $now, DateTimeImmutable $leaseExpiresAt): ?BlobLease;
+    public function completeDeletion(BlobLease $lease): bool;
+    public function abandonDeletion(BlobLease $lease, DateTimeImmutable $retryAfter): bool;
+}
+```
+
+Protocol: `reserve()` → `putIfAbsent()` → `commit()`; on any failure
+`release()`. Removal is `releaseFile()`, which never does store I/O.
+
+| Type | What |
+|---|---|
+| `BlobState` | `writing`, `active`, `pending_delete`, `deleting`; `isJoinable()` is false only for `deleting` |
+| `BlobToken` | Ledger-issued opaque handle, `random()` gives 32 hex chars |
+| `BlobReservation(BlobId, BlobToken, DateTimeImmutable)` | `isExpired()`; several may coexist per blob |
+| `BlobLease(BlobId, BlobToken, DateTimeImmutable)` | `isExpired()`; at most one per blob, stealable once expired |
+| `BlobRecord` | `blob`, `contentHash`, `size`, `state`, `referenceCount`, `reservationCount`, `deleteAfter`, `leaseExpiresAt`, `isUnreferenced()` |
+
+Rules: shared bytes are **never** deleted inside a request; `reserve()` throws
+`BlobBusyException` for a `deleting` blob (retry) and `LedgerException` when the
+content, reservation or file disagrees with the ledger.
+
 ### Paths
 
 ```php
@@ -246,13 +296,16 @@ read-only PSR-7 window for `206` responses, no buffering.
 All implement `Exception\FilestorageException`:
 `AddException`, `RemoveException`, `StoreException`, `ContentTooLargeException`,
 `UploadTooLargeException`, `UploadFailedException`, `PolicyViolationException`,
-`InvalidConfigException`.
+`InvalidConfigException`, `LedgerException`, `BlobBusyException`.
 
 ### Test doubles (`src/Test/`, installed with the package)
 
 `InMemoryStore(string $name, StreamFactoryInterface $f, ?ClockInterface $clock = null)` —
 plus `bytesAt()`, `paths()`, `writeCount()`, `corrupt()`, `clear()`.
 `MemoryRepository()` — plus `count()`, `all()`, `clear()`.
+`MemoryBlobLedger(RepositoryInterface $repository)` — the full dedup state
+machine in an array, plus `records()`, `clear()`. It does not reproduce
+concurrency: a PHP array has no isolation levels.
 
 No clock double ships here. Everything takes a PSR-20 clock; use
 `Yiisoft\Test\Support\Clock\StaticClock` from `yiisoft/test-support`.
