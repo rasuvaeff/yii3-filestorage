@@ -258,6 +258,15 @@ asserting only one half lets the operands be swapped undetected.
   modifiers. No package-local test can see its siblings.
 - Code: `declare(strict_types=1)`, `final readonly class`, `#[\Override]`,
   explicit types, named arguments, trailing commas.
+- **`yiisoft/files` is pinned to `^2.1` for a reason that is not cosmetic.**
+  2.0.0 calls `restore_error_handler()` *after* `mkdir()` with no `try/finally`,
+  so when its own handler throws — which is exactly what a failed
+  `ensureDirectory()` does — the handler stays installed for the rest of the
+  process. Every later warning anywhere in the application then surfaces as
+  `Failed to create directory "..."`. This package has a test that deliberately
+  fails that call, so on `--prefer-lowest` the leak turned an unrelated
+  `getimagesizefromstring()` warning in `UploadPolicy` into a directory error.
+  2.1.0 wraps the call in `try/finally`.
 - Every validation regex ends with `\z`, never `$` — `$` also matches before a
   trailing newline (`docs/evolved-rules.md` ER-001).
 - Psalm runs at level 1 over `src/` only. Where a docblock already declares
