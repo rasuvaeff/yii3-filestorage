@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Rasuvaeff\Yii3Filestorage\Command\BackfillHashCommand;
 use Rasuvaeff\Yii3Filestorage\Command\CheckCommand;
 use Rasuvaeff\Yii3Filestorage\Command\GcCommand;
+use Rasuvaeff\Yii3Filestorage\Command\ImportCommand;
 use Rasuvaeff\Yii3Filestorage\Command\StatCommand;
 use Rasuvaeff\Yii3Filestorage\Command\VerifyCommand;
 
@@ -34,6 +35,7 @@ return [
             'filestorage:verify' => VerifyCommand::class,
             'filestorage:backfill-hash' => BackfillHashCommand::class,
             'filestorage:stat' => StatCommand::class,
+            'filestorage:import' => ImportCommand::class,
         ],
     ],
 ];

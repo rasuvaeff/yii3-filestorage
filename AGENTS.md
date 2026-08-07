@@ -122,9 +122,10 @@ uses `v2.`; both may be accepted during a bounded migration window.
 
 `minMsi` is **88, not 100, and no mutator is ignored** — the threshold is what
 the suite honestly achieves rather than a number propped up by suppressions. It
-came down from 89 when the four maintenance commands landed, which added the
-last three groups below; the library-side groups are unchanged.
-The survivors fall into eight groups, none of which a test can kill without
+came down from 89 when the four maintenance commands landed, which added three
+of the groups below; `filestorage:import` added the walk-and-manifest group and
+held the number at 88 by carrying its own exact-output assertions.
+The survivors fall into nine groups, none of which a test can kill without
 trading away something real:
 
 | Group | Example | Why no test kills it |
@@ -137,6 +138,7 @@ trading away something real:
 | Invariant-redundant ledger guards | the eight survivors in `Test\MemoryBlobLedger` | The double keeps `blobs` and `fileBlobs` consistent and never lets a lease exist outside `deleting`, so `\|\|`↔`&&`, the `default` match arm, `max(0, refs - 1)` and the counter re-check in `completeDeletion()` are all unreachable. They mirror `DbBlobLedger`, where the same conditions *are* races and live in SQL |
 | Page-size constants | the `500` in every `files($after, 500)`, the `262_144` read size, `iterator_to_array(…, false)`, and the `min`/`max` arithmetic around a remaining budget | Killing them needs fixtures of 500+ rows, and even then most produce identical output — a different page boundary is not a different result. `iterator_to_array`'s preserve-keys flag is unobservable when the result is only iterated |
 | `break` versus `continue` in a cursor-paged walk | the `continue` in every "skip this row" branch of `gc`, `verify` and `backfill-hash` | The cursor is advanced *before* the branch and the outer `while` re-pages from it, so breaking out of the inner loop resumes at the very next row. The two really are equivalent here; the cursor is what makes them so |
+| Filesystem-walk and manifest-append plumbing in `ImportCommand` | `SKIP_DOTS \| UNIX_PATHS` → `&`, `mkdir()`'s mode and its `\|\|`-chain, `fflush()` after `fwrite()`, `trim()` before `json_decode()`, `$done[$path] = true` → `false`, `break`↔`continue` in the walk | Each is unobservable through the command's output. `UNIX_PATHS` only matters on Windows and `SKIP_DOTS` is re-checked by `isFile()`; the `mkdir` chain's three clauses are the standard race-safe form where each fallback reaches the same `null`; `fclose()` flushes, so only a *killed process* can see a missing `fflush` — which is exactly what it is there for; `trim()` and the `"\n"` concatenation protect each other, so removing either leaves the other parsing; `isset()` is true for `false`; and `break`↔`continue` differ only when a skipped entry precedes a kept one, which directory-iteration order does not guarantee on any filesystem |
 | Console option casts and guards | `(bool) $input->getOption('apply')`, and the `isset() && is_string() && !== ''` chain in each `stringOption()` | Symfony already guarantees the type, so only the `!== ''` half is reachable — and that one *is* tested. The rest exists so psalm can narrow without a suppression |
 
 If a change makes a group disappear, raise `minMsi`. If a change adds an escaped
@@ -201,6 +203,19 @@ asserting only one half lets the operands be swapped undetected.
   that fixes it — no single tenant's rows can prove an object unreferenced — so
   the command refuses rather than warning. Blob collection is unaffected: the
   ledger is keyed by physical identity.
+- **`filestorage:import` is re-runnable only because of its manifest, and the
+  manifest is only correct because of what it does *not* record.** `add()` has
+  no natural key — a second run without the manifest writes a second row and a
+  second object per file, and nothing afterwards can tell the copies apart. A
+  file the policy rejected is deliberately left out, so widening the policy and
+  re-running retries exactly those. It is flushed per completed file, not per
+  run, because the run it has to survive is the one that did not finish. The
+  command also skips the manifest itself when it happens to sit inside the tree:
+  the listing is built after the file is opened, so it is otherwise a candidate.
+- **`import` resolves `StorageInterface`, deliberately.** Reaching past the
+  facade to a store and a repository would be shorter and would silently import
+  everything unique in an application that had enabled deduplication — which is
+  the application most likely to be importing a legacy tree.
 - **`check` fails on tenant mode with no scoped resolver, and that is the whole
   tenant-wiring gate.** A bound `FileScopeProviderInterface` with nothing binding
   `ScopedFileResolverInterface` leaves a signed download with no scoped way to

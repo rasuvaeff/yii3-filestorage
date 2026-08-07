@@ -3,9 +3,11 @@
 declare(strict_types=1);
 
 use Psr\Clock\ClockInterface;
+use Psr\Http\Message\StreamFactoryInterface;
 use Rasuvaeff\Yii3Filestorage\Command\BackfillHashCommand;
 use Rasuvaeff\Yii3Filestorage\Command\CheckCommand;
 use Rasuvaeff\Yii3Filestorage\Command\GcCommand;
+use Rasuvaeff\Yii3Filestorage\Command\ImportCommand;
 use Rasuvaeff\Yii3Filestorage\Command\StatCommand;
 use Rasuvaeff\Yii3Filestorage\Command\VerifyCommand;
 use Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
@@ -141,6 +143,15 @@ return [
         StoreRegistry $stores,
         MaintenanceRepositoryInterface $repository,
     ): BackfillHashCommand => new BackfillHashCommand(stores: $stores, repository: $repository),
+
+    // Through StorageInterface, not through a store and a repository: an
+    // application that enabled deduplication did it by overriding this key, and
+    // importing a legacy tree is exactly when sharing pays. Reaching past the
+    // facade would quietly import everything unique.
+    ImportCommand::class => static fn (
+        StorageInterface $storage,
+        StreamFactoryInterface $streams,
+    ): ImportCommand => new ImportCommand(storage: $storage, streams: $streams),
 
     StatCommand::class => static fn (
         MaintenanceRepositoryInterface $repository,

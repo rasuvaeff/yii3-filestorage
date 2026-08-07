@@ -319,6 +319,7 @@ No clock double ships here. Everything takes a PSR-20 clock; use
 | `Command\VerifyCommand` | `filestorage:verify` | Rows whose object is missing. `--deep` re-reads and compares the hash. Non-zero on any finding |
 | `Command\BackfillHashCommand` | `filestorage:backfill-hash` | Fills `contentHash` on rows written before hashing was on |
 | `Command\GcCommand` | `filestorage:gc` | Collects unreferenced blobs; `--orphans` also sweeps objects no row points at |
+| `Command\ImportCommand` | `filestorage:import <dir>` | Walks a tree, `add()`s every file, records completions in a manifest and skips them next time |
 
 Rules:
 
@@ -345,7 +346,15 @@ Rules:
 7. After `-db`'s `filestorage:deduplicate --apply`, the objects the migrated rows
    used to point at are orphans: reclaim with `gc --orphans --apply` — from a
    maintenance entry point with the scope provider unbound if tenancy is on.
-8. **`check` fails on tenant mode with no scoped resolver.** A bound
+8. **`import` needs its manifest to be re-runnable.** `add()` has no natural
+   key, so without the JSON Lines manifest (`--manifest`, default
+   `build/filestorage-import.jsonl`) a second run writes a second row *and* a
+   second object per file. It is flushed per completed file, so a killed run
+   resumes; a policy-rejected file is not recorded, so widening the policy and
+   re-running retries exactly those. Symlinks are not followed, dot-entries are
+   skipped, `metadata['importSource']` holds the source path, one `--group` per
+   run. Resolves `StorageInterface`, so a dedup override applies to imports too.
+9. **`check` fails on tenant mode with no scoped resolver.** A bound
    `FileScopeProviderInterface` with nothing binding `ScopedFileResolverInterface`
    leaves a signed download resolving by id alone. A resolver without a provider
    is the normal single-scope case and passes.

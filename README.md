@@ -345,6 +345,7 @@ re-encode if the files will be served publicly.
 | `filestorage:verify` | Reports rows whose object is missing; `--deep` re-reads each one and compares its hash |
 | `filestorage:backfill-hash` | Fills in `contentHash` on rows written before integrity hashing was on |
 | `filestorage:gc` | Collects unreferenced shared blobs, and with `--orphans` sweeps objects no row points at |
+| `filestorage:import <dir>` | Ingests a directory tree through the ordinary write path, skipping what a manifest says is already in |
 
 `gc`, `backfill-hash` and the `-db` package's `deduplicate` **report by default
 and act only under `--apply`**. A command whose first run deletes is one somebody
@@ -373,6 +374,44 @@ rows, and the objects they used to point at become orphans that
 `gc --orphans --apply` reclaims. Under tenancy that last step moves — `deduplicate`
 runs per tenant under the ambient scope, while the sweep refuses under a bound
 scope provider and runs once with it unbound (see below).
+
+### Importing an existing directory tree
+
+`filestorage:import` walks a directory and puts every file through `add()` — the
+same policy check, MIME detection, store write and metadata row as a live
+upload. It never inserts a row or writes an object directly, which is also why
+an application that enabled deduplication gets deduplicated imports for free:
+the command resolves `StorageInterface`, and that is the key such an application
+overrode.
+
+```bash
+./yii filestorage:import /srv/legacy/invoices                          # a report
+./yii filestorage:import /srv/legacy/invoices --group=documents --apply
+./yii filestorage:import /srv/legacy/avatars  --group=avatars   --apply
+```
+
+| Option | Default | Notes |
+|---|---|---|
+| `--apply` | off | Without it nothing is imported and the manifest is untouched |
+| `--group` | `defaultGroup` | One group for the whole run. Different groups are different runs over different subdirectories |
+| `--store` | the default store | Which physical store to write to |
+| `--limit` | 1000 | Files per run. A tree bigger than one sitting is a sequence of runs |
+| `--manifest` | `build/filestorage-import.jsonl` | Where completed imports are recorded, and read back to skip them |
+
+**The manifest is what makes a second run safe.** `add()` has no natural key, so
+without it a re-run writes a second row *and* a second object for every file.
+The manifest is JSON Lines, one `{"path":…,"id":…}` per completed file, flushed
+as it goes — so a run that was killed halfway leaves what it finished recorded,
+and the next run picks up only what is new. Keep it, or a later run duplicates
+everything.
+
+A file whose policy rejected it is reported, skipped, and **not** recorded — so
+the run after you widen the policy retries exactly those. The command exits
+non-zero when anything failed.
+
+Symbolic links are not followed (a link in a legacy tree can point outside the
+directory you named), entries beginning with a dot are skipped at every depth,
+and the source path is stored in the row's `metadata['importSource']`.
 
 ### Tenancy and the orphan sweep
 

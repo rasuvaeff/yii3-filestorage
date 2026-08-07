@@ -21,6 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a tenant-filtered repository while the object listing it compares against is
   physical, so under tenancy every other tenant's object looked like an orphan
   and `--apply` would have deleted it. Blob collection is unaffected.
+- Added `Command\ImportCommand` → `filestorage:import <dir>`: ingests a
+  directory tree through `StorageInterface::add()` — same policy, MIME
+  detection, store write and metadata row as a live upload, never a direct row
+  insert. Resolving the facade rather than a store and a repository is what lets
+  an application that enabled deduplication get deduplicated imports. Dry-run by
+  default, `--limit` per run, one `--group` per run, `--store` selectable.
+  Re-running is safe because completed imports are appended to a JSON Lines
+  manifest (`--manifest`, default `build/filestorage-import.jsonl`), flushed per
+  file so a killed run resumes; a policy-rejected file is reported and
+  deliberately *not* recorded, so widening the policy and re-running retries
+  exactly those. Symlinks are not followed, dot-entries are skipped at every
+  depth, and the source path lands in `metadata['importSource']`.
 - `filestorage:check` gained a Tenancy section and now **fails** when a
   `FileScopeProviderInterface` is bound with nothing binding
   `ScopedFileResolverInterface`. A signed download resolves only through the

@@ -14,6 +14,7 @@ php examples/store-and-read.php
 | [`policies.php`](policies.php) | Per-group accept rules: an allow-list rejecting a spoofed extension, a byte cap, and a pixel cap catching a decompression bomb | No |
 | [`signed-urls.php`](signed-urls.php) | Minting and verifying a download token, tamper rejection, expiry, and key rotation keeping old URLs alive | No |
 | [`testing-doubles.php`](testing-doubles.php) | Testing an upload flow with `InMemoryStore`, `MemoryRepository` and a PSR-20 `StaticClock` — no disk, no database, no wall clock | No |
+| [`import-a-tree.php`](import-a-tree.php) | `filestorage:import` over a throwaway legacy tree: dry run, the real run with one file the policy rejects, a second run that skips what the manifest holds, and one new file picked up | No |
 
 The scripts use `nyholm/psr7` as the PSR-17 implementation and
 `yiisoft/test-support` for its `StaticClock`, because both are development

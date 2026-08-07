@@ -11,6 +11,7 @@ use Psr\Http\Message\StreamFactoryInterface;
 use Rasuvaeff\Yii3Filestorage\Command\BackfillHashCommand;
 use Rasuvaeff\Yii3Filestorage\Command\CheckCommand;
 use Rasuvaeff\Yii3Filestorage\Command\GcCommand;
+use Rasuvaeff\Yii3Filestorage\Command\ImportCommand;
 use Rasuvaeff\Yii3Filestorage\Command\StatCommand;
 use Rasuvaeff\Yii3Filestorage\Command\VerifyCommand;
 use Rasuvaeff\Yii3Filestorage\Id\IdGeneratorInterface;
@@ -43,6 +44,7 @@ use Testo\Codecov\CoversNothing;
 use Testo\Test;
 use Yiisoft\Di\Container;
 use Yiisoft\Di\ContainerConfig;
+use Yiisoft\Files\FileHelper;
 use Yiisoft\Test\Support\Clock\StaticClock;
 
 /**
@@ -179,6 +181,7 @@ final class ConfigWiringTest
             'filestorage:verify' => VerifyCommand::class,
             'filestorage:backfill-hash' => BackfillHashCommand::class,
             'filestorage:stat' => StatCommand::class,
+            'filestorage:import' => ImportCommand::class,
         ]);
     }
 
@@ -244,6 +247,38 @@ final class ConfigWiringTest
 
         Assert::same($tester->getStatusCode(), Command::FAILURE);
         Assert::string($tester->getDisplay())->contains('Refusing --orphans');
+    }
+
+    /**
+     * `import` resolves from the facade, not from a store and a repository —
+     * which is what makes it inherit whatever the application bound to
+     * `StorageInterface`. An application that enabled deduplication did it by
+     * overriding exactly that key, and importing a legacy tree is when sharing
+     * pays most; wiring past the facade would quietly import everything unique.
+     */
+    public function importResolvesThroughWhateverIsBoundAsTheFacade(): void
+    {
+        $container = $this->container();
+        $source = sys_get_temp_dir() . '/fs-wiring-' . bin2hex(random_bytes(8));
+        mkdir($source . '/tree', 0o775, true);
+        file_put_contents($source . '/tree/a.txt', 'hello');
+
+        $tester = new CommandTester($container->get(ImportCommand::class));
+        $tester->execute([
+            'directory' => $source,
+            '--apply' => true,
+            '--manifest' => $source . '/manifest.jsonl',
+        ]);
+
+        // Landed in the container's own repository, through the container's own
+        // facade — the wiring, not a hand-built command.
+        $files = iterator_to_array($container->get(RepositoryInterface::class)->files(null, 10), false);
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        Assert::same(\count($files), 1);
+        Assert::same($files[0]->metadata['importSource'], 'tree/a.txt');
+
+        FileHelper::removeDirectory($source);
     }
 
     /**

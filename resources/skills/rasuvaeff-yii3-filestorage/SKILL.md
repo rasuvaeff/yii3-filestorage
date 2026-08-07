@@ -6,7 +6,7 @@ description: >-
   URL/range/content-addressable/maintenance/derivative capabilities,
   RepositoryInterface, path generators, finfo MIME detection, per-group upload
   and delivery policies, HMAC signed tokens, the BlobLedgerInterface dedup
-  contracts, the filestorage:check/stat/verify/backfill-hash/gc console
+  contracts, the filestorage:check/stat/verify/backfill-hash/gc/import console
   commands, and the InMemoryStore, MemoryRepository and MemoryBlobLedger test
   doubles. Use when writing, reviewing or debugging file
   upload, storage or download code in a project that has this package installed.
@@ -66,14 +66,20 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
    "Distinct objects" and sharing savings are withheld under a bound provider
    rather than estimated from a partial view.
 
-9. **`gc --apply` is the only thing here that deletes shared bytes.** It takes
+9. **`filestorage:import` is only re-runnable because of its manifest.** `add()`
+   has no natural key, so a second run without the JSON Lines manifest writes a
+   second row *and* a second object per file. Never "simplify" it away, and
+   never record a file the policy rejected — the run that widens the policy has
+   to retry exactly those.
+
+10. **`gc --apply` is the only thing here that deletes shared bytes.** It takes
    an exclusive, expiring lease per blob and removes the ledger row only if the
    blob is still unreferenced in the statement that acts. Never delete a shared
    object anywhere else, and never inside a request.
 
-10. **No suppressions.** No `@psalm-suppress`, no baseline. Fix the root cause.
+11. **No suppressions.** No `@psalm-suppress`, no baseline. Fix the root cause.
 
-11. **Verification is mandatory.** Never claim "done" without a fresh green
+12. **Verification is mandatory.** Never claim "done" without a fresh green
     `composer build`.
 
 ## Gotchas
