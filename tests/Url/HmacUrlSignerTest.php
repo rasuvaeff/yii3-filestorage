@@ -156,14 +156,21 @@ final class HmacUrlSignerTest
      */
     public function anAlternativeEncodingOfTheSamePayloadIsRejected(): void
     {
-        // 'f-12' makes the canonical JSON 46 bytes long: 46 % 3 == 1, so the
-        // last base64 character carries two unused bits.
+        // 'f-12' makes the canonical JSON 47 bytes long, and 47 % 3 == 2 — a
+        // two-byte tail, encoded as three base64 characters, the last of which
+        // carries two unused bits. Those bits are what makes a second encoding
+        // of the same bytes possible.
         $token = $this->signer->sign(new SignedPayload('f-12'), $this->expiry());
         $parts = explode('.', $token);
 
         $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
         $last = $parts[3][strlen($parts[3]) - 1];
-        $variant = $alphabet[strpos($alphabet, $last) + 1];
+        $index = strpos($alphabet, $last);
+        \assert($index !== false);
+        // Wrapped: the last alphabet character would otherwise index past the
+        // end and hand the rest of the test an empty string, which asserts
+        // nothing while looking like it does.
+        $variant = $alphabet[($index + 1) % strlen($alphabet)];
 
         Assert::same(
             base64_decode(strtr(substr($parts[3], 0, -1) . $variant, '-_', '+/') . '==', true),
