@@ -370,7 +370,9 @@ lease — see the deduplication section of `-db`.
 
 Order matters after enabling deduplication: `deduplicate --apply` repoints the
 rows, and the objects they used to point at become orphans that
-`gc --orphans --apply` reclaims.
+`gc --orphans --apply` reclaims. Under tenancy that last step moves — `deduplicate`
+runs per tenant under the ambient scope, while the sweep refuses under a bound
+scope provider and runs once with it unbound (see below).
 
 ### Tenancy and the orphan sweep
 
