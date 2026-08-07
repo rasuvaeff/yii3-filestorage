@@ -3,7 +3,13 @@
 declare(strict_types=1);
 
 use Psr\Clock\ClockInterface;
+use Rasuvaeff\Yii3Filestorage\Command\BackfillHashCommand;
 use Rasuvaeff\Yii3Filestorage\Command\CheckCommand;
+use Rasuvaeff\Yii3Filestorage\Command\GcCommand;
+use Rasuvaeff\Yii3Filestorage\Command\StatCommand;
+use Rasuvaeff\Yii3Filestorage\Command\VerifyCommand;
+use Rasuvaeff\Yii3Filestorage\Repository\MaintenanceRepositoryInterface;
+use Rasuvaeff\Yii3Filestorage\Store\BlobLedgerInterface;
 use Rasuvaeff\Yii3Filestorage\Id\IdGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Id\Uuid7IdGenerator;
 use Rasuvaeff\Yii3Filestorage\Mime\ExtensionMap;
@@ -94,4 +100,36 @@ return [
             static fn (mixed $group): bool => \is_string($group) && $group !== PolicyRegistry::WILDCARD,
         )),
     ),
+
+    // The operations commands need a repository that can be walked. That is a
+    // stronger contract than the hot path's, so an installation whose backend
+    // only implements RepositoryInterface simply has no maintenance commands —
+    // better than a container error the first time cron runs. The ledger is
+    // optional in the same way: without one there are no shared blobs, and
+    // `gc` still sweeps orphans.
+    GcCommand::class => static fn (
+        StoreRegistry $stores,
+        MaintenanceRepositoryInterface $repository,
+        ClockInterface $clock,
+        ?BlobLedgerInterface $ledger = null,
+    ): GcCommand => new GcCommand(
+        stores: $stores,
+        repository: $repository,
+        clock: $clock,
+        ledger: $ledger,
+    ),
+
+    VerifyCommand::class => static fn (
+        StoreRegistry $stores,
+        MaintenanceRepositoryInterface $repository,
+    ): VerifyCommand => new VerifyCommand(stores: $stores, repository: $repository),
+
+    BackfillHashCommand::class => static fn (
+        StoreRegistry $stores,
+        MaintenanceRepositoryInterface $repository,
+    ): BackfillHashCommand => new BackfillHashCommand(stores: $stores, repository: $repository),
+
+    StatCommand::class => static fn (
+        MaintenanceRepositoryInterface $repository,
+    ): StatCommand => new StatCommand(repository: $repository),
 ];

@@ -288,6 +288,22 @@ final class MemoryBlobLedgerTest
         Assert::same($this->ledger->expireReservations($this->at('00:10'), $this->at('01:00')), 1);
     }
 
+    /**
+     * The sweep touches only what lost a claim. A pass that rescheduled every
+     * blob would push each already-scheduled one's grace period forward on
+     * every collection run — and since a run always sweeps first, nothing
+     * would ever become collectable.
+     */
+    public function theSweepDoesNotPostponeAnAlreadyScheduledBlob(): void
+    {
+        $this->ledger->release($this->reserve(), $this->at('01:00'));
+
+        Assert::same($this->ledger->expireReservations($this->at('02:00'), $this->at('03:00')), 0);
+
+        Assert::same($this->ledger->find($this->blob())?->deleteAfter?->format('H:i'), '01:00');
+        Assert::true($this->ledger->claimForDeletion($this->at('02:00'), $this->at('02:05')) !== null);
+    }
+
     public function nothingIsCollectableBeforeItsGracePeriodEnds(): void
     {
         $this->ledger->release($this->reserve(), $this->at('01:00'));

@@ -341,6 +341,36 @@ re-encode if the files will be served publicly.
 | Command | Does |
 |---|---|
 | `filestorage:check` | Reports wiring, per-store capabilities and per-group rules; fails on an unsafe delivery combination |
+| `filestorage:stat` | Counts and sizes by group, plus how much sharing has saved |
+| `filestorage:verify` | Reports rows whose object is missing; `--deep` re-reads each one and compares its hash |
+| `filestorage:backfill-hash` | Fills in `contentHash` on rows written before integrity hashing was on |
+| `filestorage:gc` | Collects unreferenced shared blobs, and with `--orphans` sweeps objects no row points at |
+
+`gc`, `backfill-hash` and the `-db` package's `deduplicate` **report by default
+and act only under `--apply`**. A command whose first run deletes is one somebody
+eventually runs against the wrong database. `verify` has no `--apply` at all:
+what to do about a missing object — restore, re-upload, delete the row — is not
+a decision a command should make for you.
+
+All four page by id and print the last one they reached, so a table too large
+for one run is a sequence of bounded runs:
+
+```bash
+./yii filestorage:verify --limit=10000
+# Last id: 019603f2-…
+./yii filestorage:verify --limit=10000 --after=019603f2-…
+```
+
+`gc`, `verify`, `backfill-hash` and `stat` need a backend implementing
+`MaintenanceRepositoryInterface` (`-db` does). `gc` additionally collects shared
+blobs only when a `BlobLedgerInterface` is bound; without one it still sweeps
+orphans. Under `--apply` it is the **only** thing in this family that deletes
+bytes another request might want, and it does so under an exclusive, expiring
+lease — see the deduplication section of `-db`.
+
+Order matters after enabling deduplication: `deduplicate --apply` repoints the
+rows, and the objects they used to point at become orphans that
+`gc --orphans --apply` reclaims.
 
 ## Examples
 

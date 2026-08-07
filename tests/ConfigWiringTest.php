@@ -8,7 +8,11 @@ use DateTimeImmutable;
 use Nyholm\Psr7\Factory\Psr17Factory;
 use Psr\Clock\ClockInterface;
 use Psr\Http\Message\StreamFactoryInterface;
+use Rasuvaeff\Yii3Filestorage\Command\BackfillHashCommand;
 use Rasuvaeff\Yii3Filestorage\Command\CheckCommand;
+use Rasuvaeff\Yii3Filestorage\Command\GcCommand;
+use Rasuvaeff\Yii3Filestorage\Command\StatCommand;
+use Rasuvaeff\Yii3Filestorage\Command\VerifyCommand;
 use Rasuvaeff\Yii3Filestorage\Id\IdGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Id\Uuid7IdGenerator;
 use Rasuvaeff\Yii3Filestorage\Mime\ExtensionMap;
@@ -18,15 +22,19 @@ use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\PolicyRegistry;
+use Rasuvaeff\Yii3Filestorage\Repository\MaintenanceRepositoryInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\RepositoryInterface;
 use Rasuvaeff\Yii3Filestorage\Storage;
 use Rasuvaeff\Yii3Filestorage\StorageInterface;
+use Rasuvaeff\Yii3Filestorage\Store\BlobLedgerInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
+use Rasuvaeff\Yii3Filestorage\Test\MemoryBlobLedger;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Rasuvaeff\Yii3Filestorage\Url\ProxyUrlGeneratorInterface;
+use Symfony\Component\Console\Tester\CommandTester;
 use Testo\Assert;
 use Testo\Codecov\CoversNothing;
 use Testo\Test;
@@ -160,7 +168,59 @@ final class ConfigWiringTest
             Assert::true(\array_key_exists($key, $own), "params is missing \"{$key}\"");
         }
 
-        Assert::same($params['yiisoft/yii-console']['commands']['filestorage:check'], CheckCommand::class);
+        // A command class the container can build but `params` never names is
+        // a command nobody can run.
+        Assert::same($params['yiisoft/yii-console']['commands'], [
+            'filestorage:check' => CheckCommand::class,
+            'filestorage:gc' => GcCommand::class,
+            'filestorage:verify' => VerifyCommand::class,
+            'filestorage:backfill-hash' => BackfillHashCommand::class,
+            'filestorage:stat' => StatCommand::class,
+        ]);
+    }
+
+    /**
+     * The maintenance commands ask for a repository that can be *walked*, a
+     * stronger contract than the hot path's. An installation whose backend
+     * implements only `RepositoryInterface` therefore has no maintenance
+     * commands — which beats a container error the first time cron runs.
+     */
+    public function theMaintenanceCommandsResolveOnceTheBackendCanBeWalked(): void
+    {
+        $container = $this->maintenanceContainer();
+
+        Assert::instanceOf($container->get(GcCommand::class), GcCommand::class);
+        Assert::instanceOf($container->get(VerifyCommand::class), VerifyCommand::class);
+        Assert::instanceOf($container->get(BackfillHashCommand::class), BackfillHashCommand::class);
+        Assert::instanceOf($container->get(StatCommand::class), StatCommand::class);
+    }
+
+    /**
+     * The nullable-default shape again, and the one that matters most here:
+     * deduplication lives in `-db`, so most installations have no ledger, and
+     * `gc` still has orphans to sweep. A definitions release that passes `null`
+     * over a constructor default would turn "no ledger" into a boot failure.
+     */
+    public function gcResolvesWithNoLedgerBound(): void
+    {
+        $tester = new CommandTester($this->maintenanceContainer()->get(GcCommand::class));
+        $tester->execute([]);
+
+        Assert::string($tester->getDisplay())->contains('No blob ledger is bound');
+    }
+
+    public function gcPicksUpALedgerWhenTheBackendBindsOne(): void
+    {
+        $container = $this->maintenanceContainer([
+            BlobLedgerInterface::class => static fn(
+                MaintenanceRepositoryInterface $repository,
+            ): BlobLedgerInterface => new MemoryBlobLedger($repository),
+        ]);
+
+        $tester = new CommandTester($container->get(GcCommand::class));
+        $tester->execute([]);
+
+        Assert::string($tester->getDisplay())->notContains('No blob ledger is bound');
     }
 
     /**
@@ -191,6 +251,21 @@ final class ConfigWiringTest
         $definitions[RepositoryInterface::class] = MemoryRepository::class;
 
         return new Container(ContainerConfig::create()->withDefinitions($definitions + $extra));
+    }
+
+    /**
+     * A backend that implements both repository contracts, as `-db` does.
+     *
+     * @param array<string, mixed> $extra
+     */
+    private function maintenanceContainer(array $extra = []): Container
+    {
+        return $this->container([
+            MaintenanceRepositoryInterface::class => static fn(
+                RepositoryInterface $repository,
+            ): MaintenanceRepositoryInterface => $repository,
+            ...$extra,
+        ]);
     }
 
     /**

@@ -2,7 +2,11 @@
 
 declare(strict_types=1);
 
+use Rasuvaeff\Yii3Filestorage\Command\BackfillHashCommand;
 use Rasuvaeff\Yii3Filestorage\Command\CheckCommand;
+use Rasuvaeff\Yii3Filestorage\Command\GcCommand;
+use Rasuvaeff\Yii3Filestorage\Command\StatCommand;
+use Rasuvaeff\Yii3Filestorage\Command\VerifyCommand;
 
 return [
     'rasuvaeff/yii3-filestorage' => [
@@ -26,6 +30,10 @@ return [
     'yiisoft/yii-console' => [
         'commands' => [
             'filestorage:check' => CheckCommand::class,
+            'filestorage:gc' => GcCommand::class,
+            'filestorage:verify' => VerifyCommand::class,
+            'filestorage:backfill-hash' => BackfillHashCommand::class,
+            'filestorage:stat' => StatCommand::class,
         ],
     ],
 ];

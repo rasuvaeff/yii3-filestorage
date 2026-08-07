@@ -6,7 +6,8 @@ description: >-
   URL/range/content-addressable/maintenance/derivative capabilities,
   RepositoryInterface, path generators, finfo MIME detection, per-group upload
   and delivery policies, HMAC signed tokens, the BlobLedgerInterface dedup
-  contracts, and the InMemoryStore, MemoryRepository and MemoryBlobLedger test
+  contracts, the filestorage:check/stat/verify/backfill-hash/gc console
+  commands, and the InMemoryStore, MemoryRepository and MemoryBlobLedger test
   doubles. Use when writing, reviewing or debugging file
   upload, storage or download code in a project that has this package installed.
 ---
@@ -47,10 +48,21 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
    must be stopped mid-write and its partial output removed. A check after the
    fact has already spent the disk.
 
-7. **No suppressions.** No `@psalm-suppress`, no baseline. Fix the root cause.
+7. **Maintenance commands report before they act.** `filestorage:gc` and
+   `filestorage:backfill-hash` are dry-run unless given `--apply`, and nothing
+   in `gc` — sweeping expired reservations included — runs under a dry run,
+   because the sweep writes. `filestorage:verify` never has `--apply`: what to
+   do about a missing object is not a decision a command makes for you.
 
-8. **Verification is mandatory.** Never claim "done" without a fresh green
-   `composer build`.
+8. **`gc --apply` is the only thing here that deletes shared bytes.** It takes
+   an exclusive, expiring lease per blob and removes the ledger row only if the
+   blob is still unreferenced in the statement that acts. Never delete a shared
+   object anywhere else, and never inside a request.
+
+9. **No suppressions.** No `@psalm-suppress`, no baseline. Fix the root cause.
+
+10. **Verification is mandatory.** Never claim "done" without a fresh green
+    `composer build`.
 
 ## Gotchas
 
@@ -67,5 +79,11 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
   use `Yiisoft\Test\Support\Clock\StaticClock` rather than adding another.
 - Timestamps serialise as `Y-m-d\TH:i:s.uP`. `DateTimeInterface::ATOM` drops
   microseconds and breaks the `File` round-trip against a PSR-20 clock.
+- The maintenance commands need a backend implementing
+  `MaintenanceRepositoryInterface`. An installation without one simply has no
+  maintenance commands, which is better than a container error under cron.
+- They all page by id and print the last one reached; resume with
+  `--after=<id>`. `gc --orphans` walks every store unless `--store=` narrows it,
+  and `--limit` is a budget for the whole pass, not per store.
 - `add()` is all-or-nothing per file. There is no `addMany()`, because an atomic
   batch is impossible over a filesystem or an object store.

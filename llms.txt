@@ -312,8 +312,29 @@ No clock double ships here. Everything takes a PSR-20 clock; use
 
 ### Console
 
-`Command\CheckCommand` → `filestorage:check`. Reports wiring, per-store
-capabilities and per-group rules; exits non-zero on an unsafe delivery combination.
+| Class | Command | Does |
+|---|---|---|
+| `Command\CheckCommand` | `filestorage:check` | Wiring, per-store capabilities, per-group rules. Non-zero on an unsafe delivery combination |
+| `Command\StatCommand` | `filestorage:stat` | Counts and sizes by group, plus what sharing saved |
+| `Command\VerifyCommand` | `filestorage:verify` | Rows whose object is missing. `--deep` re-reads and compares the hash. Non-zero on any finding |
+| `Command\BackfillHashCommand` | `filestorage:backfill-hash` | Fills `contentHash` on rows written before hashing was on |
+| `Command\GcCommand` | `filestorage:gc` | Collects unreferenced blobs; `--orphans` also sweeps objects no row points at |
+
+Rules:
+
+1. `gc` and `backfill-hash` **report by default; `--apply` acts.** `verify` has
+   no `--apply` — what to do about a missing object is not its decision.
+2. All four page by id, take `--after` / `--limit`, and print the last id they
+   reached. Resume with `--after=<that id>`.
+3. They need `MaintenanceRepositoryInterface` (from `-db`). Without it the
+   container simply has no maintenance commands, which beats a runtime error.
+4. `gc` collects shared blobs only when a `BlobLedgerInterface` is bound; without
+   one it still sweeps orphans. It is the only thing here that deletes bytes
+   another request might want, and does so under an expiring lease.
+5. `gc --orphans` walks every configured store unless `--store=<name>` limits it,
+   and `--limit` is a budget for the whole pass, not per store.
+6. After `-db`'s `filestorage:deduplicate --apply`, the objects the migrated rows
+   used to point at are orphans: reclaim with `gc --orphans --apply`.
 
 ## Configuration
 
@@ -332,6 +353,6 @@ capabilities and per-group rules; exits non-zero on an unsafe delivery combinati
 
 Core `config/di.php` binds `StorageInterface`, `StoreRegistry`,
 `PathGeneratorInterface`, `MimeTypeDetectorInterface`, `IdGeneratorInterface`,
-`ExtensionMap`, both policy registries and `CheckCommand`. It binds neither
+`ExtensionMap`, both policy registries and all five commands. It binds neither
 `StoreInterface` nor `RepositoryInterface` — one vendor package owns each key,
 and two binding the same one is a `yiisoft/config` `Duplicate key` error by design.

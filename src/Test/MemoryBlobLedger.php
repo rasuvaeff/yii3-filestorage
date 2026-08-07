@@ -177,13 +177,20 @@ final class MemoryBlobLedger implements BlobLedgerInterface
     {
         $removed = 0;
         foreach ($this->blobs as $key => $row) {
+            $expired = 0;
             foreach ($row['reservations'] as $token => $expiresAt) {
                 if ($expiresAt <= $now) {
                     unset($row['reservations'][$token]);
-                    $removed++;
+                    $expired++;
                 }
             }
-            $this->blobs[$key] = $this->schedule($row, $deleteAfter);
+
+            // Only blobs that actually lost a claim are rescheduled, mirroring
+            // the SQL: an unconditional pass would push every already-scheduled
+            // blob's grace period forward on every collection run, so nothing
+            // would ever become collectable.
+            $removed += $expired;
+            $this->blobs[$key] = $expired === 0 ? $row : $this->schedule($row, $deleteAfter);
         }
 
         return $removed;
