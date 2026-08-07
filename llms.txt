@@ -315,7 +315,7 @@ No clock double ships here. Everything takes a PSR-20 clock; use
 | Class | Command | Does |
 |---|---|---|
 | `Command\CheckCommand` | `filestorage:check` | Wiring, per-store capabilities, per-group rules. Non-zero on an unsafe delivery combination |
-| `Command\StatCommand` | `filestorage:stat` | Counts and sizes by group, plus what sharing saved |
+| `Command\StatCommand` | `filestorage:stat` | Counts and sizes by group, plus what sharing saved. Physical figures withheld under tenancy |
 | `Command\VerifyCommand` | `filestorage:verify` | Rows whose object is missing. `--deep` re-reads and compares the hash. Non-zero on any finding |
 | `Command\BackfillHashCommand` | `filestorage:backfill-hash` | Fills `contentHash` on rows written before hashing was on |
 | `Command\GcCommand` | `filestorage:gc` | Collects unreferenced blobs; `--orphans` also sweeps objects no row points at |
@@ -336,8 +336,12 @@ Rules:
 6. **`gc --orphans` refuses when a `FileScopeProviderInterface` is bound.** The
    referenced-set is tenant-filtered, the object listing is physical — the
    difference is other tenants' live files. Run the sweep with the provider
-   unbound. Blob collection is unaffected. `stat` reads scoped too, so its
-   figures describe the current tenant only.
+   unbound. Blob collection is unaffected. `stat` reads scoped too and splits
+   the same way: logical counts and byte totals are still printed under a
+   `Group (current scope)` header, while "Distinct objects" and the sharing
+   savings are withheld — a tenant-filtered walk cannot see rows in other scopes
+   pointing at the same objects, so it would over-count objects and under-count
+   sharing. Run `stat` with the provider unbound for those.
 7. After `-db`'s `filestorage:deduplicate --apply`, the objects the migrated rows
    used to point at are orphans: reclaim with `gc --orphans --apply`.
 

@@ -194,8 +194,17 @@ asserting only one half lets the operands be swapped undetected.
   tenant's live files, and `--apply` would delete them. There is no scope value
   that fixes it — no single tenant's rows can prove an object unreferenced — so
   the command refuses rather than warning. Blob collection is unaffected: the
-  ledger is keyed by physical identity. `stat` has the same scoped-read
-  asymmetry but only misreports, so it is documented rather than refused.
+  ledger is keyed by physical identity.
+- **`stat` splits its report along that same line.** Counts and byte totals are
+  logical — one tenant's rows correctly answer "how much does this tenant have"
+  — so they are printed under a `Group (current scope)` header. "Distinct
+  objects" and the sharing savings are physical claims about how many objects
+  exist and how many rows point at each, and a scoped walk cannot see the rows
+  in other scopes pointing at the same ones: it over-counts objects and
+  under-counts sharing. Both are withheld under a bound provider rather than
+  estimated. `gc --orphans` refuses because there the physical half decides what
+  gets *deleted*; here it only decides what gets printed, so the command runs
+  and drops the two numbers it cannot stand behind.
 - **Two packages contributing `params['yiisoft/yii-console']['commands']` is
   only safe because the runner merges `params` recursively.** Core names five
   commands there and `-db` names `filestorage:deduplicate`; without recursion
@@ -203,8 +212,14 @@ asserting only one half lets the operands be swapped undetected.
   application gets the recursion — `ApplicationRunner` constructs `Config` with
   `RecursiveMerge::groups(...$paramsGroups, ...)` — so this holds in practice,
   but a harness that builds `Config` by hand must pass the same modifier or it
-  will report a `Duplicate key` that no application would ever see. Verified
-  against real `yiisoft/config` with a fake vendor layout, 2026-08-07.
+  will report a `Duplicate key` that no application would ever see. `-web` and
+  `-flysystem` deliberately declare no such key at all: the tolerance is for two
+  packages that have commands, not a budget to spend on empty arrays.
+  Run `bin/config-merge-harness @filestorage --with=yiisoft/cache:^3.2
+  --with=yiisoft/db-sqlite:^2.0` from the monorepo root after any `config/`
+  change — it installs the whole family into a throwaway application, lets the
+  config plugin write a real merge plan, and merges with the runner's
+  modifiers. No package-local test can see its siblings.
 - Code: `declare(strict_types=1)`, `final readonly class`, `#[\Override]`,
   explicit types, named arguments, trailing commas.
 - Every validation regex ends with `\z`, never `$` — `$` also matches before a

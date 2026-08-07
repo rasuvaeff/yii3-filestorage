@@ -139,5 +139,6 @@ return [
 
     StatCommand::class => static fn (
         MaintenanceRepositoryInterface $repository,
-    ): StatCommand => new StatCommand(repository: $repository),
+        ?FileScopeProviderInterface $scopes = null,
+    ): StatCommand => new StatCommand(repository: $repository, scopes: $scopes),
 ];

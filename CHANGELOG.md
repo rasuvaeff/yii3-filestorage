@@ -21,6 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a tenant-filtered repository while the object listing it compares against is
   physical, so under tenancy every other tenant's object looked like an orphan
   and `--apply` would have deleted it. Blob collection is unaffected.
+- `filestorage:stat` now takes the optional `FileScopeProviderInterface` too,
+  and withholds its two physical figures — "Distinct objects" and the sharing
+  savings — when one is bound. Those describe how many objects exist and how
+  many rows point at each, and a tenant-filtered walk cannot see the rows in
+  other scopes pointing at the same objects: it reported more distinct objects
+  than exist and less sharing than there is. The logical counts and byte totals
+  are correct per scope and are still printed, under a `Group (current scope)`
+  header. `gc --orphans` refuses over the same asymmetry because there it
+  decides what gets deleted.
 - Fixed `Test\MemoryBlobLedger::expireReservations()` rescheduling every blob
   rather than only those that lost a reservation, which pushed each already
   scheduled blob's grace period forward on every collection pass — so nothing

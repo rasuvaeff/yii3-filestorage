@@ -1033,6 +1033,80 @@ final class OperationsCommandsTest
     }
 
     /**
+     * The reporting half of the asymmetry `gc --orphans` refuses on. Distinct
+     * objects and sharing savings describe physical objects, and a
+     * tenant-filtered walk cannot see the rows in other scopes pointing at the
+     * same ones — so it would over-count objects and under-count sharing. The
+     * command withholds both rather than printing a number it cannot stand
+     * behind.
+     */
+    public function statWithholdsThePhysicalNumbersUnderTenancy(): void
+    {
+        $shared = $this->storeFile('a');
+        $this->reuse('b', $shared);
+
+        $display = $this->run(new StatCommand($this->repository, new FixedScope('tenant-a')))->getDisplay();
+
+        // With the colon: the note explaining the omission names the figure too.
+        Assert::string($display)->notContains('Distinct objects:');
+        Assert::string($display)->notContains('reuse an existing object');
+        Assert::string($display)->notContains('No rows share an object');
+
+        // A span *across* the concatenation, not one half of it: asserting a
+        // single fragment lets the operands be reordered or dropped undetected,
+        // and this note is the only place the reader is told where to get the
+        // withheld figures. Whitespace and the note gutter are squeezed out
+        // because SymfonyStyle wraps the block.
+        Assert::string((string) preg_replace('/[\s!]+/u', ' ', $display))
+            ->contains('less sharing than there is. For the physical figures, run this');
+    }
+
+    /**
+     * Withholding the physical half does not withhold the logical one: counts
+     * and byte totals over a tenant's own rows are exactly what that tenant
+     * asked for, and the header says whose they are.
+     */
+    public function statStillReportsScopedTotals(): void
+    {
+        $this->row('a', 'avatars', 100);
+        $this->row('b', 'documents', 200);
+
+        $display = $this->normalise(
+            $this->run(new StatCommand($this->repository, new FixedScope('tenant-a')))->getDisplay(),
+        );
+
+        Assert::string($display)->contains('Group (current scope)');
+        Assert::string($display)->contains('avatars 1 100 B');
+        Assert::string($display)->contains('total 2 300 B');
+    }
+
+    /**
+     * An empty scoped report says which emptiness it means. "No files stored"
+     * about one tenant's rows reads as "the installation is empty".
+     */
+    public function statSaysWhoseEmptinessItIsUnderTenancy(): void
+    {
+        $display = $this->run(new StatCommand($this->repository, new FixedScope('tenant-a')))->getDisplay();
+
+        Assert::string($display)->contains('No files stored in the current scope');
+    }
+
+    /**
+     * Without a scope provider the physical half is printed, unlabelled — the
+     * pair to the test above, so a mutant that drops the branch entirely fails
+     * one of them.
+     */
+    public function statReportsThePhysicalNumbersWithoutAScopeProvider(): void
+    {
+        $this->row('a', 'avatars', 100);
+
+        $display = $this->run(new StatCommand($this->repository))->getDisplay();
+
+        Assert::string($display)->contains('Distinct objects: 1');
+        Assert::string($display)->notContains('current scope only');
+    }
+
+    /**
      * Squeezes the box-drawing padding out of a rendered table so a row can be
      * asserted as one string.
      */

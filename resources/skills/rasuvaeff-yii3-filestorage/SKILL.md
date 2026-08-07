@@ -59,7 +59,10 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
    referenced-set comes from a tenant-filtered repository while the object
    listing is physical, so the difference is other tenants' live files. There is
    no tenant to run it "as". Run the sweep with `FileScopeProviderInterface`
-   unbound.
+   unbound. `filestorage:stat` splits on the same line one step milder: its
+   logical counts stay (labelled `Group (current scope)`), its physical
+   "Distinct objects" and sharing savings are withheld under a bound provider
+   rather than estimated from a partial view.
 
 9. **`gc --apply` is the only thing here that deletes shared bytes.** It takes
    an exclusive, expiring lease per blob and removes the ledger row only if the

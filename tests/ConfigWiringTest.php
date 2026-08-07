@@ -247,6 +247,25 @@ final class ConfigWiringTest
     }
 
     /**
+     * `stat` gets the same optional dependency, for the reporting half of the
+     * same asymmetry: with a scope provider bound it withholds the two physical
+     * figures a tenant-filtered walk cannot produce. Wiring that drops it prints
+     * an object count and a savings number computed from one tenant's rows.
+     */
+    public function statSeesTheScopeProviderWhenTheApplicationBindsOne(): void
+    {
+        $container = $this->maintenanceContainer([
+            FileScopeProviderInterface::class => static fn(): FileScopeProviderInterface
+                => new FixedScope('tenant-a'),
+        ]);
+
+        $tester = new CommandTester($container->get(StatCommand::class));
+        $tester->execute([]);
+
+        Assert::string($tester->getDisplay())->contains('current scope only');
+    }
+
+    /**
      * The shipped defaults have to be the safe ones: a permissive delivery
      * default would make every fresh installation hand out permanent public
      * URLs.

@@ -341,7 +341,7 @@ re-encode if the files will be served publicly.
 | Command | Does |
 |---|---|
 | `filestorage:check` | Reports wiring, per-store capabilities and per-group rules; fails on an unsafe delivery combination |
-| `filestorage:stat` | Counts and sizes by group, plus how much sharing has saved |
+| `filestorage:stat` | Counts and sizes by group, plus how much sharing has saved (physical figures withheld under tenancy) |
 | `filestorage:verify` | Reports rows whose object is missing; `--deep` re-reads each one and compares its hash |
 | `filestorage:backfill-hash` | Fills in `contentHash` on rows written before integrity hashing was on |
 | `filestorage:gc` | Collects unreferenced shared blobs, and with `--orphans` sweeps objects no row points at |
@@ -387,10 +387,16 @@ unbound, where the repository sees every row. Blob collection is unaffected:
 the ledger is keyed by physical identity, not by tenant, so plain `gc --apply`
 works in either kind of installation.
 
-`filestorage:stat` reads through the same scoped repository, so under a bound
-scope provider its figures — including "Distinct objects" and the sharing
-savings — describe the current tenant only. That is a narrower report, not a
-wrong one, but it is not the installation total.
+`filestorage:stat` reads through the same scoped repository and splits along the
+same line, one step milder. Counts and byte totals are *logical* — they describe
+rows, and one tenant's rows are a correct answer to "how much does this tenant
+have", so they are still printed, under a `Group (current scope)` header.
+"Distinct objects" and the sharing savings are *physical*: they claim to know how
+many objects exist and how many rows point at each, and a tenant-filtered walk
+cannot see the rows in other scopes pointing at the same ones. It would report
+more distinct objects than exist and less sharing than there is, so under a bound
+scope provider **both are withheld** rather than estimated. Run `stat` with the
+provider unbound for the physical figures.
 
 ## Examples
 
