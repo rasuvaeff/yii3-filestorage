@@ -49,6 +49,12 @@ final readonly class ShortWritingStream implements StreamInterface
         $this->inner->close();
     }
 
+    /**
+     * PSR-7 declares no return type here and PHP has no `resource` type, so
+     * the contract can only be stated in a docblock.
+     *
+     * @return resource|null
+     */
     #[Override]
     public function detach()
     {
@@ -115,6 +121,9 @@ final readonly class ShortWritingStream implements StreamInterface
         return $this->inner->getContents();
     }
 
+    /**
+     * @return ($key is null ? array<string, mixed> : mixed)
+     */
     #[Override]
     public function getMetadata(?string $key = null)
     {

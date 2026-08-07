@@ -63,7 +63,7 @@ final readonly class DeliveryPolicyRegistry
                 throw new InvalidArgumentException("Delivery policy for group \"{$group}\" must be an array");
             }
 
-            foreach ($policy as $option => $_value) {
+            foreach (array_keys($policy) as $option) {
                 if (!\is_string($option) || !\in_array($option, self::OPTIONS, true)) {
                     throw new InvalidArgumentException(sprintf(
                         'Unknown delivery policy option "%s" for group "%s". Known options: %s',

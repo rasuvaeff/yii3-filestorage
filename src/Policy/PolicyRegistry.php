@@ -89,7 +89,7 @@ final readonly class PolicyRegistry
      */
     private static function policyFromArray(string $group, array $policy): UploadPolicy
     {
-        foreach ($policy as $option => $_value) {
+        foreach (array_keys($policy) as $option) {
             if (!\is_string($option) || !\in_array($option, self::OPTIONS, true)) {
                 throw new InvalidArgumentException(sprintf(
                     'Unknown upload policy option "%s" for group "%s". Known options: %s',
