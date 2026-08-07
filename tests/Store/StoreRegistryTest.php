@@ -107,7 +107,11 @@ final class StoreRegistryTest
      */
     public function anEmptyRegistryNamesTheMissingBinding(): void
     {
-        Expect::exception(InvalidConfigException::class)->withMessageContaining('No store is registered');
+        // Across the concatenation: the first half says something is wrong,
+        // the second says what to bind. Asserting only the first lets the
+        // actionable half be deleted undetected.
+        Expect::exception(InvalidConfigException::class)
+            ->withMessageContaining('No store is registered. Bind a StoreInterface');
 
         new StoreRegistry([]);
     }
