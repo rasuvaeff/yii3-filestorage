@@ -29,7 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default, `--limit` per run, one `--group` per run, `--store` selectable.
   Re-running is safe because completed imports are appended to a JSON Lines
   manifest (`--manifest`, default `build/filestorage-import.jsonl`), flushed per
-  file so a killed run resumes; a policy-rejected file is reported and
+  file so a killed run resumes. Entries match on the absolute source path, so
+  one manifest covers several roots — importing `/srv/legacy/invoices` and then
+  `/srv/legacy/avatars` is the documented shape, and a `notes.txt` in each must
+  not make the second run skip a file it never imported; a policy-rejected file is reported and
   deliberately *not* recorded, so widening the policy and re-running retries
   exactly those. Symlinks are not followed, dot-entries are skipped at every
   depth, and the source path lands in `metadata['importSource']`.

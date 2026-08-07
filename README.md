@@ -395,15 +395,18 @@ overrode.
 | `--apply` | off | Without it nothing is imported and the manifest is untouched |
 | `--group` | `defaultGroup` | One group for the whole run. Different groups are different runs over different subdirectories |
 | `--store` | the default store | Which physical store to write to |
-| `--limit` | 1000 | Files per run. A tree bigger than one sitting is a sequence of runs |
+| `--limit` | 1000 | Files per run. It bounds the work, not the memory — the listing is built and sorted up front, so it is proportional to the whole tree |
 | `--manifest` | `build/filestorage-import.jsonl` | Where completed imports are recorded, and read back to skip them |
 
 **The manifest is what makes a second run safe.** `add()` has no natural key, so
 without it a re-run writes a second row *and* a second object for every file.
-The manifest is JSON Lines, one `{"path":…,"id":…}` per completed file, flushed
-as it goes — so a run that was killed halfway leaves what it finished recorded,
-and the next run picks up only what is new. Keep it, or a later run duplicates
-everything.
+The manifest is JSON Lines, one `{"source":…,"path":…,"id":…}` per completed
+file, flushed as it goes — so a run that was killed halfway leaves what it
+finished recorded, and the next run picks up only what is new. Keep it, or a
+later run duplicates everything. Entries are matched on `source`, the absolute
+path, so **one manifest covers several roots**: the two commands above share the
+default and neither skips the other's files, even when both trees hold a
+`notes.txt`.
 
 A file whose policy rejected it is reported, skipped, and **not** recorded — so
 the run after you widen the policy retries exactly those. The command exits

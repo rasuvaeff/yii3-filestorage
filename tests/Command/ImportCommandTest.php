@@ -291,6 +291,38 @@ final class ImportCommandTest
         Assert::string($tester->getDisplay())->notContains('+ import.jsonl');
     }
 
+    /**
+     * One manifest, two roots — the shape the README documents, because a group
+     * is chosen per run. Both trees hold a `notes.txt`; matching on the path
+     * relative to *each* root made the second run skip a file it had never
+     * imported and report it as a skip, which reads as success.
+     */
+    public function twoRootsSharingOneManifestDoNotSkipEachOthersFiles(): void
+    {
+        $this->file('invoices/notes.txt', 'invoice notes');
+        $this->file('avatars/notes.txt', 'avatar notes');
+
+        $this->run(['directory' => $this->source . '/invoices', '--apply' => true]);
+        $second = $this->run(['directory' => $this->source . '/avatars', '--apply' => true]);
+
+        Assert::same($this->repository->count(), 2);
+        Assert::string($this->normalise($second->getDisplay()))->notContains('skipped');
+    }
+
+    /**
+     * And the other direction: the same file under the same root is still one
+     * file, whichever run reached it.
+     */
+    public function oneRootAcrossTwoRunsStillSkipsWhatItImported(): void
+    {
+        $this->file('invoices/notes.txt', 'invoice notes');
+
+        $this->run(['directory' => $this->source . '/invoices', '--apply' => true]);
+        $this->run(['directory' => $this->source . '/invoices', '--apply' => true]);
+
+        Assert::same($this->repository->count(), 1);
+    }
+
     public function anEmptyDirectoryReportsNothingToImport(): void
     {
         $tester = $this->run(['--apply' => true]);
@@ -577,7 +609,7 @@ final class ImportCommandTest
         mkdir(\dirname($this->manifest), 0o775, true);
         file_put_contents(
             $this->manifest,
-            "123\n" . json_encode(['id' => 'x']) . "\n" . json_encode(['path' => ['a.txt']]) . "\n",
+            "123\n" . json_encode(['id' => 'x']) . "\n" . json_encode(['source' => ['a.txt']]) . "\n",
         );
 
         $this->run(['--apply' => true]);

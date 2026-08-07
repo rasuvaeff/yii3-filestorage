@@ -33,15 +33,22 @@ use Symfony\Component\Console\Style\SymfonyStyle;
  * `StorageInterface` — importing a legacy tree is when sharing pays best.
  *
  * **Re-running is safe because of the manifest, not because of the cursor.** A
- * completed import is appended to a JSON Lines file, one `{path, id}` per line,
- * flushed as it goes; a later run skips what is already there. A cursor could
- * not do this: a tree is not a table, one unreadable file in the middle is not
- * a reason to stop, and "resume after X" says nothing about the files before X
- * that failed. The manifest is also why a dry run writes nothing at all — a
- * dry run that recorded imports would make the `--apply` after it a no-op.
+ * completed import is appended to a JSON Lines file, one `{source, path, id}`
+ * per line, flushed as it goes; a later run skips what is already there. A
+ * cursor could not do this: a tree is not a table, one unreadable file in the
+ * middle is not a reason to stop, and "resume after X" says nothing about the
+ * files before X that failed. The manifest is also why a dry run writes nothing
+ * at all — a dry run that recorded imports would make the `--apply` after it a
+ * no-op.
  *
- * Bounded by `--limit` per run, so a tree larger than one sitting is a sequence
- * of runs rather than one that has to survive everything.
+ * Entries are matched on `source`, the absolute path, because one manifest is
+ * meant to cover several roots: importing `/srv/legacy/invoices` and then
+ * `/srv/legacy/avatars` is the documented shape, and both trees holding a
+ * `notes.txt` must not make the second run skip a file it never imported.
+ *
+ * `--limit` bounds the *work* per run, not the memory: the listing is built and
+ * sorted up front, so it is proportional to the whole tree. Sorting is what
+ * makes two runs comparable, and it cannot be done lazily.
  *
  * @api
  */
@@ -137,7 +144,12 @@ final class ImportCommand extends Command
         $seen = 0;
 
         foreach ($this->files($root, $manifestPath) as $relative => $absolute) {
-            if (isset($done[$relative])) {
+            // Keyed by the absolute path, not the relative one. One manifest
+            // legitimately covers several roots — the README's own recipe is a
+            // run per subdirectory — and two trees holding a `notes.txt` each
+            // would otherwise make the second run skip a file it never
+            // imported, and report that as a skip.
+            if (isset($done[$absolute])) {
                 $skipped++;
 
                 continue;
@@ -163,7 +175,7 @@ final class ImportCommand extends Command
 
             $imported++;
             $io->text(sprintf('  + %s → %s', $relative, $id));
-            $this->record($handle, $relative, $id);
+            $this->record($handle, $absolute, $relative, $id);
         }
 
         if ($handle !== null) {
@@ -344,8 +356,8 @@ final class ImportCommand extends Command
             // A truncated final line is what a crash mid-append leaves. Skipping
             // it re-imports one file, which is the right way round: the
             // alternative is refusing to read a manifest that is 99% good.
-            if (\is_array($entry) && isset($entry['path']) && \is_string($entry['path'])) {
-                $done[$entry['path']] = true;
+            if (\is_array($entry) && isset($entry['source']) && \is_string($entry['source'])) {
+                $done[$entry['source']] = true;
             }
         }
         fclose($handle);
@@ -369,16 +381,19 @@ final class ImportCommand extends Command
     }
 
     /**
+     * `source` is the identity the next run matches on; `path` is there so the
+     * file reads without reconstructing which root each entry belonged to.
+     *
      * @param resource|null $handle
      */
-    private function record($handle, string $relative, string $id): void
+    private function record($handle, string $absolute, string $relative, string $id): void
     {
         if ($handle === null) {
             return;
         }
 
         $line = json_encode(
-            ['path' => $relative, 'id' => $id],
+            ['source' => $absolute, 'path' => $relative, 'id' => $id],
             JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
         );
 

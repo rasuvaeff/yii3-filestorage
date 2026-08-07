@@ -212,6 +212,12 @@ asserting only one half lets the operands be swapped undetected.
   run, because the run it has to survive is the one that did not finish. The
   command also skips the manifest itself when it happens to sit inside the tree:
   the listing is built after the file is opened, so it is otherwise a candidate.
+  **Entries are matched on the absolute source path, never the path relative to
+  the run's root.** One manifest is meant to cover several roots — a group is
+  chosen per run, so the documented recipe is a run per subdirectory — and a
+  relative key makes the second run skip a `notes.txt` it never imported and
+  report that as a skip, which reads as success. `--limit` bounds the work, not
+  the memory: the listing is materialised and sorted up front.
 - **`import` resolves `StorageInterface`, deliberately.** Reaching past the
   facade to a store and a repository would be shorter and would silently import
   everything unique in an application that had enabled deduplication — which is
