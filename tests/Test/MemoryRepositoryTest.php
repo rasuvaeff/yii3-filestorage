@@ -136,4 +136,29 @@ final class MemoryRepositoryTest
             createdAt: new DateTimeImmutable('2026-08-06T12:00:00.000000+00:00'),
         );
     }
+
+    /**
+     * PHP turns a numeric-looking array key into an int, so a repository
+     * holding ids like "42" would hand strcmp() an integer and page in numeric
+     * order — not the order the cursor was issued in. The database backend
+     * keeps ids as strings; the double has to behave the same or it hides
+     * paging bugs instead of surfacing them.
+     */
+    public function numericIdsStayStringsWhenPaging(): void
+    {
+        foreach (['10', '9', '100'] as $id) {
+            $this->repository->save($this->file($id));
+        }
+
+        $ids = array_map(
+            static fn(File $file): string => $file->id,
+            iterator_to_array($this->repository->files(null, 10), false),
+        );
+
+        Assert::same($ids, ['10', '100', '9'], 'string order, not numeric');
+
+        $after = iterator_to_array($this->repository->files('10', 10), false);
+
+        Assert::same(array_map(static fn(File $f): string => $f->id, $after), ['100', '9']);
+    }
 }

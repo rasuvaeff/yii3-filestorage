@@ -395,14 +395,23 @@ final readonly class FileSystemStore implements
             throw $e;
         }
 
-        fclose($handle);
+        // The final flush happens here, so a full disk surfaces at fclose()
+        // and nowhere earlier. Ignoring it would rename a truncated .part into
+        // place and call it published.
+        if (!fclose($handle)) {
+            @unlink($partial);
+
+            throw new StoreException(
+                "Could not flush \"{$relativePath}\" to store \"{$this->name}\"; the partial file was removed",
+            );
+        }
 
         return $written;
     }
 
     /**
-     * Stable, resumable, depth-first walk. `scandir()` sorts each level, so the
-     * sequence is ordered and a cursor can skip forward through it.
+     * Stable, resumable, depth-first walk, ordered so that a `strcmp()` cursor
+     * over full relative paths can skip forward through it safely.
      *
      * @return iterable<int, non-empty-string>
      */
@@ -413,22 +422,39 @@ final readonly class FileSystemStore implements
             return;
         }
 
+        /** @var array<string, array{string, string, bool}> $ordered */
+        $ordered = [];
         foreach ($entries as $entry) {
             if ($entry === '.' || $entry === '..' || str_ends_with($entry, self::PARTIAL_SUFFIX)) {
                 continue;
             }
 
             $path = $absolute . '/' . $entry;
-            $relative = $prefix === '' ? $entry : $prefix . '/' . $entry;
-            \assert($relative !== '');
-
             if (is_link($path)) {
                 // A symlink is not an object of this store, and following one
                 // would let the inventory walk out of the root.
                 continue;
             }
 
-            if (is_dir($path)) {
+            // Sorted by the string that will actually appear in a relative
+            // path, which for a directory ends in its separator. `scandir()`
+            // orders by bare name, so a directory `a` precedes a file `a.txt`
+            // — while `strcmp()` over full paths puts `a.txt` before `a/x.txt`,
+            // because `.` is 0x2E and `/` is 0x2F. The cursor in objects()
+            // compares full paths, so a walk ordered any other way makes it
+            // skip `a.txt` on every page after the one holding `a/x.txt`, and
+            // the object silently drops out of the inventory for good.
+            $isDirectory = is_dir($path);
+            $ordered[$isDirectory ? $entry . '/' : $entry] = [$entry, $path, $isDirectory];
+        }
+
+        ksort($ordered, SORT_STRING);
+
+        foreach ($ordered as [$entry, $path, $isDirectory]) {
+            $relative = $prefix === '' ? $entry : $prefix . '/' . $entry;
+            \assert($relative !== '');
+
+            if ($isDirectory) {
                 yield from $this->walk($path, $relative);
             } else {
                 yield $relative;

@@ -29,13 +29,25 @@ final readonly class StoreRegistry
     private string $defaultName;
 
     /**
-     * @param non-empty-list<StoreInterface> $stores Indexed here by each store's own `name()`.
+     * @param list<StoreInterface> $stores Indexed here by each store's own `name()`.
+     *        Declared wide on purpose: it arrives from configuration, and an empty
+     *        array is a wiring mistake this constructor has to name.
      * @param non-empty-string|null $defaultName Defaults to the first store's name.
      *
      * @throws InvalidConfigException
      */
     public function __construct(array $stores, ?string $defaultName = null)
     {
+        if ($stores === []) {
+            // A registry with nothing in it fails on the first add() with a
+            // "default store is not registered" that names no store at all.
+            // Saying so here points at the wiring instead.
+            throw new InvalidConfigException(
+                'No store is registered. Bind a StoreInterface — a backend package does it, '
+                . 'or the application does it in config/common/di/',
+            );
+        }
+
         $indexed = [];
         foreach ($stores as $store) {
             $name = $store->name();
