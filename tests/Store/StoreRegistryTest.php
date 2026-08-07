@@ -99,4 +99,16 @@ final class StoreRegistryTest
     {
         return new InMemoryStore($name, $this->factory);
     }
+
+    /**
+     * An empty registry used to reach `$stores[0]` and fatal there. The message
+     * an operator needs is about the *binding* that is missing, not an array
+     * offset.
+     */
+    public function anEmptyRegistryNamesTheMissingBinding(): void
+    {
+        Expect::exception(InvalidConfigException::class)->withMessageContaining('No store is registered');
+
+        new StoreRegistry([]);
+    }
 }

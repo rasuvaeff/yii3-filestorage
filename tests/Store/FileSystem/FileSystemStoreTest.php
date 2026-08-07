@@ -315,6 +315,68 @@ final class FileSystemStoreTest
         Assert::same($paths, $expected);
     }
 
+    /**
+     * The walk has to be ordered the way the cursor compares, and those are not
+     * the same thing by default. `scandir()` sorts by bare name, so a directory
+     * `a` precedes a file `a.txt`; `strcmp()` over full relative paths puts
+     * `a.txt` before `a/x.txt`, because `.` is 0x2E and `/` is 0x2F. With the
+     * walk in scandir order, paging past `a/x.txt` skips `a.txt` on every later
+     * page and the object drops out of the inventory permanently — invisible to
+     * verify, uncollectable by gc.
+     *
+     * Written directly rather than through write(): the generated layout never
+     * puts a file beside a directory sharing its prefix, so only a hand-built
+     * tree can catch an ordering the contract nonetheless promises.
+     */
+    public function theInventoryDoesNotSkipAFileBesideADirectoryThatSharesItsPrefix(): void
+    {
+        mkdir($this->root . '/a', 0o775, true);
+        file_put_contents($this->root . '/a/x.txt', 'inside the directory');
+        file_put_contents($this->root . '/a.txt', 'beside it');
+
+        $all = [];
+        $after = null;
+        // One at a time, which is what a paging caller does and what a
+        // single-pass listing would never exercise.
+        while (true) {
+            $page = iterator_to_array($this->store->objects(afterPath: $after, limit: 1), false);
+            if ($page === []) {
+                break;
+            }
+
+            $all[] = $page[0]->relativePath;
+            $after = $page[0]->relativePath;
+        }
+
+        sort($all);
+
+        Assert::same($all, ['a.txt', 'a/x.txt']);
+    }
+
+    /**
+     * And the order itself, which is the property the cursor depends on: each
+     * path must be strictly greater than the one before it under strcmp.
+     */
+    public function theInventoryIsOrderedTheWayTheCursorCompares(): void
+    {
+        mkdir($this->root . '/a', 0o775, true);
+        file_put_contents($this->root . '/a/x.txt', 'x');
+        file_put_contents($this->root . '/a.txt', 'y');
+        file_put_contents($this->root . '/a-b.txt', 'z');
+
+        $paths = array_map(
+            static fn(StoredObjectId $id): string => $id->relativePath,
+            iterator_to_array($this->store->objects(), false),
+        );
+
+        for ($i = 1, $n = count($paths); $i < $n; ++$i) {
+            Assert::true(
+                strcmp($paths[$i], $paths[$i - 1]) > 0,
+                "\"{$paths[$i]}\" must sort after \"{$paths[$i - 1]}\"",
+            );
+        }
+    }
+
     public function theInventoryPagesAndResumesFromACursor(): void
     {
         for ($i = 0; $i < 5; ++$i) {

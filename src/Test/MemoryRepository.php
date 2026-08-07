@@ -50,11 +50,17 @@ final class MemoryRepository implements MaintenanceRepositoryInterface
     #[Override]
     public function files(?string $afterId = null, int $limit = 1000): iterable
     {
-        $ids = array_keys($this->files);
-        sort($ids);
+        // Cast back to string: PHP turns a numeric-looking array key into an
+        // int, so a repository holding ids like "42" would hand strcmp() an
+        // integer and page in numeric order — which is not the order the
+        // cursor was issued in. `-db` keeps ids as strings; the double has to
+        // behave the same or it hides paging bugs rather than surfacing them.
+        $ids = array_map(strval(...), array_keys($this->files));
+        sort($ids, SORT_STRING);
 
         $yielded = 0;
         foreach ($ids as $id) {
+            \assert($id !== '');
             if ($afterId !== null && strcmp($id, $afterId) <= 0) {
                 continue;
             }
