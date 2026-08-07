@@ -147,9 +147,14 @@ final class SignedPayloadTest
     public static function everyAcceptedPayloadRoundTripsGenerators(): array
     {
         return [
-            'fileId' => Gen::stringFrom('abcdef0123456789-_.', 1, 60),
+            // Non-ASCII belongs here: the canonical JSON is written with
+            // JSON_UNESCAPED_UNICODE, so a multibyte id is the case where an
+            // encoder that escaped differently would break the byte-for-byte
+            // re-encode check. `variant` stays ASCII because its own pattern
+            // rejects anything else.
+            'fileId' => Gen::stringFrom('abcdef0123456789-_.äöü日本語', 1, 60),
             'variant' => Gen::nullable(Gen::stringFrom('abcdefghijklmnopqrstuvwxyz0123456789', 1, 20)),
-            'scopeId' => Gen::nullable(Gen::stringFrom('abcdef0123456789-', 1, 30)),
+            'scopeId' => Gen::nullable(Gen::stringFrom('abcdef0123456789-Ωπ→', 1, 30)),
         ];
     }
 }

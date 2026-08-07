@@ -43,7 +43,16 @@ $forgedPayload = rtrim(strtr(base64_encode(
 
 $tampered = [
     'variant swapped to the original' => "{$version}.{$keyId}.{$expires}.{$forgedPayload}.{$signature}",
-    'expiry pushed a year out' => $version . '.' . $keyId . '.' . ($expires + 31_536_000) . ".{$encodedPayload}.{$signature}",
+    'expiry pushed a year out' => sprintf(
+        '%s.%s.%d.%s.%s',
+        $version,
+        $keyId,
+        // explode() hands back strings; PHP would coerce this one, but the
+        // cast is what makes the arithmetic honest to a reader and a checker.
+        (int) $expires + 31_536_000,
+        $encodedPayload,
+        $signature,
+    ),
     'signature altered' => "{$version}.{$keyId}.{$expires}.{$encodedPayload}." . strrev($signature),
     'unknown key id' => "{$version}.someoneelse.{$expires}.{$encodedPayload}.{$signature}",
 ];

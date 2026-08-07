@@ -80,7 +80,13 @@ echo "text/plain with a .txt extension. The client-supplied name never decides.\
 // --- Reading ------------------------------------------------------------
 
 $found = $storage->find($readme->id);
-echo "find({$readme->id}) returned: {$found?->originalName}\n";
+// find() returns null for an unknown id, and every read below takes a File.
+// The example guards it because a consumer copying these lines has to.
+if ($found === null) {
+    throw new RuntimeException("Just-stored file {$readme->id} was not found");
+}
+
+echo "find({$readme->id}) returned: {$found->originalName}\n";
 echo "content(): " . json_encode($storage->content($found)) . "\n";
 echo 'stream() size: ' . $storage->stream($found)?->getSize() . " bytes\n";
 echo 'exists(): ' . var_export($storage->exists($found), true) . "\n\n";

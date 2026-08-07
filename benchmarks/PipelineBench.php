@@ -17,6 +17,7 @@ use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\PolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Storage;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
+use Rasuvaeff\Yii3Filestorage\Store\StoreResult;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
 use Rasuvaeff\Yii3Filestorage\Upload;
@@ -24,6 +25,7 @@ use Rasuvaeff\Yii3Filestorage\Url\HmacUrlSigner;
 use Rasuvaeff\Yii3Filestorage\Url\SignedPayload;
 use Rasuvaeff\Yii3Filestorage\Url\SigningKeyRing;
 use Testo\Bench;
+use Yiisoft\Test\Support\Clock\StaticClock;
 
 /**
  * The CPU-bound steps this package adds around an upload or a download.
@@ -42,6 +44,7 @@ final class PipelineBench
     private static ?Psr17Factory $factory = null;
     private static ?string $token = null;
     private static ?ExtensionMap $extensions = null;
+    private static ?InMemoryStore $bareStore = null;
 
     /**
      * A representative upload of roughly 100 KiB — big enough that reading it
@@ -63,9 +66,19 @@ final class PipelineBench
         return self::storage()->add(self::upload());
     }
 
-    public static function bareWrite(): string
+    /**
+     * The same bytes into the same store, with nothing else: no sniff, no
+     * policy, no path generator, no metadata row. Reading the stream and
+     * throwing the string away would measure a different thing entirely and
+     * make the gap look like the whole cost of writing.
+     */
+    public static function bareWrite(): StoreResult
     {
-        return self::upload()->stream()->getContents();
+        return self::bareStore()->write(
+            self::upload(),
+            'common',
+            new RandomPathGenerator(),
+        );
     }
 
     /**
@@ -189,6 +202,19 @@ final class PipelineBench
             self::factory()->createStream(str_repeat('representative payload ', self::BODY_REPEATS)),
             'thing.txt',
             self::factory(),
+        );
+    }
+
+    /**
+     * Its own store, so the baseline does not share a key space with the one
+     * `add()` writes into and collide with it after a few thousand calls.
+     */
+    private static function bareStore(): InMemoryStore
+    {
+        return self::$bareStore ??= new InMemoryStore(
+            'bare',
+            self::factory(),
+            new StaticClock(new DateTimeImmutable('2026-08-06T12:00:00.000000+00:00')),
         );
     }
 
