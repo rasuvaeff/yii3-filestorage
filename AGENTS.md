@@ -187,6 +187,15 @@ asserting only one half lets the operands be swapped undetected.
   the token (`SignedPayload::$scopeId`) and `ScopedFileResolverInterface` matches
   it as a second predicate. Disabling the filter is a cross-tenant read of every
   file whose id leaks.
+- **`gc --orphans` refuses when a `FileScopeProviderInterface` is bound, and
+  that refusal is load-bearing.** The referenced-set comes from the repository,
+  which filters by the current tenant; the object listing is physical and
+  filters by nothing. Under tenancy the difference between them is every other
+  tenant's live files, and `--apply` would delete them. There is no scope value
+  that fixes it — no single tenant's rows can prove an object unreferenced — so
+  the command refuses rather than warning. Blob collection is unaffected: the
+  ledger is keyed by physical identity. `stat` has the same scoped-read
+  asymmetry but only misreports, so it is documented rather than refused.
 - **Two packages contributing `params['yiisoft/yii-console']['commands']` is
   only safe because the runner merges `params` recursively.** Core names five
   commands there and `-db` names `filestorage:deduplicate`; without recursion

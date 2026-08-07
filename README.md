@@ -372,6 +372,26 @@ Order matters after enabling deduplication: `deduplicate --apply` repoints the
 rows, and the objects they used to point at become orphans that
 `gc --orphans --apply` reclaims.
 
+### Tenancy and the orphan sweep
+
+**`gc --orphans` refuses to run when a `FileScopeProviderInterface` is bound**,
+and the refusal is deliberate rather than a limitation to work around. An object
+is an orphan when *no* row anywhere points at it. The referenced-set comes from
+the repository, which filters by the current tenant; the object listing is
+physical and filters by nothing. Comparing the two under tenancy classifies every
+other tenant's objects as orphans, and `--apply` deletes them. There is no tenant
+to run it "as", because no single tenant's rows can prove an object unreferenced.
+
+Run the sweep from a maintenance entry point that leaves the scope provider
+unbound, where the repository sees every row. Blob collection is unaffected:
+the ledger is keyed by physical identity, not by tenant, so plain `gc --apply`
+works in either kind of installation.
+
+`filestorage:stat` reads through the same scoped repository, so under a bound
+scope provider its figures — including "Distinct objects" and the sharing
+savings — describe the current tenant only. That is a narrower report, not a
+wrong one, but it is not the installation total.
+
 ## Examples
 
 Runnable scripts live in [examples/](examples/README.md).

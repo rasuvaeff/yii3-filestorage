@@ -22,6 +22,7 @@ use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\PolicyRegistry;
+use Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\MaintenanceRepositoryInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\RepositoryInterface;
 use Rasuvaeff\Yii3Filestorage\Storage;
@@ -32,8 +33,10 @@ use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryBlobLedger;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\FixedScope;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Rasuvaeff\Yii3Filestorage\Url\ProxyUrlGeneratorInterface;
+use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
 use Testo\Assert;
 use Testo\Codecov\CoversNothing;
@@ -221,6 +224,26 @@ final class ConfigWiringTest
         $tester->execute([]);
 
         Assert::string($tester->getDisplay())->notContains('No blob ledger is bound');
+    }
+
+
+    /**
+     * The scope provider reaches `gc`, which is how it knows to refuse
+     * `--orphans`. If the wiring drops it, a multi-tenant installation gets a
+     * command that deletes other tenants' files and reports success.
+     */
+    public function gcSeesTheScopeProviderWhenTheApplicationBindsOne(): void
+    {
+        $container = $this->maintenanceContainer([
+            FileScopeProviderInterface::class => static fn(): FileScopeProviderInterface
+                => new FixedScope('tenant-a'),
+        ]);
+
+        $tester = new CommandTester($container->get(GcCommand::class));
+        $tester->execute(['--orphans' => true, '--apply' => true]);
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string($tester->getDisplay())->contains('Refusing --orphans');
     }
 
     /**

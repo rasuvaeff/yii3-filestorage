@@ -8,6 +8,7 @@ use Rasuvaeff\Yii3Filestorage\Command\CheckCommand;
 use Rasuvaeff\Yii3Filestorage\Command\GcCommand;
 use Rasuvaeff\Yii3Filestorage\Command\StatCommand;
 use Rasuvaeff\Yii3Filestorage\Command\VerifyCommand;
+use Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\MaintenanceRepositoryInterface;
 use Rasuvaeff\Yii3Filestorage\Store\BlobLedgerInterface;
 use Rasuvaeff\Yii3Filestorage\Id\IdGeneratorInterface;
@@ -107,16 +108,23 @@ return [
     // better than a container error the first time cron runs. The ledger is
     // optional in the same way: without one there are no shared blobs, and
     // `gc` still sweeps orphans.
+    //
+    // The scope provider is injected so that `gc --orphans` can refuse itself:
+    // the referenced-set it builds is tenant-filtered while the object listing
+    // it compares against is physical, so under tenancy the difference is other
+    // tenants' live files.
     GcCommand::class => static fn (
         StoreRegistry $stores,
         MaintenanceRepositoryInterface $repository,
         ClockInterface $clock,
         ?BlobLedgerInterface $ledger = null,
+        ?FileScopeProviderInterface $scopes = null,
     ): GcCommand => new GcCommand(
         stores: $stores,
         repository: $repository,
         clock: $clock,
         ledger: $ledger,
+        scopes: $scopes,
     ),
 
     VerifyCommand::class => static fn (

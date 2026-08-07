@@ -54,14 +54,21 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
    because the sweep writes. `filestorage:verify` never has `--apply`: what to
    do about a missing object is not a decision a command makes for you.
 
-8. **`gc --apply` is the only thing here that deletes shared bytes.** It takes
+8. **`gc --orphans` refuses under tenancy, and that refusal must not be
+   removed.** An object is an orphan when no row anywhere points at it; the
+   referenced-set comes from a tenant-filtered repository while the object
+   listing is physical, so the difference is other tenants' live files. There is
+   no tenant to run it "as". Run the sweep with `FileScopeProviderInterface`
+   unbound.
+
+9. **`gc --apply` is the only thing here that deletes shared bytes.** It takes
    an exclusive, expiring lease per blob and removes the ledger row only if the
    blob is still unreferenced in the statement that acts. Never delete a shared
    object anywhere else, and never inside a request.
 
-9. **No suppressions.** No `@psalm-suppress`, no baseline. Fix the root cause.
+10. **No suppressions.** No `@psalm-suppress`, no baseline. Fix the root cause.
 
-10. **Verification is mandatory.** Never claim "done" without a fresh green
+11. **Verification is mandatory.** Never claim "done" without a fresh green
     `composer build`.
 
 ## Gotchas

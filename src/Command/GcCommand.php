@@ -8,6 +8,7 @@ use DateInterval;
 use Override;
 use Psr\Clock\ClockInterface;
 use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
+use Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\MaintenanceRepositoryInterface;
 use Rasuvaeff\Yii3Filestorage\Store\BlobLedgerInterface;
 use Rasuvaeff\Yii3Filestorage\Store\MaintenanceStoreInterface;
@@ -32,7 +33,9 @@ use Symfony\Component\Console\Style\SymfonyStyle;
  *
  * **Orphans.** Objects with no metadata row at all: what a crash between
  * writing bytes and saving a row leaves behind, and what a failed compensation
- * leaves behind. Reclaiming them is a scan, so it is opt-in.
+ * leaves behind. Reclaiming them is a scan, so it is opt-in — and it is refused
+ * outright when the repository is tenant-scoped, because the two halves of the
+ * comparison would not be the same universe.
  *
  * Dry-run is the default. A command whose first run deletes is a command
  * somebody eventually runs on the wrong database.
@@ -45,12 +48,16 @@ final class GcCommand extends Command
     /**
      * @param BlobLedgerInterface|null $ledger Absent when no deduplication
      *        backend is installed. Orphan sweeping still works.
+     * @param FileScopeProviderInterface|null $scopes Present when the
+     *        installation is multi-tenant, which makes `--orphans` unsafe. See
+     *        {@see self::sweepOrphans()}.
      */
     public function __construct(
         private readonly StoreRegistry $stores,
         private readonly MaintenanceRepositoryInterface $repository,
         private readonly ClockInterface $clock,
         private readonly ?BlobLedgerInterface $ledger = null,
+        private readonly ?FileScopeProviderInterface $scopes = null,
         private readonly DateInterval $leaseTtl = new DateInterval('PT5M'),
         private readonly DateInterval $gracePeriod = new DateInterval('PT1H'),
     ) {
@@ -78,8 +85,15 @@ final class GcCommand extends Command
             $io->note('Dry run. Nothing will be deleted — pass --apply to act.');
         }
 
+        $orphansRequested = (bool) $input->getOption('orphans');
+        if ($orphansRequested && $this->scopes !== null) {
+            $io->error($this->scopedSweepRefusal());
+
+            return Command::FAILURE;
+        }
+
         $blobs = $this->collectBlobs($io, $apply, $limit);
-        $orphans = $input->getOption('orphans')
+        $orphans = $orphansRequested
             ? $this->sweepOrphans($io, $apply, $limit, $this->storeNameOption($input))
             : null;
 
@@ -173,6 +187,12 @@ final class GcCommand extends Command
     }
 
     /**
+     * An object is an orphan when *no* row anywhere points at it. The rows come
+     * from a scoped repository and the objects from an unscoped physical
+     * listing, so under tenancy the sweep compares one tenant's rows against
+     * every tenant's bytes — and deletes the difference. There is no scope value
+     * that fixes it: no single tenant's view can prove an object unreferenced.
+     *
      * @param non-empty-string|null $storeName
      */
     private function sweepOrphans(SymfonyStyle $io, bool $apply, int $limit, ?string $storeName): int
@@ -263,6 +283,21 @@ final class GcCommand extends Command
             $last = $page[\count($page) - 1];
             $after = $last->id;
         }
+    }
+
+    private function scopedSweepRefusal(): string
+    {
+        return sprintf(
+            'Refusing --orphans: a %s is bound, so this installation is multi-tenant. The referenced-set comes '
+            . 'from the repository, which filters by the current tenant, while the object listing is physical and '
+            . 'filters by nothing — so the sweep would classify every other tenant\'s objects as orphans and '
+            . '--apply would delete them. There is no tenant to run it "as": no single tenant\'s rows can prove an '
+            . 'object unreferenced. Run the sweep from a maintenance entry point that leaves %s unbound, where the '
+            . 'repository sees every row. Blob collection is unaffected — drop --orphans and this command still '
+            . 'runs.',
+            FileScopeProviderInterface::class,
+            FileScopeProviderInterface::class,
+        );
     }
 
     /**

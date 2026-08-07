@@ -18,6 +18,7 @@ use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryBlobLedger;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\FixedScope;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\UnwalkableStore;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Symfony\Component\Console\Command\Command;
@@ -448,6 +449,62 @@ final class OperationsCommandsTest
         )->getDisplay();
 
         Assert::string($display)->contains('found 3 orphaned objects.');
+    }
+
+
+    /**
+     * The destructive asymmetry. `--orphans` compares a *scoped* referenced-set
+     * against an *unscoped* physical listing, so under tenancy every other
+     * tenant's object looks unreferenced and `--apply` deletes it. There is no
+     * tenant to run it "as" — no single tenant's rows can prove an object is
+     * unreferenced — so the command refuses rather than guessing.
+     */
+    public function gcRefusesToSweepOrphansWhenTheRepositoryIsScoped(): void
+    {
+        $other = $this->storeFile('a');
+
+        $tester = $this->run(
+            new GcCommand(
+                $this->registry(),
+                $this->repository,
+                $this->clock(),
+                scopes: new FixedScope('tenant-a'),
+            ),
+            ['--orphans' => true, '--apply' => true],
+        );
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string($tester->getDisplay())->contains('Refusing --orphans');
+        Assert::same($this->store->bytesAt($other->relativePath), 'hello');
+    }
+
+    /**
+     * Blob collection is not affected: it works off the ledger, whose rows are
+     * keyed by physical identity rather than by tenant.
+     */
+    public function gcStillCollectsBlobsUnderTenancy(): void
+    {
+        $file = $this->storeFile('a');
+        $blob = BlobId::create('memory', $file->relativePath);
+        $this->ledger->commit(
+            $this->ledger->reserve($blob, $this->hash(), 5, $this->at('00:10')),
+            $file,
+        );
+        $this->ledger->releaseFile('a', $this->at('00:00'));
+
+        $tester = $this->run(
+            new GcCommand(
+                $this->registry(),
+                $this->repository,
+                $this->clock(),
+                $this->ledger,
+                new FixedScope('tenant-a'),
+            ),
+            ['--apply' => true],
+        );
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        Assert::null($this->ledger->find($blob));
     }
 
     // ---- verify ---------------------------------------------------------

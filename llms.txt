@@ -333,7 +333,12 @@ Rules:
    another request might want, and does so under an expiring lease.
 5. `gc --orphans` walks every configured store unless `--store=<name>` limits it,
    and `--limit` is a budget for the whole pass, not per store.
-6. After `-db`'s `filestorage:deduplicate --apply`, the objects the migrated rows
+6. **`gc --orphans` refuses when a `FileScopeProviderInterface` is bound.** The
+   referenced-set is tenant-filtered, the object listing is physical — the
+   difference is other tenants' live files. Run the sweep with the provider
+   unbound. Blob collection is unaffected. `stat` reads scoped too, so its
+   figures describe the current tenant only.
+7. After `-db`'s `filestorage:deduplicate --apply`, the objects the migrated rows
    used to point at are orphans: reclaim with `gc --orphans --apply`.
 
 ## Configuration

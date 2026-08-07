@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gc` and `backfill-hash` report unless given `--apply`, and `verify` has no
   `--apply` at all. `gc` collects shared blobs only when a `BlobLedgerInterface`
   is bound; without one it still sweeps orphans.
+- `filestorage:gc --orphans` now refuses to run when a
+  `FileScopeProviderInterface` is bound. The referenced-set it builds comes from
+  a tenant-filtered repository while the object listing it compares against is
+  physical, so under tenancy every other tenant's object looked like an orphan
+  and `--apply` would have deleted it. Blob collection is unaffected.
 - Fixed `Test\MemoryBlobLedger::expireReservations()` rescheduling every blob
   rather than only those that lost a reservation, which pushed each already
   scheduled blob's grace period forward on every collection pass — so nothing
