@@ -40,7 +40,13 @@ need time to *move* within one test use `tests/Support/MovableClock`, which is
 
 **The `Test\` namespace is public API and lives in `src/`.** `.gitattributes`
 export-ignores `tests/`, so a double placed there would not be installed by a
-consumer. Changing those classes is a BC concern like any other.
+consumer. Changing those classes is a BC concern like any other — and a stray
+`use Testo\…` or dev-only dependency in one of them compiles fine here and
+fatals in the first project that installs the package, because this suite always
+runs with dev dependencies present. `bin/filestorage-consumer-smoke` in the
+monorepo is what sees that: a throwaway project, `composer install --no-dev`,
+the whole `add → find → stream → remove` path plus the ledger protocol driven
+through the shipped doubles alone.
 
 DI wiring: core `config/di.php` binds the facade, `StoreRegistry`, path
 generator, MIME detector, id generator, `ExtensionMap`, both policy registries
