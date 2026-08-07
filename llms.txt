@@ -1,0 +1,382 @@
+# rasuvaeff/yii3-filestorage
+
+DI-native file storage for Yii3. One facade over a swappable physical store and
+a swappable metadata repository. PSR-7 streaming, authoritative MIME detection,
+per-group accept and delivery policies. Namespace `Rasuvaeff\Yii3Filestorage\`.
+
+Status `0.x`: the API may still change. The path layout and token format are frozen.
+
+## Install
+
+```bash
+composer require rasuvaeff/yii3-filestorage
+```
+
+Core does NOT bind `StoreInterface` or `RepositoryInterface`. Install a backend
+(`-db`, `-flysystem`, `-web`) or bind them in the application.
+
+## Rules
+
+1. **Never trust the client media type.** `Upload::$clientMediaTypeHint` is
+   diagnostics only. Only `MimeTypeDetectorInterface::detect()` output reaches a
+   policy, a path extension or a response header.
+2. **Never build a path from user input.** Paths come from a
+   `PathGeneratorInterface`; `StoredObjectId` rejects `..`, NUL, backslashes and
+   absolute paths. `File::$originalName` is metadata and never enters a path.
+3. **Layout is frozen: `<…>/<key>/original.<ext>`, a directory per file.**
+   `StoreInterface::delete()` removes the directory, so derivatives cannot leak.
+   The extension comes from the detected media type via `symfony/mime`; unknown
+   becomes `original.bin`.
+4. **Token format is frozen:** `v1.<key-id>.<expires>.<b64url payload>.<b64url hmac>`.
+   Payload is canonical JSON `{fileId, variant, scopeId}`, all covered by the HMAC.
+5. **`urlFor()` is the method application code calls.** `url()` and
+   `temporaryUrl()` are raw capabilities that ignore delivery policy.
+6. **Direct public URLs are opt-in per group** and unsafe with active content
+   (HTML, SVG, XML). `filestorage:check` fails on that combination.
+7. **`add()` is all-or-nothing per file.** There is no `addMany()`.
+8. **Capabilities are `instanceof` checks, not nullable methods** — except
+   `StoreUrlProviderInterface`, whose methods return null because URL support
+   varies per adapter at runtime, not per class.
+
+## API reference
+
+### `StorageInterface` (facade)
+
+```php
+public function add(Upload $upload, ?string $groupName = null, ?string $storeName = null, ?string $description = null, array $metadata = []): File;
+public function find(string $id): ?File;
+public function remove(string $id): bool;
+public function exists(File $file): bool;
+public function url(File $file): ?string;                                        // raw permanent
+public function temporaryUrl(File $file, DateTimeImmutable $expiresAt): ?string; // raw presigned
+public function urlFor(File $file, ?DateTimeImmutable $expiresAt = null): ?string; // policy-aware; use this
+public function stream(File $file): ?StreamInterface;
+public function content(File $file): ?string;                                    // capped
+```
+
+Implementation: `Storage` (`final readonly`). Throws `PolicyViolationException`
+before touching the store, `AddException` when metadata fails after the write,
+`RemoveException` when the object survives its row, `ContentTooLargeException`
+from `content()`.
+
+```php
+$file = $storage->add(
+    Upload::fromUploadedFile($psrUploadedFile, $streamFactory),
+    groupName: 'avatars',
+);
+
+$stream = $storage->stream($file);
+$url = $storage->urlFor($file);
+$storage->remove($file->id);
+```
+
+### `File` (immutable VO)
+
+```php
+File::create(
+    string $id, string $storeName, string $groupName, string $relativePath,
+    string $originalName, int $size, DateTimeImmutable $createdAt,
+    ?string $externalId = null, ?string $mimeType = null, ?string $description = null,
+    ?string $contentHash = null, array $metadata = [], ?DateTimeImmutable $updatedAt = null,
+): self;
+
+File::fromArray(array $row): self;      // exact round-trip with toArray()
+$file->toArray(): array;
+$file->withMetadata(array $metadata, DateTimeImmutable $updatedAt): self;
+$file->directory(): string;             // the parent directory holding derivatives
+File::TIMESTAMP_FORMAT;                 // 'Y-m-d\TH:i:s.uP' — ATOM would drop microseconds
+```
+
+Public readonly properties: `id`, `storeName`, `externalId`, `groupName`,
+`relativePath`, `originalName`, `mimeType`, `size`, `description`,
+`contentHash`, `metadata`, `createdAt`, `updatedAt`.
+
+### `Upload` (ingress VO)
+
+```php
+Upload::fromUploadedFile(UploadedFileInterface $file, StreamFactoryInterface $f, int $maxSpoolBytes = 268435456): self;
+Upload::fromStream(StreamInterface $s, string $originalName, StreamFactoryInterface $f, int $maxSpoolBytes = 268435456, ?string $clientMediaTypeHint = null): self;
+Upload::fromPath(string $path, StreamFactoryInterface $f, ?string $originalName = null, int $maxSpoolBytes = 268435456): self;
+
+$upload->stream(): StreamInterface;  // always rewound and seekable
+$upload->size(): ?int;
+$upload->originalName;               // non-empty-string
+$upload->clientMediaTypeHint;        // diagnostics only — never authoritative
+```
+
+`fromUploadedFile()` throws `UploadFailedException` unless `getError()` is
+`UPLOAD_ERR_OK`. A non-seekable stream is spooled to `php://temp` and throws
+`UploadTooLargeException` past the cap. Hand the `Upload` to `Storage`; do not
+call `moveTo()` yourself, it invalidates the stream.
+
+### Stores
+
+```php
+interface StoreInterface {
+    public function name(): string;
+    public function write(Upload $u, string $groupName, PathGeneratorInterface $g, ?string $mediaType = null, int $maxBytes = 0): StoreResult;
+    public function delete(File $file): void;   // deletes the DIRECTORY
+    public function exists(File $file): bool;
+    public function size(File $file): ?int;
+    public function lastModified(File $file): ?DateTimeImmutable;
+    public function stream(File $file): ?StreamInterface;
+}
+```
+
+Optional capabilities, all extending `StoreInterface`:
+
+| Interface | Adds |
+|---|---|
+| `StoreUrlProviderInterface` | `publicUrl()`, `temporaryUrl(File, DateTimeImmutable, DeliveryOptions)` — both nullable |
+| `RangeReadableStoreInterface` | `streamRange(File, int $offset, int $length)` |
+| `ContentAddressableStoreInterface` | `putIfAbsent(Upload, StoredObjectId, int $maxBytes = 0)` — atomic, immutable |
+| `MaintenanceStoreInterface` | `objects(?string $afterPath, int $limit)`, `deleteObject(StoredObjectId)` |
+| `DerivativeAwareStoreInterface` | `hasDerivative()`, `derivativeStream()`, `writeDerivative()` |
+| `DerivativeUrlProviderInterface` | `publicDerivativeUrl()`, `temporaryDerivativeUrl()` |
+
+Implementations: `Store\FileSystem\FileSystemStore` (derivatives, maintenance,
+range), `Store\FileSystem\PublicFileSystemStore` (the above plus public URLs;
+`temporaryUrl()` is always null — a web server has no signature to check),
+`Test\InMemoryStore` (base + maintenance only, deliberately no URL/range).
+
+`StoreRegistry`: `get(?string $name)`, `has()`, `names()`, `defaultName()`.
+Built by core from the one `StoreInterface` a backend binds.
+
+`StoreResult(string $relativePath, int $size, ?string $externalId = null, bool $created = true)`.
+
+`StoredObjectId(string $relativePath)` — validated path VO.
+`BlobId::create(string $storeName, string $relativePath)` — physical identity for dedup.
+`DerivativeDescriptor(string $name, string $extension, string $mediaType)` — one named
+preset; `fileName()` gives `<name>.<extension>`. Named presets only: free-form dimensions
+make the derivative set unbounded, so a signed URL could force unbounded CPU and storage.
+`DerivativeObject(string $relativePath, int $size, string $mediaType)` — what
+`writeDerivative()` reports. A derivative is a sibling object, never a row.
+
+### Repository
+
+```php
+interface RepositoryInterface {
+    public function find(string $id): ?File;    // null, not an exception
+    public function save(File $file): void;     // void: the id was assigned before the write
+    public function delete(string $id): bool;
+}
+
+interface MaintenanceRepositoryInterface extends RepositoryInterface {
+    public function files(?string $afterId = null, int $limit = 1000): iterable;
+    public function updateContentHash(string $id, string $contentHash): bool;
+}
+```
+
+Tenant scope — both optional, both unbound by core:
+
+```php
+interface FileScopeProviderInterface {          // bound by the APPLICATION
+    public function currentScopeId(): ?string;  // from yii3-tenancy, a session, a constant
+}
+
+interface ScopedFileResolverInterface {         // bound by -db
+    public function findInScope(string $id, ?string $scopeId): ?File;
+}
+```
+
+`findInScope()` exists because a signed download has no ambient tenant. Never
+disable the tenant filter for downloads — the scope travels inside the token
+(`SignedPayload::$scopeId`) and is matched as a second predicate.
+
+### Blob ledger (dedup coordination)
+
+Declared in core, implemented transactionally by `-db` (`DbBlobLedger`) and in
+memory by `Test\MemoryBlobLedger`. Base `Storage` never touches it.
+
+```php
+interface BlobLedgerInterface {
+    public function reserve(BlobId $b, string $sha256, int $size, DateTimeImmutable $expiresAt): BlobReservation;
+    public function commit(BlobReservation $r, File $file): void;   // ONE transaction: file row + reference
+    public function release(BlobReservation $r, DateTimeImmutable $deleteAfter): void;
+    public function releaseFile(string $fileId, DateTimeImmutable $deleteAfter): bool;
+    public function find(BlobId $b): ?BlobRecord;
+    public function expireReservations(DateTimeImmutable $now, DateTimeImmutable $deleteAfter): int;
+    public function claimForDeletion(DateTimeImmutable $now, DateTimeImmutable $leaseExpiresAt): ?BlobLease;
+    public function completeDeletion(BlobLease $lease): bool;
+    public function abandonDeletion(BlobLease $lease, DateTimeImmutable $retryAfter): bool;
+}
+```
+
+Protocol: `reserve()` → `putIfAbsent()` → `commit()`; on any failure
+`release()`. Removal is `releaseFile()`, which never does store I/O.
+
+| Type | What |
+|---|---|
+| `BlobState` | `writing`, `active`, `pending_delete`, `deleting`; `isJoinable()` is false only for `deleting` |
+| `BlobToken` | Ledger-issued opaque handle, `random()` gives 32 hex chars |
+| `BlobReservation(BlobId, BlobToken, DateTimeImmutable)` | `isExpired()`; several may coexist per blob |
+| `BlobLease(BlobId, BlobToken, DateTimeImmutable)` | `isExpired()`; at most one per blob, stealable once expired |
+| `BlobRecord` | `blob`, `contentHash`, `size`, `state`, `referenceCount`, `reservationCount`, `deleteAfter`, `leaseExpiresAt`, `isUnreferenced()` |
+
+Rules: shared bytes are **never** deleted inside a request; `reserve()` throws
+`BlobBusyException` for a `deleting` blob (retry) and `LedgerException` when the
+content, reservation or file disagrees with the ledger.
+
+### Paths
+
+```php
+interface PathGeneratorInterface {
+    public function generate(string $groupName, Upload $upload, ?string $mediaType): string;
+}
+```
+
+| Implementation | Layout |
+|---|---|
+| `RandomPathGenerator` | `<group>/<2 hex>/<2 hex>/<32 hex>/original.<ext>` |
+| `DatePathGenerator` | `<group>/<YYYY>/<MM>/<DD>/<uuidv7>/original.<ext>` |
+| `Sha256KeyGenerator` (`ContentAddressedKeyGeneratorInterface`) | `<scope>/<hash[0:2]>/<hash[2:4]>/<hash>/original` — no extension, dedup only |
+
+### MIME
+
+```php
+interface MimeTypeDetectorInterface { public function detect(Upload $upload): ?string; }
+new FinfoMimeTypeDetector(int $sniffBytes = 4096);   // minimum 512
+new ExtensionMap(array $overrides = [], ?MimeTypesInterface $mimeTypes = null);
+$map->extensionFor(?string $mediaType): string;      // 'bin' when unknown
+```
+
+`symfony/mime` supplies the media-type ⇒ extension table. It is *not* used for
+detection: `MimeTypes::guessMimeType()` takes a path and reads the whole file,
+while ingress here is a stream and the sniff window is bounded.
+
+### Ids
+
+```php
+interface IdGeneratorInterface { public function generate(): string; }
+```
+
+`Uuid7IdGenerator(ClockInterface)` is the dependency-free default.
+`SymfonyUidIdGenerator` and `RamseyUuidIdGenerator` are optional adapters —
+bind one explicitly, nothing auto-detects.
+
+### Policies
+
+```php
+new UploadPolicy(array $allowedMimeTypes = [], int $maxBytes = 0, int $maxPixels = 40_000_000, bool $requireImageDimensions = false);
+$policy->assertAcceptable(Upload $upload, ?string $detectedMimeType): void;  // throws PolicyViolationException
+
+new PolicyRegistry(array $policies);       PolicyRegistry::fromArray(array $params);
+new DeliveryPolicy(bool $allowDirectPublicUrl = false, bool $forceDownload = true);
+new DeliveryPolicyRegistry(array $policies); DeliveryPolicyRegistry::fromArray(array $params);
+DeliveryOptions::fromFile(File $file, DeliveryPolicy $policy): self;
+```
+
+Key `'*'` is the fallback group in both registries.
+
+### URLs
+
+```php
+interface UrlSignerInterface {
+    public function sign(SignedPayload $payload, DateTimeImmutable $expiresAt): string;
+    public function verify(string $token): ?SignedPayload;   // null for anything invalid
+}
+
+new SigningKeyRing(string $activeKeyId, array $keys);   // key ids /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}\z/, secrets >= 32 bytes
+new HmacUrlSigner(ClockInterface $clock, SigningKeyRing $keys);
+new SignedPayload(string $fileId, ?string $variant = null, ?string $scopeId = null);
+
+interface ProxyUrlGeneratorInterface { public function url(File $file, DateTimeImmutable $expiresAt): ?string; }
+```
+
+Local only: the same application signs and verifies. S3 presigning is
+`StoreUrlProviderInterface`, not this — S3 validates its own signatures.
+
+### Streams
+
+`Stream\LimitedStream(StreamInterface $stream, int $offset, int $length)` —
+read-only PSR-7 window for `206` responses, no buffering.
+
+### Exceptions
+
+All implement `Exception\FilestorageException`:
+`AddException`, `RemoveException`, `StoreException`, `ContentTooLargeException`,
+`UploadTooLargeException`, `UploadFailedException`, `PolicyViolationException`,
+`InvalidConfigException`, `LedgerException`, `BlobBusyException`.
+
+### Test doubles (`src/Test/`, installed with the package)
+
+`InMemoryStore(string $name, StreamFactoryInterface $f, ?ClockInterface $clock = null)` —
+plus `bytesAt()`, `paths()`, `writeCount()`, `corrupt()`, `clear()`.
+`MemoryRepository()` — plus `count()`, `all()`, `clear()`.
+`MemoryBlobLedger(RepositoryInterface $repository)` — the full dedup state
+machine in an array, plus `records()`, `clear()`. It does not reproduce
+concurrency: a PHP array has no isolation levels.
+
+No clock double ships here. Everything takes a PSR-20 clock; use
+`Yiisoft\Test\Support\Clock\StaticClock` from `yiisoft/test-support`.
+
+### Console
+
+| Class | Command | Does |
+|---|---|---|
+| `Command\CheckCommand` | `filestorage:check` | Wiring, per-store capabilities, tenancy, per-group rules. Non-zero on an unsafe delivery combination, or on a bound `FileScopeProviderInterface` with no `ScopedFileResolverInterface` |
+| `Command\StatCommand` | `filestorage:stat` | Counts and sizes by group, plus what sharing saved. Physical figures withheld under tenancy |
+| `Command\VerifyCommand` | `filestorage:verify` | Rows whose object is missing. `--deep` re-reads and compares the hash. Non-zero on any finding |
+| `Command\BackfillHashCommand` | `filestorage:backfill-hash` | Fills `contentHash` on rows written before hashing was on |
+| `Command\GcCommand` | `filestorage:gc` | Collects unreferenced blobs; `--orphans` also sweeps objects no row points at |
+| `Command\ImportCommand` | `filestorage:import <dir>` | Walks a tree, `add()`s every file, records completions in a manifest and skips them next time |
+
+Rules:
+
+1. `gc` and `backfill-hash` **report by default; `--apply` acts.** `verify` has
+   no `--apply` — what to do about a missing object is not its decision.
+2. All four page by id, take `--after` / `--limit`, and print the last id they
+   reached. Resume with `--after=<that id>`.
+3. They need `MaintenanceRepositoryInterface` (from `-db`). Without it the
+   container simply has no maintenance commands, which beats a runtime error.
+4. `gc` collects shared blobs only when a `BlobLedgerInterface` is bound; without
+   one it still sweeps orphans. It is the only thing here that deletes bytes
+   another request might want, and does so under an expiring lease.
+5. `gc --orphans` walks every configured store unless `--store=<name>` limits it,
+   and `--limit` is a budget for the whole pass, not per store.
+6. **`gc --orphans` refuses when a `FileScopeProviderInterface` is bound.** The
+   referenced-set is tenant-filtered, the object listing is physical — the
+   difference is other tenants' live files. Run the sweep with the provider
+   unbound. Blob collection is unaffected. `stat` reads scoped too and splits
+   the same way: logical counts and byte totals are still printed under a
+   `Group (current scope)` header, while "Distinct objects" and the sharing
+   savings are withheld — a tenant-filtered walk cannot see rows in other scopes
+   pointing at the same objects, so it would over-count objects and under-count
+   sharing. Run `stat` with the provider unbound for those.
+7. After `-db`'s `filestorage:deduplicate --apply`, the objects the migrated rows
+   used to point at are orphans: reclaim with `gc --orphans --apply` — from a
+   maintenance entry point with the scope provider unbound if tenancy is on.
+8. **`import` needs its manifest to be re-runnable.** `add()` has no natural
+   key, so without the JSON Lines manifest (`--manifest`, default
+   `build/filestorage-import.jsonl`) a second run writes a second row *and* a
+   second object per file. Entries match on `source`, the absolute path, so one
+   manifest covers several roots without cross-root collisions. It is flushed per completed file, so a killed run
+   resumes; a policy-rejected file is not recorded, so widening the policy and
+   re-running retries exactly those. Symlinks are not followed, dot-entries are
+   skipped, `metadata['importSource']` holds the source path, one `--group` per
+   run. Resolves `StorageInterface`, so a dedup override applies to imports too.
+9. **`check` fails on tenant mode with no scoped resolver.** A bound
+   `FileScopeProviderInterface` with nothing binding `ScopedFileResolverInterface`
+   leaves a signed download resolving by id alone. A resolver without a provider
+   is the normal single-scope case and passes.
+
+## Configuration
+
+```php
+'rasuvaeff/yii3-filestorage' => [
+    'defaultGroup' => 'common',
+    'maxInlineBytes' => 8_388_608,
+    'maxSpoolBytes' => 268_435_456,
+    'integrityHashMaxBytes' => 0,
+    'defaultUrlTtl' => 'PT1H',
+    'extensionOverrides' => [],
+    'policies' => ['*' => ['maxBytes' => 20_971_520]],
+    'delivery' => ['*' => ['allowDirectPublicUrl' => false, 'forceDownload' => true]],
+],
+```
+
+Core `config/di.php` binds `StorageInterface`, `StoreRegistry`,
+`PathGeneratorInterface`, `MimeTypeDetectorInterface`, `IdGeneratorInterface`,
+`ExtensionMap`, both policy registries and all five commands. It binds neither
+`StoreInterface` nor `RepositoryInterface` — one vendor package owns each key,
+and two binding the same one is a `yiisoft/config` `Duplicate key` error by design.
