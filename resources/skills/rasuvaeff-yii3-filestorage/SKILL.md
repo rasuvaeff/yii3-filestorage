@@ -35,8 +35,10 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
    `v1.<key-id>.<expires>.<b64url payload>.<b64url hmac>`. `relativePath` is
    persisted and tokens are already in browsers.
 
-4. **`urlFor()`, not `url()`.** `url()` and `temporaryUrl()` are raw capabilities
-   that ignore delivery policy. `urlFor()` applies it: a permanent public URL
+4. **`urlFor()`, not `url()`.** `url()` is raw and ignores delivery policy;
+   `temporaryUrl()` does pass the group's `DeliveryOptions` to the store, so a
+   presigned URL cannot serve active content inline. What neither consults is
+   `allowDirectPublicUrl`. `urlFor()` applies it: a permanent public URL
    only where the group allows one, otherwise presigned, otherwise the signed
    proxy route. Direct public URLs bypass every response header `-web` enforces.
 

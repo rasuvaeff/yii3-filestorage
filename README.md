@@ -132,7 +132,11 @@ $url = $storage->urlFor($file, $expiresAt);        // explicit expiry
 2. a store-native presigned URL (S3 via `-flysystem`);
 3. the application's signed proxy URL (`-web`).
 
-`url()` and `temporaryUrl()` expose steps 1 and 2 raw, for infrastructure code.
+`url()` and `temporaryUrl()` expose steps 1 and 2 for infrastructure code. Raw
+is only half right: `url()` ignores the delivery policy entirely, while
+`temporaryUrl()` hands the group's `DeliveryOptions` to the store and gets null
+back when the store cannot honour them. What neither consults is
+`allowDirectPublicUrl` — that gate belongs to `urlFor()`.
 Application code and templates should not branch on whether the store happens
 to be public — that is what `urlFor()` is for.
 
@@ -345,7 +349,7 @@ re-encode if the files will be served publicly.
 | `filestorage:verify` | Reports rows whose object is missing; `--deep` re-reads each one and compares its hash |
 | `filestorage:backfill-hash` | Fills in `contentHash` on rows written before integrity hashing was on |
 | `filestorage:gc` | Collects unreferenced shared blobs, and with `--orphans` sweeps objects no row points at |
-| `filestorage:import <dir>` | Ingests a directory tree through the ordinary write path, skipping what a manifest says is already in |
+| `filestorage:import <dir>` | Ingests a directory tree through the ordinary write path, skipping what a manifest says is already imported |
 
 `gc`, `backfill-hash` and the `-db` package's `deduplicate` **report by default
 and act only under `--apply`**. A command whose first run deletes is one somebody

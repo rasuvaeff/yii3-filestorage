@@ -59,44 +59,64 @@ final class DeliveryPolicyRegistryTest
     }
 
     /**
-     * A misspelled or mistyped value must leave the safe behaviour in place,
-     * never the permissive one.
+     * A value that is not a boolean is a mistake, and the mistake is reported
+     * rather than absorbed. Silently reading `'true'` as false gives an
+     * operator the opposite of what they wrote — and `allowDirectPublicUrl` is
+     * the setting where the opposite matters most. A *missing* key still takes
+     * the safe default; it is the present-but-wrong one that stops the boot.
      */
-    #[DataProvider('nonTrueProvider')]
-    public function anythingButALiteralTrueLeavesDirectPublicUrlsOff(mixed $value): void
+    #[DataProvider('nonBooleanProvider')]
+    public function aNonBooleanValueIsRejectedRatherThanCoerced(mixed $value): void
     {
-        $registry = DeliveryPolicyRegistry::fromArray(['g' => ['allowDirectPublicUrl' => $value]]);
+        Expect::exception(InvalidArgumentException::class)->withMessageContaining('must be a boolean');
 
-        Assert::false($registry->for('g')->allowDirectPublicUrl);
+        DeliveryPolicyRegistry::fromArray(['g' => ['allowDirectPublicUrl' => $value]]);
+    }
+
+    #[DataProvider('nonBooleanProvider')]
+    public function forceDownloadIsRejectedTheSameWay(mixed $value): void
+    {
+        Expect::exception(InvalidArgumentException::class)->withMessageContaining('must be a boolean');
+
+        DeliveryPolicyRegistry::fromArray(['g' => ['forceDownload' => $value]]);
     }
 
     /**
      * @return iterable<string, array{mixed}>
      */
-    public static function nonTrueProvider(): iterable
+    public static function nonBooleanProvider(): iterable
     {
         yield 'the string true' => ['true'];
+        yield 'the string false' => ['false'];
         yield 'one' => [1];
+        yield 'zero' => [0];
         yield 'yes' => ['yes'];
-        yield 'null' => [null];
     }
 
-    #[DataProvider('nonFalseProvider')]
-    public function onlyALiteralFalseTurnsOffForcedDownload(mixed $value): void
+    /**
+     * Null is the one non-boolean that means "not set": it reaches the `??`
+     * and takes the default, which is what an unset key does.
+     */
+    public function anExplicitNullTakesTheSafeDefault(): void
     {
-        $registry = DeliveryPolicyRegistry::fromArray(['g' => ['forceDownload' => $value]]);
+        $registry = DeliveryPolicyRegistry::fromArray([
+            'g' => ['allowDirectPublicUrl' => null, 'forceDownload' => null],
+        ]);
 
+        Assert::false($registry->for('g')->allowDirectPublicUrl);
         Assert::true($registry->for('g')->forceDownload);
     }
 
     /**
-     * @return iterable<string, array{mixed}>
+     * An option nobody implements is a setting that does nothing, and an
+     * operator who typed `allowDirectPublicURL` would never find out.
      */
-    public static function nonFalseProvider(): iterable
+    public function anUnknownOptionIsRejected(): void
     {
-        yield 'the string false' => ['false'];
-        yield 'zero' => [0];
-        yield 'null' => [null];
+        Expect::exception(InvalidArgumentException::class)
+            ->withMessageContaining('Unknown delivery policy option "allowDirectPublicURL"');
+
+        DeliveryPolicyRegistry::fromArray(['g' => ['allowDirectPublicURL' => true]]);
     }
 
     #[DataProvider('invalidConfigProvider')]

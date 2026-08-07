@@ -119,13 +119,46 @@ final class PolicyRegistryTest
     }
 
     /**
-     * Fail closed: anything but a literal `true` leaves the stricter check off
-     * rather than guessing what a truthy value meant.
+     * A boolean option takes a boolean. `1` is not `true` here: coercing it
+     * would let a configuration that reads as "on" behave as "on" by accident
+     * rather than by contract, and the next value somebody writes — `'yes'`,
+     * `'false'` — would land on whichever side PHP's truthiness picks.
      */
-    public function requireImageDimensionsOnlyAcceptsALiteralTrue(): void
+    public function requireImageDimensionsTakesABooleanOrNothing(): void
     {
-        Assert::true(PolicyRegistry::fromArray(['g' => ['requireImageDimensions' => true]])->for('g')->requireImageDimensions);
-        Assert::false(PolicyRegistry::fromArray(['g' => ['requireImageDimensions' => 1]])->for('g')->requireImageDimensions);
+        Assert::true(
+            PolicyRegistry::fromArray(['g' => ['requireImageDimensions' => true]])->for('g')->requireImageDimensions,
+        );
         Assert::false(PolicyRegistry::fromArray(['g' => []])->for('g')->requireImageDimensions);
+
+        Expect::exception(InvalidArgumentException::class)
+            ->withMessageContaining('requireImageDimensions for group "g" must be a boolean');
+
+        PolicyRegistry::fromArray(['g' => ['requireImageDimensions' => 1]]);
+    }
+
+    /**
+     * The one that fails *open*, which is why it is rejected rather than
+     * ignored: `allowedMimeType` without the `s` leaves the allow-list empty,
+     * and an empty allow-list is how this package spells "accept anything". A
+     * one-character typo would turn a locked-down group into an open one.
+     */
+    public function anUnknownOptionIsRejected(): void
+    {
+        Expect::exception(InvalidArgumentException::class)
+            ->withMessageContaining('Unknown upload policy option "allowedMimeType" for group "g"');
+
+        PolicyRegistry::fromArray(['g' => ['allowedMimeType' => ['image/png']]]);
+    }
+
+    /**
+     * The message names what is accepted, so the fix does not need the source.
+     */
+    public function theRejectionListsTheKnownOptions(): void
+    {
+        Expect::exception(InvalidArgumentException::class)
+            ->withMessageContaining('allowedMimeTypes, maxBytes, maxPixels, requireImageDimensions');
+
+        PolicyRegistry::fromArray(['g' => ['maxByte' => 10]]);
     }
 }
