@@ -13,10 +13,15 @@ use RuntimeException;
  * A read-only window `[offset, offset + length)` over another stream.
  *
  * What a `206 Partial Content` response needs: the range is served straight
- * from the underlying file handle, so a client asking for 100 MiB out of a 4 GiB
- * video costs 100 MiB of transfer and no buffering. Copying the range into
- * `php://temp` first would work and would also let a client choose how much
- * memory or disk the server spends.
+ * from the underlying file handle, so an emitter looping over {@see read()} to
+ * serve 100 MiB out of a 4 GiB video costs 100 MiB of transfer and holds one
+ * chunk at a time. Copying the range into `php://temp` first would work and
+ * would also let a client choose how much memory or disk the server spends.
+ *
+ * That property belongs to {@see read()}, not to the class. {@see getContents()}
+ * and {@see __toString()} materialise the whole window by definition — they
+ * return a string — so a 100 MiB range through either of them is 100 MiB of
+ * memory. Use them for small windows; emit large ones through `read()`.
  *
  * Written here rather than pulled in: `guzzlehttp/psr7` has `LimitStream`, but
  * requiring a whole PSR-7 implementation at runtime — one that would then
@@ -27,6 +32,9 @@ use RuntimeException;
  */
 final class LimitedStream implements StreamInterface
 {
+    /** Read size for the copy loops. Big enough not to be the bottleneck. */
+    private const int CHUNK = 262_144;
+
     private int $position = 0;
 
     /**
@@ -180,6 +188,4 @@ final class LimitedStream implements StreamInterface
     {
         return $this->stream->getMetadata($key);
     }
-
-    private const int CHUNK = 262_144;
 }

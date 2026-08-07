@@ -87,6 +87,7 @@ final class Uuid7IdGeneratorTest
     {
         $versionLowBits = [];
         $variantLowBits = [];
+        $neighbourLowBits = [];
 
         for ($i = 0; $i < 200; ++$i) {
             $bytes = hex2bin(str_replace('-', '', $this->generator->generate()));
@@ -94,13 +95,28 @@ final class Uuid7IdGeneratorTest
 
             $versionLowBits[] = \ord($bytes[6]) & 0x0F;
             $variantLowBits[] = \ord($bytes[8]) & 0x3F;
+            // The neighbour, so "byte 6 was built from byte 7" is detectable
+            // too — an off-by-one index still produces a plausible UUIDv7.
+            $neighbourLowBits[] = \ord($bytes[7]);
         }
 
-        Assert::true(count(array_unique($versionLowBits)) > 1, 'byte 6 keeps four random bits');
-        Assert::true(count(array_unique($variantLowBits)) > 1, 'byte 8 keeps six random bits');
+        // Four and six bits of entropy over 200 draws: anything close to one
+        // distinct value means a mask ate the randomness rather than shaped it.
+        Assert::true(count(array_unique($versionLowBits)) > 8, 'byte 6 keeps four random bits');
+        Assert::true(count(array_unique($variantLowBits)) > 32, 'byte 8 keeps six random bits');
+
+        foreach ([
+            'byte 6 and byte 8 are not one byte read twice'
+                => array_map(static fn(int $b): int => $b & 0x0F, $variantLowBits),
+            'byte 6 does not come from byte 7'
+                => array_map(static fn(int $b): int => $b & 0x0F, $neighbourLowBits),
+        ] as $message => $other) {
+            Assert::true($versionLowBits !== $other, $message);
+        }
+
         Assert::true(
-            $versionLowBits !== array_map(static fn(int $b): int => $b & 0x0F, $variantLowBits),
-            'the two bytes are not the same byte read twice',
+            $variantLowBits !== array_map(static fn(int $b): int => $b & 0x3F, $neighbourLowBits),
+            'byte 8 does not come from byte 7',
         );
     }
 

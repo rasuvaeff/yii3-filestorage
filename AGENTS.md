@@ -125,7 +125,7 @@ the suite honestly achieves rather than a number propped up by suppressions. It
 came down from 89 when the four maintenance commands landed, which added three
 of the groups below; `filestorage:import` added the walk-and-manifest group and
 held the number at 88 by carrying its own exact-output assertions.
-The survivors fall into nine groups, none of which a test can kill without
+The survivors fall into ten groups, none of which a test can kill without
 trading away something real:
 
 | Group | Example | Why no test kills it |

@@ -30,7 +30,11 @@ Core does NOT bind `StoreInterface` or `RepositoryInterface`. Install a backend
 4. **Token format is frozen:** `v1.<key-id>.<expires>.<b64url payload>.<b64url hmac>`.
    Payload is canonical JSON `{fileId, variant, scopeId}`, all covered by the HMAC.
 5. **`urlFor()` is the method application code calls.** `url()` and
-   `temporaryUrl()` are raw capabilities that ignore delivery policy.
+   `temporaryUrl()` are the raw capabilities behind it. `url()` ignores delivery
+   policy entirely; `temporaryUrl()` builds `DeliveryOptions` from the group's
+   policy and passes them to the store, which returns null when it cannot
+   honour them — what neither consults is `allowDirectPublicUrl`, the gate
+   `urlFor()` applies.
 6. **Direct public URLs are opt-in per group** and unsafe with active content
    (HTML, SVG, XML). `filestorage:check` fails on that combination.
 7. **`add()` is all-or-nothing per file.** There is no `addMany()`.
@@ -48,7 +52,7 @@ public function find(string $id): ?File;
 public function remove(string $id): bool;
 public function exists(File $file): bool;
 public function url(File $file): ?string;                                        // raw permanent
-public function temporaryUrl(File $file, DateTimeImmutable $expiresAt): ?string; // raw presigned
+public function temporaryUrl(File $file, DateTimeImmutable $expiresAt): ?string; // presigned, DeliveryOptions applied
 public function urlFor(File $file, ?DateTimeImmutable $expiresAt = null): ?string; // policy-aware; use this
 public function stream(File $file): ?StreamInterface;
 public function content(File $file): ?string;                                    // capped

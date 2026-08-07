@@ -16,6 +16,20 @@ final readonly class PolicyRegistry
     /** Key of the policy applied to any group without one of its own. */
     public const string WILDCARD = '*';
 
+    /**
+     * Everything {@see self::fromArray()} understands. Anything else is a typo,
+     * and a typo here fails *open*: `allowedMimeType` without the `s` would
+     * leave the allow-list empty, which this package reads as "accept
+     * anything". Silently ignoring an unknown key turns a one-character
+     * mistake into an open upload endpoint.
+     */
+    private const array OPTIONS = [
+        'allowedMimeTypes',
+        'maxBytes',
+        'maxPixels',
+        'requireImageDimensions',
+    ];
+
     /** @var array<non-empty-string, UploadPolicy> */
     private array $policies;
 
@@ -75,6 +89,17 @@ final readonly class PolicyRegistry
      */
     private static function policyFromArray(string $group, array $policy): UploadPolicy
     {
+        foreach ($policy as $option => $_value) {
+            if (!\is_string($option) || !\in_array($option, self::OPTIONS, true)) {
+                throw new InvalidArgumentException(sprintf(
+                    'Unknown upload policy option "%s" for group "%s". Known options: %s',
+                    \is_string($option) ? $option : (string) $option,
+                    $group,
+                    implode(', ', self::OPTIONS),
+                ));
+            }
+        }
+
         /** @var mixed $allowed */
         $allowed = $policy['allowedMimeTypes'] ?? [];
         if (!\is_array($allowed)) {
@@ -95,8 +120,27 @@ final readonly class PolicyRegistry
             allowedMimeTypes: $mimeTypes,
             maxBytes: self::intOption($policy, 'maxBytes', $defaults->maxBytes, $group),
             maxPixels: self::intOption($policy, 'maxPixels', $defaults->maxPixels, $group),
-            requireImageDimensions: ($policy['requireImageDimensions'] ?? false) === true,
+            requireImageDimensions: self::boolOption($policy, 'requireImageDimensions', false, $group),
         );
+    }
+
+    /**
+     * `'true'` is not `true`. Coercing it would give an operator who wrote a
+     * string the opposite of what they asked for, silently.
+     *
+     * @param array<array-key, mixed> $policy
+     * @param non-empty-string $key
+     * @param non-empty-string $group
+     */
+    private static function boolOption(array $policy, string $key, bool $default, string $group): bool
+    {
+        /** @var mixed $value */
+        $value = $policy[$key] ?? $default;
+        if (!\is_bool($value)) {
+            throw new InvalidArgumentException("{$key} for group \"{$group}\" must be a boolean");
+        }
+
+        return $value;
     }
 
     /**

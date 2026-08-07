@@ -16,6 +16,7 @@ use Rasuvaeff\PropertyTesting\Property;
 use Rasuvaeff\Yii3Filestorage\Exception\UploadFailedException;
 use Rasuvaeff\Yii3Filestorage\Exception\UploadTooLargeException;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\ForwardOnlyStream;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\ShortWritingStream;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Testo\Assert;
 use Testo\Codecov\Covers;
@@ -110,15 +111,10 @@ final class UploadTest
         $handle = fopen('php://temp', 'w+b');
         \assert($handle !== false);
 
-        $buffer = new class ($handle) extends Stream {
-            #[\Override]
-            public function write(mixed $string): int
-            {
-                \assert(\is_string($string));
-
-                return parent::write(substr($string, 0, 2));
-            }
-        };
+        // A decorator rather than a subclass: `Nyholm\Psr7\Stream` is `@final`,
+        // and extending it is a static-analysis failure this package will not
+        // suppress. Delegating also keeps `write()`'s signature honest.
+        $buffer = new ShortWritingStream(Stream::create($handle), 2);
 
         $factory = new readonly class (
             $this->factory,
@@ -227,6 +223,7 @@ final class UploadTest
     public function fromPathReadsTheFileAndTakesItsBasename(): void
     {
         $path = tempnam(sys_get_temp_dir(), 'fs-upload-');
+        \assert($path !== false);
         file_put_contents($path, 'from disk');
 
         try {
@@ -242,6 +239,7 @@ final class UploadTest
     public function fromPathAcceptsAnExplicitOriginalName(): void
     {
         $path = tempnam(sys_get_temp_dir(), 'fs-upload-');
+        \assert($path !== false);
         file_put_contents($path, 'x');
 
         try {

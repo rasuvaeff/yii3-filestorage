@@ -16,6 +16,12 @@ final readonly class DeliveryPolicyRegistry
     /** Key of the policy applied to any group without one of its own. */
     public const string WILDCARD = '*';
 
+    /** Everything {@see self::fromArray()} understands. */
+    private const array OPTIONS = [
+        'allowDirectPublicUrl',
+        'forceDownload',
+    ];
+
     /** @var array<non-empty-string, DeliveryPolicy> */
     private array $policies;
 
@@ -37,7 +43,10 @@ final readonly class DeliveryPolicyRegistry
      * {@see PolicyRegistry::fromArray()} for why this is not in `config/di.php`.
      *
      * A missing `allowDirectPublicUrl` defaults to false and a missing
-     * `forceDownload` to true: a typo in configuration must fail closed.
+     * `forceDownload` to true, so an incomplete policy is the restrictive one.
+     * A *misspelt* option is rejected outright rather than quietly taking those
+     * defaults: an operator who meant to open a group and got the key wrong
+     * would otherwise never learn the setting did nothing.
      *
      * @param array<array-key, mixed> $config Group name => delivery array.
      *
@@ -54,13 +63,43 @@ final readonly class DeliveryPolicyRegistry
                 throw new InvalidArgumentException("Delivery policy for group \"{$group}\" must be an array");
             }
 
+            foreach ($policy as $option => $_value) {
+                if (!\is_string($option) || !\in_array($option, self::OPTIONS, true)) {
+                    throw new InvalidArgumentException(sprintf(
+                        'Unknown delivery policy option "%s" for group "%s". Known options: %s',
+                        \is_string($option) ? $option : (string) $option,
+                        $group,
+                        implode(', ', self::OPTIONS),
+                    ));
+                }
+            }
+
             $policies[$group] = new DeliveryPolicy(
-                allowDirectPublicUrl: ($policy['allowDirectPublicUrl'] ?? false) === true,
-                forceDownload: ($policy['forceDownload'] ?? true) !== false,
+                allowDirectPublicUrl: self::boolOption($policy, 'allowDirectPublicUrl', false, $group),
+                forceDownload: self::boolOption($policy, 'forceDownload', true, $group),
             );
         }
 
         return new self($policies);
+    }
+
+    /**
+     * `'true'` is not `true`. Coercing it would give an operator who wrote a
+     * string the opposite of what they asked for, silently.
+     *
+     * @param array<array-key, mixed> $policy
+     * @param non-empty-string $key
+     * @param non-empty-string $group
+     */
+    private static function boolOption(array $policy, string $key, bool $default, string $group): bool
+    {
+        /** @var mixed $value */
+        $value = $policy[$key] ?? $default;
+        if (!\is_bool($value)) {
+            throw new InvalidArgumentException("{$key} for group \"{$group}\" must be a boolean");
+        }
+
+        return $value;
     }
 
     /**
