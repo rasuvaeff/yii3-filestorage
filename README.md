@@ -340,7 +340,7 @@ re-encode if the files will be served publicly.
 
 | Command | Does |
 |---|---|
-| `filestorage:check` | Reports wiring, per-store capabilities and per-group rules; fails on an unsafe delivery combination |
+| `filestorage:check` | Reports wiring, per-store capabilities, tenancy and per-group rules; fails on an unsafe delivery combination or on tenant mode with no scoped resolver |
 | `filestorage:stat` | Counts and sizes by group, plus how much sharing has saved (physical figures withheld under tenancy) |
 | `filestorage:verify` | Reports rows whose object is missing; `--deep` re-reads each one and compares its hash |
 | `filestorage:backfill-hash` | Fills in `contentHash` on rows written before integrity hashing was on |
@@ -375,6 +375,14 @@ runs per tenant under the ambient scope, while the sweep refuses under a bound
 scope provider and runs once with it unbound (see below).
 
 ### Tenancy and the orphan sweep
+
+`filestorage:check` reports which mode you are in, and **fails** when a
+`FileScopeProviderInterface` is bound with nothing binding
+`ScopedFileResolverInterface`: a signed download then has no scoped way to
+resolve a file, and resolving by id alone reads any file whose id leaks. Install
+a repository backend that ships a resolver (`-db` does), or unbind the scope
+provider if the installation is not multi-tenant. The reverse — a resolver with
+no scope provider — is the ordinary single-scope case and is fine.
 
 **`gc --orphans` refuses to run when a `FileScopeProviderInterface` is bound**,
 and the refusal is deliberate rather than a limitation to work around. An object

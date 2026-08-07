@@ -314,7 +314,7 @@ No clock double ships here. Everything takes a PSR-20 clock; use
 
 | Class | Command | Does |
 |---|---|---|
-| `Command\CheckCommand` | `filestorage:check` | Wiring, per-store capabilities, per-group rules. Non-zero on an unsafe delivery combination |
+| `Command\CheckCommand` | `filestorage:check` | Wiring, per-store capabilities, tenancy, per-group rules. Non-zero on an unsafe delivery combination, or on a bound `FileScopeProviderInterface` with no `ScopedFileResolverInterface` |
 | `Command\StatCommand` | `filestorage:stat` | Counts and sizes by group, plus what sharing saved. Physical figures withheld under tenancy |
 | `Command\VerifyCommand` | `filestorage:verify` | Rows whose object is missing. `--deep` re-reads and compares the hash. Non-zero on any finding |
 | `Command\BackfillHashCommand` | `filestorage:backfill-hash` | Fills `contentHash` on rows written before hashing was on |
@@ -343,7 +343,12 @@ Rules:
    pointing at the same objects, so it would over-count objects and under-count
    sharing. Run `stat` with the provider unbound for those.
 7. After `-db`'s `filestorage:deduplicate --apply`, the objects the migrated rows
-   used to point at are orphans: reclaim with `gc --orphans --apply`.
+   used to point at are orphans: reclaim with `gc --orphans --apply` — from a
+   maintenance entry point with the scope provider unbound if tenancy is on.
+8. **`check` fails on tenant mode with no scoped resolver.** A bound
+   `FileScopeProviderInterface` with nothing binding `ScopedFileResolverInterface`
+   leaves a signed download resolving by id alone. A resolver without a provider
+   is the normal single-scope case and passes.
 
 ## Configuration
 

@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a tenant-filtered repository while the object listing it compares against is
   physical, so under tenancy every other tenant's object looked like an orphan
   and `--apply` would have deleted it. Blob collection is unaffected.
+- `filestorage:check` gained a Tenancy section and now **fails** when a
+  `FileScopeProviderInterface` is bound with nothing binding
+  `ScopedFileResolverInterface`. A signed download resolves only through the
+  resolver, so that combination left `-web` throwing a container error on the
+  first request naming an interface; the check names the missing package before
+  anything is deployed. It also warns that `gc --orphans` refuses and `stat`
+  withholds its physical figures under tenancy. A resolver with no provider is
+  the ordinary single-scope case and stays sound.
 - `filestorage:stat` now takes the optional `FileScopeProviderInterface` too,
   and withholds its two physical figures — "Distinct objects" and the sharing
   savings — when one is bound. Those describe how many objects exist and how

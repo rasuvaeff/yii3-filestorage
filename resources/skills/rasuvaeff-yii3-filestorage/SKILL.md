@@ -42,7 +42,9 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
 
 5. **Direct public delivery plus active content is a stored-XSS hole.** HTML,
    SVG and XML served from your own origin execute as your site.
-   `filestorage:check` fails that combination — do not work around it.
+   `filestorage:check` fails that combination — do not work around it. It also
+   fails a bound `FileScopeProviderInterface` with no `ScopedFileResolverInterface`:
+   a signed download would then resolve by id alone.
 
 6. **Byte caps are enforced while copying, not after.** An unknown-length body
    must be stopped mid-write and its partial output removed. A check after the

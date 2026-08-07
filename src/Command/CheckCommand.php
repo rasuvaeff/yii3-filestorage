@@ -7,8 +7,10 @@ namespace Rasuvaeff\Yii3Filestorage\Command;
 use Override;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\PolicyRegistry;
+use Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\MaintenanceRepositoryInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\RepositoryInterface;
+use Rasuvaeff\Yii3Filestorage\Repository\ScopedFileResolverInterface;
 use Rasuvaeff\Yii3Filestorage\Store\ContentAddressableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeAwareStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\MaintenanceStoreInterface;
@@ -64,6 +66,8 @@ final class CheckCommand extends Command
         private readonly PolicyRegistry $policies,
         private readonly DeliveryPolicyRegistry $deliveryPolicies,
         private readonly array $knownGroups = [],
+        private readonly ?FileScopeProviderInterface $scopes = null,
+        private readonly ?ScopedFileResolverInterface $scopedFiles = null,
     ) {
         parent::__construct();
     }
@@ -96,6 +100,36 @@ final class CheckCommand extends Command
         if (!$this->repository instanceof MaintenanceRepositoryInterface) {
             $warnings[] = 'The repository does not implement MaintenanceRepositoryInterface, so filestorage:verify, '
                 . ':stat and :backfill-hash cannot run against it.';
+        }
+
+        $io->section('Tenancy');
+        if ($this->scopes === null) {
+            $io->writeln('Single-scope: no FileScopeProviderInterface is bound, so no tenant predicate is applied.');
+        } else {
+            $io->writeln(sprintf(
+                'Multi-tenant: %s, current scope %s.',
+                $this->scopes::class,
+                $this->scopes->currentScopeId() ?? '(none)',
+            ));
+
+            if ($this->scopedFiles === null) {
+                // The failure this exists to pre-empt is not a wrong answer, it
+                // is a container error on the first signed download: `-web`
+                // requires the resolver outright. A diagnostic here names the
+                // missing package; the runtime error names an interface.
+                $errors[] = sprintf(
+                    'A %s is bound but nothing binds %s, so a signed download has no scoped way to resolve a file '
+                    . '— and resolving by id alone reads any file whose id leaks. Install a repository backend that '
+                    . 'ships one (rasuvaeff/yii3-filestorage-db does), or unbind the scope provider if this '
+                    . 'installation is not multi-tenant.',
+                    FileScopeProviderInterface::class,
+                    ScopedFileResolverInterface::class,
+                );
+            }
+
+            $warnings[] = 'Tenancy is on, so `filestorage:gc --orphans` refuses and `filestorage:stat` withholds its '
+                . 'physical figures: both compare tenant-filtered rows against unfiltered objects. Run them from a '
+                . 'maintenance entry point that leaves the scope provider unbound.';
         }
 
         $groups = array_values(array_unique([PolicyRegistry::WILDCARD, ...$this->knownGroups]));

@@ -201,6 +201,15 @@ asserting only one half lets the operands be swapped undetected.
   that fixes it — no single tenant's rows can prove an object unreferenced — so
   the command refuses rather than warning. Blob collection is unaffected: the
   ledger is keyed by physical identity.
+- **`check` fails on tenant mode with no scoped resolver, and that is the whole
+  tenant-wiring gate.** A bound `FileScopeProviderInterface` with nothing binding
+  `ScopedFileResolverInterface` leaves a signed download with no scoped way to
+  resolve a file — and `-web` requires the resolver outright, so without this the
+  symptom is a container error on the first download naming an interface. The
+  reverse is *not* an error: `-db` binds a resolver unconditionally, so a
+  resolver with no provider is every single-scope installation.
+  `verify` and `backfill-hash` need no such treatment — they work per row, so a
+  scoped walk covers a subset rather than comparing two different universes.
 - **`stat` splits its report along that same line.** Counts and byte totals are
   logical — one tenant's rows correctly answer "how much does this tenant have"
   — so they are printed under a `Group (current scope)` header. "Distinct

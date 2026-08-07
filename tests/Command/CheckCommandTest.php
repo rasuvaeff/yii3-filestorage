@@ -10,7 +10,9 @@ use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicy;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\PolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\UploadPolicy;
+use Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\RepositoryInterface;
+use Rasuvaeff\Yii3Filestorage\Repository\ScopedFileResolverInterface;
 use Rasuvaeff\Yii3Filestorage\Store\FileSystem\FileSystemStore;
 use Rasuvaeff\Yii3Filestorage\Store\FileSystem\PublicFileSystemStore;
 use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
@@ -18,6 +20,8 @@ use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\FailingRepository;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\FixedScope;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\NullScopedFileResolver;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
 use Testo\Assert;
@@ -271,12 +275,70 @@ final class CheckCommandTest
     /**
      * @param list<non-empty-string> $knownGroups
      */
+    /**
+     * §5.7's promise, which nothing enforced until now: a signed download
+     * resolves through `ScopedFileResolverInterface` and *only* through it, so
+     * an installation that established a tenant scope without binding one has
+     * no scoped way in. `-web` requires the resolver outright, so the symptom
+     * was a container error on the first download naming an interface — this
+     * names the missing package instead, before anything is deployed.
+     */
+    public function tenantModeWithoutAScopedResolverIsAnError(): void
+    {
+        $tester = $this->run(scopes: new FixedScope('tenant-a'));
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string((string) preg_replace('/[\s!\[\]]+/u', ' ', $tester->getDisplay()))
+            ->contains('is bound but nothing binds');
+    }
+
+    public function tenantModeWithBothSidesBoundIsSound(): void
+    {
+        $tester = $this->run(
+            scopes: new FixedScope('tenant-a'),
+            scopedFiles: new NullScopedFileResolver(),
+        );
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        Assert::string($tester->getDisplay())->contains('Multi-tenant');
+    }
+
+    /**
+     * The maintenance commands behave differently under tenancy, and the report
+     * that tells you your wiring is sound is the place to learn that — not the
+     * refusal three weeks later.
+     */
+    public function tenantModeWarnsThatTheMaintenanceCommandsChange(): void
+    {
+        $display = (string) preg_replace('/[\s!\[\]]+/u', ' ', $this->run(
+            scopes: new FixedScope('tenant-a'),
+            scopedFiles: new NullScopedFileResolver(),
+        )->getDisplay());
+
+        Assert::string($display)->contains('gc --orphans` refuses and `filestorage:stat` withholds');
+    }
+
+    /**
+     * A resolver with no scope provider is the ordinary single-tenant case:
+     * `-db` binds one unconditionally. Treating that as a misconfiguration
+     * would fail every installation that simply is not multi-tenant.
+     */
+    public function aResolverWithoutAScopeProviderIsNotAnError(): void
+    {
+        $tester = $this->run(scopedFiles: new NullScopedFileResolver());
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        Assert::string($tester->getDisplay())->contains('Single-scope');
+    }
+
     private function run(
         ?StoreInterface $store = null,
         ?RepositoryInterface $repository = null,
         ?PolicyRegistry $policies = null,
         ?DeliveryPolicyRegistry $deliveryPolicies = null,
         array $knownGroups = [],
+        ?FileScopeProviderInterface $scopes = null,
+        ?ScopedFileResolverInterface $scopedFiles = null,
     ): CommandTester {
         $command = new CheckCommand(
             stores: new StoreRegistry([$store ?? new InMemoryStore('memory', $this->factory)]),
@@ -284,6 +346,8 @@ final class CheckCommandTest
             policies: $policies ?? new PolicyRegistry(),
             deliveryPolicies: $deliveryPolicies ?? new DeliveryPolicyRegistry(),
             knownGroups: $knownGroups,
+            scopes: $scopes,
+            scopedFiles: $scopedFiles,
         );
 
         $tester = new CommandTester($command);

@@ -10,6 +10,7 @@ use Rasuvaeff\Yii3Filestorage\Command\StatCommand;
 use Rasuvaeff\Yii3Filestorage\Command\VerifyCommand;
 use Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\MaintenanceRepositoryInterface;
+use Rasuvaeff\Yii3Filestorage\Repository\ScopedFileResolverInterface;
 use Rasuvaeff\Yii3Filestorage\Store\BlobLedgerInterface;
 use Rasuvaeff\Yii3Filestorage\Id\IdGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Id\Uuid7IdGenerator;
@@ -91,6 +92,8 @@ return [
         RepositoryInterface $repository,
         PolicyRegistry $policies,
         DeliveryPolicyRegistry $deliveryPolicies,
+        ?FileScopeProviderInterface $scopes = null,
+        ?ScopedFileResolverInterface $scopedFiles = null,
     ): CheckCommand => new CheckCommand(
         stores: $stores,
         repository: $repository,
@@ -100,6 +103,8 @@ return [
             array_keys($params['rasuvaeff/yii3-filestorage']['policies']),
             static fn (mixed $group): bool => \is_string($group) && $group !== PolicyRegistry::WILDCARD,
         )),
+        scopes: $scopes,
+        scopedFiles: $scopedFiles,
     ),
 
     // The operations commands need a repository that can be walked. That is a
