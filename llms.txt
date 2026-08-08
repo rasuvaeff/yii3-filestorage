@@ -378,8 +378,17 @@ Rules:
 ],
 ```
 
-Core `config/di.php` binds `StorageInterface`, `StoreRegistry`,
+Core `config/di.php` binds `Storage`, `StorageInterface`, `StoreRegistry`,
 `PathGeneratorInterface`, `MimeTypeDetectorInterface`, `IdGeneratorInterface`,
-`ExtensionMap`, both policy registries and all five commands. It binds neither
+`ExtensionMap`, both policy registries and all six commands. It binds neither
 `StoreInterface` nor `RepositoryInterface` — one vendor package owns each key,
 and two binding the same one is a `yiisoft/config` `Duplicate key` error by design.
+
+`Storage::class` builds the facade; `StorageInterface::class` is an alias to it.
+A decorator bound to `StorageInterface` must take the inner one as `Storage` —
+asking for `StorageInterface` resolves to the decorator itself and the container
+answers `CircularReferenceException`:
+
+```php
+StorageInterface::class => static fn (Storage $inner): StorageInterface => new QuotaStorage($inner),
+```

@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.1 — 2026-08-08
+
+- `config/di.php` now binds the facade under `Storage::class` and makes
+  `StorageInterface::class` an alias to it. Every decorator this package
+  documents — quotas, metrics, tracing, and `-db`'s deduplicating storage —
+  is bound to the interface and needs the *undecorated* facade injected. With
+  one id that dependency resolved to the decorator itself, so the recipe in
+  "Extending it" answered `CircularReferenceException` with nothing naming the
+  cause. Take the inner facade as `Storage`, not `StorageInterface`; the
+  decorator's own constructor stays typed against the interface. Additive: an
+  application that binds nothing extra resolves exactly what it did before.
+
 ## 0.1.0 — 2026-08-08
 
 First release. The `0.x` line is where the API settles while the database,

@@ -286,8 +286,29 @@ final readonly class QuotaStorage implements StorageInterface
 }
 ```
 
-Bind your decorator to `StorageInterface` in the application layer. Do not fork
-the core for this.
+Bind your decorator to `StorageInterface` in the application layer, and take the
+inner one as `Storage`, not as `StorageInterface`:
+
+```php
+// config/common/di/filestorage.php
+use Rasuvaeff\Yii3Filestorage\Storage;
+use Rasuvaeff\Yii3Filestorage\StorageInterface;
+
+return [
+    StorageInterface::class => static fn (Storage $inner, Quotas $quotas): StorageInterface
+        => new QuotaStorage($inner, $quotas),
+];
+```
+
+Core binds two ids for one facade: `Storage::class` builds it, and
+`StorageInterface::class` is an alias to that. `Storage::class` is the id that
+still means "the plain facade" after the application has rebound the interface —
+a decorator asking for `StorageInterface` would be handed itself, and the
+container answers `CircularReferenceException` for a recipe that reads
+perfectly. The constructor above stays typed `StorageInterface` so the class is
+testable with any double; only the wiring names the concrete id.
+
+Do not fork the core for this.
 
 ## Testing your own code
 

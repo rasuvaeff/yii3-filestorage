@@ -75,6 +75,24 @@ final class ConfigWiringTest
         Assert::same($storage->content($file), 'hello');
     }
 
+    /**
+     * The reason `Storage::class` is bound separately. An application that
+     * rebinds `StorageInterface` to something wrapping the plain facade — which
+     * is how `-db` offers deduplication — needs an id for the thing being
+     * wrapped. If the wrapper's own dependency resolved through
+     * `StorageInterface` it would resolve to the wrapper, and the container
+     * would answer `CircularReferenceException` for a recipe that reads
+     * perfectly.
+     */
+    public function anApplicationCanRebindTheInterfaceToSomethingThatWrapsTheBase(): void
+    {
+        $container = $this->container([
+            StorageInterface::class => static fn(Storage $base): StorageInterface => $base,
+        ]);
+
+        Assert::same($container->get(StorageInterface::class), $container->get(Storage::class));
+    }
+
     public function coreServicesResolveToTheirDefaultImplementations(): void
     {
         $container = $this->container();
