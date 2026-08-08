@@ -67,18 +67,27 @@ final class PipelineBench
     }
 
     /**
-     * The same bytes into the same store, with nothing else: no sniff, no
-     * policy, no path generator, no metadata row. Reading the stream and
-     * throwing the string away would measure a different thing entirely and
-     * make the gap look like the whole cost of writing.
+     * The same bytes into a store, with everything the facade adds stripped
+     * away: no MIME sniff, no policy check, no metadata row. A path generator
+     * stays, because `write()` takes one and cannot invent a target without it
+     * — so the baseline carries that cost too and the gap is the cost of the
+     * *guarantees*, not of writing.
+     *
+     * Reading the stream and discarding the string, which is what this used to
+     * do, measured no write at all and made the gap look like the entire cost
+     * of storing a file.
      */
     public static function bareWrite(): StoreResult
     {
-        return self::bareStore()->write(
-            self::upload(),
-            'common',
-            new RandomPathGenerator(),
-        );
+        $store = self::bareStore();
+        $result = $store->write(self::upload(), 'common', new RandomPathGenerator());
+        // Dropped immediately: at 200 calls of ~100 KiB this store would
+        // otherwise hold a few hundred megabytes for the length of the run,
+        // against Testo's 2 GB ceiling, and the measurement does not need the
+        // bytes to survive the call.
+        $store->clear();
+
+        return $result;
     }
 
     /**
@@ -206,8 +215,8 @@ final class PipelineBench
     }
 
     /**
-     * Its own store, so the baseline does not share a key space with the one
-     * `add()` writes into and collide with it after a few thousand calls.
+     * Its own store, so clearing it between calls cannot disturb whatever
+     * `add()` has written into the facade's one.
      */
     private static function bareStore(): InMemoryStore
     {
