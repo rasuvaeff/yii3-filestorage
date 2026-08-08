@@ -628,10 +628,25 @@ final class ImportCommandTest
         $this->file('a.txt', 'one');
         $nested = \dirname($this->manifest) . '/deep/deeper/import.jsonl';
 
-        $tester = $this->run(['--apply' => true, '--manifest' => $nested]);
+        $warnings = [];
+        set_error_handler(static function (int $number, string $message) use (&$warnings): bool {
+            $warnings[] = $message;
+
+            return true;
+        }, \E_WARNING);
+
+        try {
+            $tester = $this->run(['--apply' => true, '--manifest' => $nested]);
+        } finally {
+            restore_error_handler();
+        }
 
         Assert::same($tester->getStatusCode(), Command::SUCCESS);
         Assert::true(is_file($nested));
+        // The mkdir() chain is the race-safe form, so a concurrent creator is
+        // an expected outcome — but the warning it emits is enough to fail a
+        // run that treats warnings as errors, which is how infection aborts.
+        Assert::same($warnings, []);
     }
 
     /**
@@ -707,7 +722,15 @@ final class ImportCommandTest
         $files = iterator_to_array($this->repository->files(null, 10), false);
 
         Assert::same($files[0]->metadata['importSource'], 'nested/a.txt');
-        Assert::same($files[0]->metadata['importSourcePath'], $this->source . '/nested/a.txt');
+        // Against the *resolved* root: the command walks realpath($directory),
+        // and on Windows that expands the 8.3 short name a temp directory is
+        // handed out under, so the unresolved string does not match.
+        $root = realpath($this->source);
+        \assert($root !== false);
+        Assert::same(
+            $files[0]->metadata['importSourcePath'],
+            str_replace('\\', '/', $root) . '/nested/a.txt',
+        );
     }
 
     private function file(string $relative, string $contents): void

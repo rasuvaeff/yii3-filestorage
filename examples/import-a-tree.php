@@ -87,7 +87,7 @@ echo "== Same tree, again ==\n";
 $run(['--apply' => true]);
 echo sprintf("Rows stored: %d (unchanged — the manifest skipped them)\n\n", $repository->count());
 
-// --- 4. A new file, and a policy that now accepts the big one -----------
+// --- 4. A new file appears in the tree ---------------------------------
 
 file_put_contents($legacy . '/2025/invoices/may.txt', "Invoice, May.\n");
 

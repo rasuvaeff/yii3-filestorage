@@ -346,7 +346,8 @@ final class MemoryBlobLedgerTest
 
         Assert::instanceOf($first, BlobLease::class);
         Assert::instanceOf($second, BlobLease::class);
-        Assert::false(($first ?? $this->lease())->token->equals(($second ?? $this->lease())->token));
+        \assert($first !== null && $second !== null);
+        Assert::false($first->token->equals($second->token));
     }
 
     /**
