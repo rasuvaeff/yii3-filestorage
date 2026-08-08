@@ -163,7 +163,6 @@ final class ConfigWiringTest
         foreach ([
             'defaultGroup',
             'maxInlineBytes',
-            'maxSpoolBytes',
             'integrityHashMaxBytes',
             'defaultUrlTtl',
             'extensionOverrides',
@@ -188,8 +187,9 @@ final class ConfigWiringTest
     /**
      * The maintenance commands ask for a repository that can be *walked*, a
      * stronger contract than the hot path's. An installation whose backend
-     * implements only `RepositoryInterface` therefore has no maintenance
-     * commands — which beats a container error the first time cron runs.
+     * implements only `RepositoryInterface` cannot build them at all, and
+     * because `params.php` registers every command unconditionally, running
+     * one there fails in the container naming the interface it needs.
      */
     public function theMaintenanceCommandsResolveOnceTheBackendCanBeWalked(): void
     {

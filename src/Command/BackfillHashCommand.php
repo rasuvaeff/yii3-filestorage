@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Filestorage\Command;
 
 use Override;
+use Rasuvaeff\Yii3Filestorage\Exception\InvalidConfigException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Repository\MaintenanceRepositoryInterface;
+use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
@@ -125,7 +127,7 @@ final class BackfillHashCommand extends Command
      */
     private function hash(File $file): ?string
     {
-        $stream = $this->stores->get($file->storeName)->stream($file);
+        $stream = $this->storeFor($file->storeName)?->stream($file);
         if ($stream === null) {
             return null;
         }
@@ -157,5 +159,22 @@ final class BackfillHashCommand extends Command
         return isset($options[$name]) && \is_string($options[$name]) && $options[$name] !== ''
             ? $options[$name]
             : null;
+    }
+
+    /**
+     * A row can name a store that configuration no longer has — a rename, a
+     * dropped backend, a restore that brought back a database without its
+     * objects. That is one of the situations this command exists to report,
+     * so it must survive it rather than abort on the first such row.
+     *
+     * @param non-empty-string $storeName
+     */
+    private function storeFor(string $storeName): ?StoreInterface
+    {
+        try {
+            return $this->stores->get($storeName);
+        } catch (InvalidConfigException) {
+            return null;
+        }
     }
 }

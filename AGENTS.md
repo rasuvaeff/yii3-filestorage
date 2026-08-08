@@ -25,8 +25,8 @@ and `PublicFileSystemStore`; `Repository\RepositoryInterface` and
 `PolicyRegistry`, `DeliveryPolicy`, `DeliveryPolicyRegistry`, `DeliveryOptions`;
 `Url\UrlSignerInterface` / `HmacUrlSigner` / `SigningKeyRing` / `SignedPayload` /
 `ProxyUrlGeneratorInterface`; `Stream\LimitedStream`; `Command\CheckCommand`,
-`Command\GcCommand`, `Command\VerifyCommand`, `Command\BackfillHashCommand`
-and `Command\StatCommand`;
+`Command\GcCommand`, `Command\VerifyCommand`, `Command\BackfillHashCommand`,
+`Command\StatCommand` and `Command\ImportCommand`;
 `Store\BlobLedgerInterface` with `BlobState`, `BlobToken`, `BlobReservation`,
 `BlobLease` and `BlobRecord`; `Repository\FileScopeProviderInterface` and
 `ScopedFileResolverInterface`;
@@ -50,7 +50,7 @@ through the shipped doubles alone.
 
 DI wiring: core `config/di.php` binds the facade, `StoreRegistry`, path
 generator, MIME detector, id generator, `ExtensionMap`, both policy registries
-and all five commands. It must **not** bind `StoreInterface` or
+and all six commands. It must **not** bind `StoreInterface` or
 `RepositoryInterface` — `yiisoft/config` allows exactly one vendor package per
 key, so those belong to `-flysystem`/`-db` or to the application. Two packages
 binding one of them is a `Duplicate key` error by design.
@@ -120,12 +120,14 @@ uses `v2.`; both may be accepted during a bounded migration window.
 
 ## Mutation testing
 
-`minMsi` is **88, not 100, and no mutator is ignored** — the threshold is what
+`minMsi` is **87, not 100, and no mutator is ignored** — the threshold is what
 the suite honestly achieves rather than a number propped up by suppressions. It
-came down from 89 when the four maintenance commands landed, which added three
-of the groups below; `filestorage:import` added the walk-and-manifest group and
-held the number at 88 by carrying its own exact-output assertions.
-The survivors fall into ten groups, none of which a test can kill without
+came down from 89 when the four maintenance commands landed, and from 88 when
+the review hardening did: `storeFor()` in three commands, `ledgerKnows()` in the
+orphan sweep, the per-object delete guard and the split `--limit` budget are all
+branches that exist for a store or a configuration that is *broken*, and a
+double that behaves correctly cannot reach most of them.
+The survivors fall into eleven groups, none of which a test can kill without
 trading away something real:
 
 | Group | Example | Why no test kills it |
@@ -139,6 +141,7 @@ trading away something real:
 | Page-size constants | the `500` in every `files($after, 500)`, the `262_144` read size, `iterator_to_array(…, false)`, and the `min`/`max` arithmetic around a remaining budget | Killing them needs fixtures of 500+ rows, and even then most produce identical output — a different page boundary is not a different result. `iterator_to_array`'s preserve-keys flag is unobservable when the result is only iterated |
 | `break` versus `continue` in a cursor-paged walk | the `continue` in every "skip this row" branch of `gc`, `verify` and `backfill-hash` | The cursor is advanced *before* the branch and the outer `while` re-pages from it, so breaking out of the inner loop resumes at the very next row. The two really are equivalent here; the cursor is what makes them so |
 | Filesystem-walk and manifest-append plumbing in `ImportCommand` | `SKIP_DOTS \| UNIX_PATHS` → `&`, `mkdir()`'s mode and its `\|\|`-chain, `fflush()` after `fwrite()`, `trim()` before `json_decode()`, `$done[$path] = true` → `false`, `break`↔`continue` in the walk | Each is unobservable through the command's output. `UNIX_PATHS` only matters on Windows and `SKIP_DOTS` is re-checked by `isFile()`; the `mkdir` chain's three clauses are the standard race-safe form where each fallback reaches the same `null`; `fclose()` flushes, so only a *killed process* can see a missing `fflush` — which is exactly what it is there for; `trim()` and the `"\n"` concatenation protect each other, so removing either leaves the other parsing; `isset()` is true for `false`; and `break`↔`continue` differ only when a skipped entry precedes a kept one, which directory-iteration order does not guarantee on any filesystem |
+| Guards for a store or configuration that is broken | `storeFor()`'s `catch (InvalidConfigException)` in `gc`/`verify`/`backfill-hash`, the `catch (StoreException)` around an orphan delete, `ledgerKnows()`'s `catch (\InvalidArgumentException)`, and the arithmetic in `intdiv($limit, 2) + ($limit % 2)` | Reaching them needs a double that is wrong in one specific way — a registry that throws for a name it just listed, a store whose delete fails only sometimes — and building it means asserting the double's behaviour rather than the command's. The budget split is arithmetic whose off-by-one produces the same observable outcome for every limit a test would use |
 | Console option casts and guards | `(bool) $input->getOption('apply')`, and the `isset() && is_string() && !== ''` chain in each `stringOption()` | Symfony already guarantees the type, so only the `!== ''` half is reachable — and that one *is* tested. The rest exists so psalm can narrow without a suppression |
 
 If a change makes a group disappear, raise `minMsi`. If a change adds an escaped

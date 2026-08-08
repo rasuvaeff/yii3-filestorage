@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Filestorage\Command;
 
 use Override;
+use Rasuvaeff\Yii3Filestorage\Exception\InvalidConfigException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Repository\MaintenanceRepositoryInterface;
+use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
@@ -113,7 +115,12 @@ final class VerifyCommand extends Command
      */
     private function inspect(File $file, bool $deep): ?string
     {
-        $store = $this->stores->get($file->storeName);
+        $store = $this->storeFor($file->storeName);
+        if ($store === null) {
+            // The row names a store configuration does not have, so its object
+            // is unreachable — which is exactly what "missing" means here.
+            return 'missing';
+        }
 
         if (!$store->exists($file)) {
             return 'missing';
@@ -157,5 +164,22 @@ final class VerifyCommand extends Command
         return isset($options[$name]) && \is_string($options[$name]) && $options[$name] !== ''
             ? $options[$name]
             : null;
+    }
+
+    /**
+     * A row can name a store that configuration no longer has — a rename, a
+     * dropped backend, a restore that brought back a database without its
+     * objects. That is one of the situations this command exists to report,
+     * so it must survive it rather than abort on the first such row.
+     *
+     * @param non-empty-string $storeName
+     */
+    private function storeFor(string $storeName): ?StoreInterface
+    {
+        try {
+            return $this->stores->get($storeName);
+        } catch (InvalidConfigException) {
+            return null;
+        }
     }
 }

@@ -101,18 +101,29 @@ return [
         repository: $repository,
         policies: $policies,
         deliveryPolicies: $deliveryPolicies,
-        knownGroups: array_values(array_filter(
-            array_keys($params['rasuvaeff/yii3-filestorage']['policies']),
+        // Both param arrays, not just `policies`. A group configured only
+        // under `delivery` still inherits `policies['*']`, whose shipped
+        // default accepts anything — so `delivery['x']['allowDirectPublicUrl']`
+        // with no `policies['x']` is precisely the unsafe combination
+        // CheckCommand exists to fail on, and it would never have been looked at.
+        knownGroups: array_values(array_unique(array_filter(
+            [
+                ...array_keys($params['rasuvaeff/yii3-filestorage']['policies']),
+                ...array_keys($params['rasuvaeff/yii3-filestorage']['delivery']),
+            ],
             static fn (mixed $group): bool => \is_string($group) && $group !== PolicyRegistry::WILDCARD,
-        )),
+        ))),
         scopes: $scopes,
         scopedFiles: $scopedFiles,
     ),
 
     // The operations commands need a repository that can be walked. That is a
     // stronger contract than the hot path's, so an installation whose backend
-    // only implements RepositoryInterface simply has no maintenance commands —
-    // better than a container error the first time cron runs. The ledger is
+    // implements only RepositoryInterface cannot build them — and because
+    // params.php names all six commands unconditionally, running one there is
+    // a container error naming MaintenanceRepositoryInterface. That is the
+    // honest outcome for a command that genuinely cannot work; what it is not
+    // is silent. The ledger is
     // optional in the same way: without one there are no shared blobs, and
     // `gc` still sweeps orphans.
     //
