@@ -19,6 +19,7 @@ use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\BareStore;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\FailingRepository;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\FixedScope;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\NullScopedFileResolver;
@@ -119,11 +120,17 @@ final class CheckCommandTest
 
     /**
      * A store that supports nothing optional is a legitimate configuration, and
-     * the report has to say so rather than leaving the column blank.
+     * the report has to say so rather than leaving the column blank. Asserting
+     * a capability the store *does* have proves nothing about that branch —
+     * `Test\InMemoryStore` implements maintenance, so the old assertion passed
+     * either way.
      */
     public function aBaseOnlyStoreIsReportedAsSuch(): void
     {
-        Assert::string($this->run()->getDisplay())->contains('maintenance');
+        $display = $this->run(store: new BareStore('bare'))->getDisplay();
+
+        Assert::string($display)->contains('base only');
+        Assert::string($display)->notContains('maintenance');
     }
 
     /**
@@ -273,9 +280,6 @@ final class CheckCommandTest
     }
 
     /**
-     * @param list<non-empty-string> $knownGroups
-     */
-    /**
      * §5.7's promise, which nothing enforced until now: a signed download
      * resolves through `ScopedFileResolverInterface` and *only* through it, so
      * an installation that established a tenant scope without binding one has
@@ -331,6 +335,9 @@ final class CheckCommandTest
         Assert::string($tester->getDisplay())->contains('Single-scope');
     }
 
+    /**
+     * @param list<non-empty-string> $knownGroups
+     */
     private function run(
         ?StoreInterface $store = null,
         ?RepositoryInterface $repository = null,

@@ -331,7 +331,10 @@ final class ConfigWiringTest
         ): StoreInterface => new InMemoryStore('memory', $streams);
         $definitions[RepositoryInterface::class] = MemoryRepository::class;
 
-        return new Container(ContainerConfig::create()->withDefinitions($definitions + $extra));
+        // Spread, not `+`: with the union operator the left operand wins, so a
+        // test passing its own StoreInterface or RepositoryInterface silently
+        // got the default one and asserted against the wrong object.
+        return new Container(ContainerConfig::create()->withDefinitions([...$definitions, ...$extra]));
     }
 
     /**

@@ -126,7 +126,11 @@ final class StatCommand extends Command
         }
 
         $io->text(sprintf('Distinct objects: %d', \count($paths)));
-        $sharedBytes === 0
+        // On rows, not on bytes: a shared row of size zero adds nothing to
+        // $sharedBytes, and the sentence below counts rows. Deciding with one
+        // number and reporting the other means an empty file shared twice
+        // prints "no rows share an object" over a table that says otherwise.
+        $files - \count($paths) === 0
             ? $io->text('No rows share an object.')
             : $io->text(sprintf(
                 'Shared: %d row%s reuse an existing object, saving %s.',

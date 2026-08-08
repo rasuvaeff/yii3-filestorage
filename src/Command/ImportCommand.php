@@ -140,6 +140,7 @@ final class ImportCommand extends Command
         }
 
         $imported = 0;
+        $unrecorded = 0;
         $skipped = 0;
         $failed = 0;
         $seen = 0;
@@ -192,11 +193,27 @@ final class ImportCommand extends Command
 
             $imported++;
             $io->text(sprintf('  + %s → %s', $relative, $id));
-            $this->record($handle, $absolute, $relative, $id);
+            if (!$this->record($handle, $absolute, $relative, $id)) {
+                // The file is stored and the row is committed; only the record
+                // of it failed. Saying so is the difference between "the next
+                // run will re-import this" and finding a duplicate later and
+                // not knowing why.
+                $unrecorded++;
+                $io->text(sprintf('  ! %s imported but not recorded in the manifest', $relative));
+            }
         }
 
         if ($handle !== null) {
             fclose($handle);
+        }
+
+        if ($unrecorded !== 0) {
+            $io->warning(sprintf(
+                '%d file%s imported but could not be written to the manifest, so a later run will import %s again.',
+                $unrecorded,
+                $unrecorded === 1 ? '' : 's',
+                $unrecorded === 1 ? 'it' : 'them',
+            ));
         }
 
         return $this->report($io, $apply, $manifestPath, $imported, $seen, $skipped, $failed);
@@ -275,7 +292,13 @@ final class ImportCommand extends Command
                 // forms, for the same reason the manifest matches on the
                 // absolute one — two roots each holding a `notes.txt` are
                 // indistinguishable by the relative path alone.
-                metadata: ['importSource' => $relative, 'importSourcePath' => $absolute],
+                // Forward slashes on every platform: the value is a record, and
+                // a record that reads differently depending on where the import
+                // ran is one nobody can match against later.
+                metadata: [
+                    'importSource' => $relative,
+                    'importSourcePath' => str_replace('\\', '/', $absolute),
+                ],
             );
 
             return $file->id;
@@ -402,7 +425,11 @@ final class ImportCommand extends Command
     private function openManifest(string $path)
     {
         $directory = \dirname($path);
-        if (!is_dir($directory) && !mkdir($directory, 0o775, true) && !is_dir($directory)) {
+        // Silenced deliberately: the third clause is the race check, so a
+        // concurrent creator is an expected outcome rather than a problem —
+        // and the warning it emits is enough to fail a test run that treats
+        // warnings as errors.
+        if (!is_dir($directory) && !@mkdir($directory, 0o775, true) && !is_dir($directory)) {
             return null;
         }
 
@@ -417,10 +444,10 @@ final class ImportCommand extends Command
      *
      * @param resource|null $handle
      */
-    private function record($handle, string $absolute, string $relative, string $id): void
+    private function record($handle, string $absolute, string $relative, string $id): bool
     {
         if ($handle === null) {
-            return;
+            return false;
         }
 
         $line = json_encode(
@@ -428,10 +455,11 @@ final class ImportCommand extends Command
             JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
         );
 
-        fwrite($handle, $line . "\n");
+        $written = fwrite($handle, $line . "\n");
         // Flushed per line, not per run: the point of the manifest is to
         // survive the run that did not finish.
-        fflush($handle);
+
+        return $written !== false && fflush($handle);
     }
 
     /**
