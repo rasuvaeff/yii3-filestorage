@@ -179,7 +179,6 @@ store is touched**, so nothing is written.
 |---|---|---|
 | `defaultGroup` | `common` | Group used when `add()` is not given one |
 | `maxInlineBytes` | 8 MiB | Cap enforced by `content()` |
-| `maxSpoolBytes` | 256 MiB | Cap on buffering a non-seekable upload |
 | `integrityHashMaxBytes` | `0` | `0` leaves `contentHash` null; a positive value opts into a bounded SHA-256 |
 | `defaultUrlTtl` | `PT1H` | Expiry `urlFor()` uses when none is given |
 | `extensionOverrides` | `[]` | Media type ⇒ extension, over the `symfony/mime` table |

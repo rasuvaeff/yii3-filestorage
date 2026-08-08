@@ -178,7 +178,6 @@ return [
 |---|---|---|
 | `defaultGroup` | `common` | Группа, если `add()` вызван без неё |
 | `maxInlineBytes` | 8 MiB | Ограничение для `content()` |
-| `maxSpoolBytes` | 256 MiB | Ограничение на буферизацию неперематываемой загрузки |
 | `integrityHashMaxBytes` | `0` | `0` оставляет `contentHash` пустым; положительное значение включает ограниченный SHA-256 |
 | `defaultUrlTtl` | `PT1H` | Срок жизни, который `urlFor()` берёт по умолчанию |
 | `extensionOverrides` | `[]` | Media type ⇒ расширение, поверх таблицы `symfony/mime` |

@@ -19,6 +19,7 @@ use Rasuvaeff\Yii3Filestorage\StorageInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\UnreadableAtPathFactory;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
 use Testo\Assert;
@@ -631,6 +632,82 @@ final class ImportCommandTest
 
         Assert::same($tester->getStatusCode(), Command::SUCCESS);
         Assert::true(is_file($nested));
+    }
+
+    /**
+     * One chmod 000 in a legacy tree is the most ordinary thing there is, and
+     * PSR-17 specifies a plain RuntimeException for a file that cannot be
+     * opened — not a FilestorageException. Without catching it, a run that had
+     * already imported thousands died with a stack trace on file 3 001.
+     */
+    public function anUnreadableFileIsSkippedAndTheRunContinues(): void
+    {
+        $this->file('a.txt', 'one');
+        $this->file('locked.txt', 'two');
+        $this->file('z.txt', 'three');
+
+        // Not chmod: the suite runs as root in the container, and root reads a
+        // 000 file quite happily. The factory refuses the path instead, which
+        // is the same failure PSR-17 specifies.
+        $tester = new CommandTester(new ImportCommand(
+            $this->storage(null),
+            new UnreadableAtPathFactory($this->factory, 'locked.txt'),
+        ));
+        $tester->execute(['directory' => $this->source, '--manifest' => $this->manifest, '--apply' => true]);
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::same($this->repository->count(), 2, 'the other two still landed');
+        Assert::string($tester->getDisplay())->contains('! locked.txt');
+    }
+
+    /**
+     * A mistyped --store is a fact about the invocation, not about each of ten
+     * thousand files. Reporting it per file buries it in its own repetition.
+     */
+    public function anUnknownStoreStopsTheRunOnceInsteadOfPerFile(): void
+    {
+        $this->file('a.txt', 'one');
+        $this->file('b.txt', 'two');
+
+        $tester = $this->run(['--apply' => true, '--store' => 'nowhere']);
+        $display = $this->normalise($tester->getDisplay());
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::same($this->repository->count(), 0);
+        Assert::string($display)->contains('Nothing further was imported');
+        Assert::same(substr_count($display, 'Nothing further was imported'), 1, 'said once, not per file');
+    }
+
+    /**
+     * Storage::add() rejects a malformed group with InvalidArgumentException,
+     * which is deliberately not a FilestorageException — so it used to escape
+     * the per-file catch entirely and end the run with a stack trace.
+     */
+    public function anInvalidGroupIsReportedRatherThanThrown(): void
+    {
+        $this->file('a.txt', 'one');
+
+        $tester = $this->run(['--apply' => true, '--group' => 'not a group']);
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string($this->normalise($tester->getDisplay()))->contains('Invalid group name');
+    }
+
+    /**
+     * The row keeps both forms of the source path. The relative one is what a
+     * reader wants; the absolute one is what tells two `notes.txt` imported
+     * from different roots apart, which is the same reason the manifest
+     * matches on it.
+     */
+    public function theRowRecordsBothFormsOfTheSourcePath(): void
+    {
+        $this->file('nested/a.txt', 'one');
+
+        $this->run(['--apply' => true]);
+        $files = iterator_to_array($this->repository->files(null, 10), false);
+
+        Assert::same($files[0]->metadata['importSource'], 'nested/a.txt');
+        Assert::same($files[0]->metadata['importSourcePath'], $this->source . '/nested/a.txt');
     }
 
     private function file(string $relative, string $contents): void

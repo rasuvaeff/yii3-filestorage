@@ -7,11 +7,15 @@ namespace Rasuvaeff\Yii3Filestorage\Command;
 use DateInterval;
 use Override;
 use Psr\Clock\ClockInterface;
+use Rasuvaeff\Yii3Filestorage\Exception\InvalidConfigException;
 use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
+use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\MaintenanceRepositoryInterface;
+use Rasuvaeff\Yii3Filestorage\Store\BlobId;
 use Rasuvaeff\Yii3Filestorage\Store\BlobLedgerInterface;
 use Rasuvaeff\Yii3Filestorage\Store\MaintenanceStoreInterface;
+use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
@@ -92,9 +96,13 @@ final class GcCommand extends Command
             return Command::FAILURE;
         }
 
-        $blobs = $this->collectBlobs($io, $apply, $limit);
+        // Split, not handed to both: --limit is documented as "stop after this
+        // many deletions", and giving each half the full budget let one run
+        // delete twice what the operator authorised.
+        $blobBudget = $orphansRequested ? intdiv($limit, 2) + ($limit % 2) : $limit;
+        $blobs = $this->collectBlobs($io, $apply, $blobBudget);
         $orphans = $orphansRequested
-            ? $this->sweepOrphans($io, $apply, $limit, $this->storeNameOption($input))
+            ? $this->sweepOrphans($io, $apply, $limit - ($blobs ?? 0), $this->storeNameOption($input))
             : null;
 
         $io->success(sprintf(
@@ -147,23 +155,38 @@ final class GcCommand extends Command
         }
 
         $collected = 0;
+        $attempts = 0;
+        /** @var array<string, true> $warned */
+        $warned = [];
 
-        while ($collected < $limit) {
+        // Bounded by attempts, not by successes. A store that is down makes
+        // every delete fail, and counting only successes turned `--limit=10`
+        // into a claim-and-abandon round trip for every collectable blob in
+        // the ledger.
+        while ($attempts < $limit) {
+            $attempts++;
             $lease = $this->ledger->claimForDeletion($this->clock->now(), $this->clock->now()->add($this->leaseTtl));
             if ($lease === null) {
                 break;
             }
 
-            $store = $this->stores->get($lease->blob->storeName);
+            $store = $this->storeFor($lease->blob->storeName);
             if (!$store instanceof MaintenanceStoreInterface) {
                 $this->ledger->abandonDeletion($lease, $this->clock->now()->add($this->gracePeriod));
-                $io->warning(sprintf(
-                    'Store "%s" cannot delete objects (%s is not implemented), so its blobs cannot be collected.',
-                    $lease->blob->storeName,
-                    MaintenanceStoreInterface::class,
-                ));
+                if (!isset($warned[$lease->blob->storeName])) {
+                    $warned[$lease->blob->storeName] = true;
+                    $io->warning(sprintf(
+                        'Store "%s" cannot delete objects (%s is not implemented or is not configured), so its '
+                        . 'blobs cannot be collected.',
+                        $lease->blob->storeName,
+                        MaintenanceStoreInterface::class,
+                    ));
+                }
 
-                break;
+                // Not `break`: blobs belonging to other, perfectly collectable
+                // stores are still waiting, and one unusable store must not
+                // stop the pass for all of them.
+                continue;
             }
 
             try {
@@ -259,10 +282,27 @@ final class GcCommand extends Command
                     continue;
                 }
 
+                if ($this->ledgerKnows($storeName, $object->relativePath)) {
+                    // Bytes published under the ledger's protocol have no file
+                    // row until commit(), which is the entire point of the
+                    // reservation: reserve, publish, then commit. An object
+                    // that looks unreferenced here may be one a writer is
+                    // about to commit, and blob collection — which holds a
+                    // lease and re-checks the counters — is what may remove it.
+                    continue;
+                }
+
                 $found++;
                 $io->text(sprintf('  %s %s', $apply ? 'deleting' : 'would delete', $object->relativePath));
                 if ($apply) {
-                    $store->deleteObject($object);
+                    try {
+                        $store->deleteObject($object);
+                    } catch (StoreException $e) {
+                        // One permission-denied object must not end the sweep
+                        // and lose the counts already accumulated — the blob
+                        // path eighty lines up takes the same care.
+                        $io->warning(sprintf('Could not delete "%s": %s', $object->relativePath, $e->getMessage()));
+                    }
                 }
 
                 if ($found >= $limit) {
@@ -275,7 +315,7 @@ final class GcCommand extends Command
     }
 
     /**
-     * @return iterable<int, \Rasuvaeff\Yii3Filestorage\File>
+     * @return iterable<int, File>
      */
     private function files(): iterable
     {
@@ -291,6 +331,41 @@ final class GcCommand extends Command
 
             $last = $page[\count($page) - 1];
             $after = $last->id;
+        }
+    }
+
+    /**
+     * A blob or a row can name a store configuration no longer has.
+     *
+     * @param non-empty-string $storeName
+     */
+    private function storeFor(string $storeName): ?StoreInterface
+    {
+        try {
+            return $this->stores->get($storeName);
+        } catch (InvalidConfigException) {
+            return null;
+        }
+    }
+
+    /**
+     * Whether the blob ledger has anything to say about these bytes, in any
+     * state. Only asked about objects that already look unreferenced, so the
+     * per-object lookup costs a query for the candidates rather than for the
+     * whole store.
+     */
+    private function ledgerKnows(string $storeName, string $relativePath): bool
+    {
+        if ($this->ledger === null) {
+            return false;
+        }
+
+        try {
+            return $this->ledger->find(BlobId::create($storeName, $relativePath)) !== null;
+        } catch (\InvalidArgumentException) {
+            // Not a content-addressed path at all, so the ledger could never
+            // own it.
+            return false;
         }
     }
 

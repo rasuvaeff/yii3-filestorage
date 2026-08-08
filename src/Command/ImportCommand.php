@@ -8,6 +8,7 @@ use FilesystemIterator;
 use Override;
 use Psr\Http\Message\StreamFactoryInterface;
 use Rasuvaeff\Yii3Filestorage\Exception\FilestorageException;
+use Rasuvaeff\Yii3Filestorage\Exception\InvalidConfigException;
 use Rasuvaeff\Yii3Filestorage\StorageInterface;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use RecursiveDirectoryIterator;
@@ -166,7 +167,23 @@ final class ImportCommand extends Command
                 continue;
             }
 
-            $id = $this->import($io, $absolute, $relative, $group, $store);
+            try {
+                $id = $this->import($io, $absolute, $relative, $group, $store);
+            } catch (InvalidConfigException|\InvalidArgumentException $e) {
+                // A mistyped --store or --group is a fact about the invocation,
+                // not about each of ten thousand files. Repeating it per file
+                // buries it in its own repetition, and InvalidArgumentException
+                // is deliberately not a FilestorageException — so without this
+                // it escaped the per-file catch entirely and ended the run with
+                // a stack trace.
+                if ($handle !== null) {
+                    fclose($handle);
+                }
+
+                $io->error(sprintf('%s. Nothing further was imported.', rtrim($e->getMessage(), '.')));
+
+                return Command::FAILURE;
+            }
             if ($id === null) {
                 $failed++;
 
@@ -252,18 +269,27 @@ final class ImportCommand extends Command
                 ),
                 groupName: $group,
                 storeName: $store,
-                // The source path is recorded on the row as well as in the
-                // manifest: a manifest can be lost or pointed elsewhere, and
-                // then this is the only remaining answer to "where did this
-                // file come from".
-                metadata: ['importSource' => $relative],
+                // Recorded on the row as well as in the manifest: a manifest
+                // can be lost or pointed elsewhere, and then this is the only
+                // remaining answer to "where did this file come from". Both
+                // forms, for the same reason the manifest matches on the
+                // absolute one — two roots each holding a `notes.txt` are
+                // indistinguishable by the relative path alone.
+                metadata: ['importSource' => $relative, 'importSourcePath' => $absolute],
             );
 
             return $file->id;
-        } catch (FilestorageException $e) {
+        } catch (InvalidConfigException|\InvalidArgumentException $e) {
+            // Not this file's fault — the invocation's. Rethrown so the caller
+            // can stop the run rather than print the same line per file.
+            throw $e;
+        } catch (FilestorageException|\RuntimeException $e) {
             // Policy rejections, oversized bodies and store failures are all
             // per-file facts about a legacy tree, not reasons to abandon the
-            // other ten thousand files.
+            // other ten thousand files. \RuntimeException is in the list
+            // because PSR-17 specifies it for a file that cannot be opened, and
+            // one chmod 000 in a legacy tree is the most ordinary thing there
+            // is — it must not kill a run that has already imported thousands.
             $io->text(sprintf('  ! %s — %s', $relative, $e->getMessage()));
 
             return null;

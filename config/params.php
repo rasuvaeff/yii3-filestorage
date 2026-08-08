@@ -13,7 +13,6 @@ return [
     'rasuvaeff/yii3-filestorage' => [
         'defaultGroup' => 'common',
         'maxInlineBytes' => 8_388_608,
-        'maxSpoolBytes' => 268_435_456,
         'integrityHashMaxBytes' => 0,
         'defaultUrlTtl' => 'PT1H',
         'extensionOverrides' => [],

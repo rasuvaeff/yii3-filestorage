@@ -496,6 +496,75 @@ final class OperationsCommandsTest
     }
 
     /**
+     * Bytes published under the ledger's protocol have no file row until
+     * commit(), which is what the reservation protects. Sweeping them as
+     * orphans deletes the object out from under a writer that is about to
+     * commit a row pointing at it.
+     */
+    public function anObjectTheLedgerKnowsIsNotAnOrphan(): void
+    {
+        $file = $this->storeFile('a', contents: 'shared bytes');
+        $blob = BlobId::create('memory', $file->relativePath);
+        $this->ledger->reserve($blob, hash('sha256', 'shared bytes'), $file->size, $this->at('00:10'));
+        // Published, not yet committed: exactly the window.
+        $this->repository->clear();
+
+        $this->run(
+            new GcCommand($this->registry(), $this->repository, $this->clock(), $this->ledger),
+            ['--orphans' => true, '--apply' => true],
+        );
+
+        Assert::true($this->store->bytesAt($file->relativePath) !== null, 'the reserved object survived');
+    }
+
+    /**
+     * A row can name a store configuration no longer has — a rename, a dropped
+     * backend, a restore that brought back a database without its objects.
+     * That is one of the situations verify exists to report, so it has to
+     * survive it rather than abort on the first such row.
+     */
+    public function verifyReportsARowWhoseStoreIsGoneInsteadOfAborting(): void
+    {
+        $this->storeFile('a');
+        $this->repository->save(File::create(
+            id: 'orphaned-store',
+            storeName: 'retired',
+            groupName: 'common',
+            relativePath: 'x/original.bin',
+            originalName: 'x.txt',
+            size: 1,
+            createdAt: $this->at('00:00'),
+        ));
+
+        $tester = $this->run(new VerifyCommand($this->registry(), $this->repository));
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string($tester->getDisplay())->contains('orphaned-store');
+    }
+
+    public function backfillHashSurvivesARowWhoseStoreIsGone(): void
+    {
+        $this->storeFile('a');
+        $this->repository->save(File::create(
+            id: 'orphaned-store',
+            storeName: 'retired',
+            groupName: 'common',
+            relativePath: 'x/original.bin',
+            originalName: 'x.txt',
+            size: 1,
+            createdAt: $this->at('00:00'),
+        ));
+
+        $tester = $this->run(
+            new BackfillHashCommand($this->registry(), $this->repository),
+            ['--apply' => true],
+        );
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        Assert::string($tester->getDisplay())->contains('unreadable: orphaned-store');
+    }
+
+    /**
      * The destructive asymmetry. `--orphans` compares a *scoped* referenced-set
      * against an *unscoped* physical listing, so under tenancy every other
      * tenant's object looks unreferenced and `--apply` deletes it. There is no
