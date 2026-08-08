@@ -157,30 +157,55 @@ final class HmacUrlSignerTest
     public function anAlternativeEncodingOfTheSamePayloadIsRejected(): void
     {
         // 'f-12' makes the canonical JSON 47 bytes long, and 47 % 3 == 2 — a
-        // two-byte tail, encoded as three base64 characters, the last of which
-        // carries two unused bits. Those bits are what makes a second encoding
-        // of the same bytes possible.
+        // two-byte tail encoded as three base64 characters, the last of which
+        // carries two unused bits. Those bits are what lets a second string
+        // decode to the same bytes.
         $token = $this->signer->sign(new SignedPayload('f-12'), $this->expiry());
         $parts = explode('.', $token);
 
         $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
-        $last = $parts[3][strlen($parts[3]) - 1];
-        $index = strpos($alphabet, $last);
+        $index = strpos($alphabet, $parts[3][strlen($parts[3]) - 1]);
         \assert($index !== false);
-        // Wrapped: the last alphabet character would otherwise index past the
-        // end and hand the rest of the test an empty string, which asserts
-        // nothing while looking like it does.
-        $variant = $alphabet[($index + 1) % strlen($alphabet)];
+        // Only the two low bits are spare, so the substitute has to come from
+        // the same group of four. Wrapping over the whole alphabet would change
+        // significant bits and produce a *different* payload — which the
+        // signature would reject for the ordinary reason, proving nothing about
+        // canonical encoding.
+        $variant = $alphabet[($index & ~3) | (($index + 1) & 3)];
+        $forged = substr($parts[3], 0, -1) . $variant;
 
+        // 63 characters is 63 % 4 == 3, so exactly one '=' completes the group.
+        // Padding it with two makes base64_decode() return false on both sides,
+        // and comparing false with false is how this assertion used to pass
+        // while proving nothing.
         Assert::same(
-            base64_decode(strtr(substr($parts[3], 0, -1) . $variant, '-_', '+/') . '==', true),
-            base64_decode(strtr($parts[3], '-_', '+/') . '==', true),
+            base64_decode(strtr($forged, '-_', '+/') . '=', true),
+            base64_decode(strtr($parts[3], '-_', '+/') . '=', true),
             'the two encodings really do decode to the same bytes',
         );
 
-        $parts[3] = substr($parts[3], 0, -1) . $variant;
+        // Re-signed with the same key. Without this the token fails at
+        // hash_equals() — long before the canonicalisation check — and the test
+        // would stay green with that check deleted, which is the one thing it
+        // exists to protect.
+        $signedPart = $parts[0] . '.' . $parts[1] . '.' . $parts[2] . '.' . $forged;
+        $signature = rtrim(strtr(base64_encode(
+            hash_hmac('sha256', $signedPart, self::ACTIVE, true),
+        ), '+/', '-_'), '=');
 
-        Assert::null($this->signer->verify(implode('.', $parts)));
+        Assert::null($this->signer->verify($signedPart . '.' . $signature));
+
+        // And the same token with the canonical payload still verifies, so the
+        // rejection above is about the encoding and not about the re-signing.
+        $canonical = $parts[0] . '.' . $parts[1] . '.' . $parts[2] . '.' . $parts[3];
+        $canonicalSignature = rtrim(strtr(base64_encode(
+            hash_hmac('sha256', $canonical, self::ACTIVE, true),
+        ), '+/', '-_'), '=');
+
+        Assert::instanceOf(
+            $this->signer->verify($canonical . '.' . $canonicalSignature),
+            SignedPayload::class,
+        );
     }
 
     public function anOverlongTokenIsRefusedBeforeAnyWork(): void
