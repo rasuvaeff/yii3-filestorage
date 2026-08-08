@@ -289,7 +289,12 @@ final class ImportCommand extends Command
      */
     private function files(string $root, string $manifestPath): iterable
     {
-        $manifest = realpath($manifestPath);
+        // Normalised to forward slashes: the iterator is created with
+        // FilesystemIterator::UNIX_PATHS while realpath() answers in the
+        // platform's own separator, so on Windows the two never matched and
+        // the manifest imported itself.
+        $resolved = realpath($manifestPath);
+        $manifest = $resolved === false ? null : str_replace('\\', '/', $resolved);
         $iterator = new RecursiveIteratorIterator(
             new RecursiveDirectoryIterator(
                 $root,
@@ -305,7 +310,7 @@ final class ImportCommand extends Command
             }
 
             $absolute = $item->getPathname();
-            if ($manifest !== false && $absolute === $manifest) {
+            if ($manifest !== null && str_replace('\\', '/', $absolute) === $manifest) {
                 continue;
             }
 
