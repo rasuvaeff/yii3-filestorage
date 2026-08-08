@@ -221,9 +221,12 @@ asserting only one half lets the operands be swapped undetected.
   relative key makes the second run skip a `notes.txt` it never imported and
   report that as a skip, which reads as success. `--limit` bounds the work, not
   the memory: the listing is materialised and sorted up front.
-- **`Storage::class` and `StorageInterface::class` are two ids for one object,
-  and the concrete one is not redundant.** `StorageInterface::class` is a plain
-  alias; `Storage::class` carries the definition. Every decorator — `-db`'s
+- **`Storage::class` carries the definition and `StorageInterface::class` is an
+  alias to it, and the concrete id is not redundant.** With nothing overridden
+  the two resolve to one object. The moment an application rebinds the
+  interface — which is the documented way to decorate — they resolve to
+  different ones: the interface to the wrapper, `Storage::class` to what the
+  wrapper wraps. Every decorator — `-db`'s
   deduplicating storage is the first, and quotas/metrics/AV are the documented
   next ones — is bound to the interface and has to be handed the *undecorated*
   facade. With one id the decorator's own dependency resolves to the decorator:

@@ -390,5 +390,6 @@ asking for `StorageInterface` resolves to the decorator itself and the container
 answers `CircularReferenceException`:
 
 ```php
-StorageInterface::class => static fn (Storage $inner): StorageInterface => new QuotaStorage($inner),
+StorageInterface::class => static fn (Storage $inner, Quotas $quotas): StorageInterface
+    => new QuotaStorage($inner, $quotas),
 ```
