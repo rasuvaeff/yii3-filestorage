@@ -453,6 +453,49 @@ final class OperationsCommandsTest
 
 
     /**
+     * A derivative is a sibling object inside the file's key directory, and no
+     * row's relativePath ever equals its path — a row points at
+     * `<key>/original.<ext>`, the preview lives at `<key>/thumb.webp`. Matching
+     * the referenced-set on paths therefore classified every preview in the
+     * store as an orphan, and `--apply` unlinked them all. The comparison is on
+     * the *directory*, which is also why StoreInterface::delete() removes the
+     * directory rather than the object.
+     */
+    public function derivativesBesideALiveFileAreNotOrphans(): void
+    {
+        $file = $this->storeFile('a');
+        $derivative = $file->directory() . '/thumb.webp';
+        $this->store->corrupt($derivative, 'preview bytes');
+
+        $tester = $this->run(
+            new GcCommand($this->registry(), $this->repository, $this->clock()),
+            ['--orphans' => true, '--apply' => true],
+        );
+
+        Assert::string($tester->getDisplay())->notContains('thumb.webp');
+        Assert::same($this->store->bytesAt($derivative), 'preview bytes', 'the derivative survived the sweep');
+    }
+
+    /**
+     * Two stores can hold the same relative path. A row in one of them must not
+     * make an unreferenced object in the other look referenced.
+     */
+    public function aRowInOneStoreDoesNotProtectAnObjectInAnother(): void
+    {
+        $file = $this->storeFile('a');
+        $second = new InMemoryStore('archive', $this->factory, new StaticClock($this->at('00:00')));
+        $second->corrupt($file->relativePath, 'unreferenced bytes');
+
+        $this->run(
+            new GcCommand(new StoreRegistry([$this->store, $second]), $this->repository, $this->clock()),
+            ['--orphans' => true, '--apply' => true],
+        );
+
+        Assert::null($second->bytesAt($file->relativePath), 'the other store\'s object was collected');
+        Assert::true($this->store->bytesAt($file->relativePath) !== null, 'the referenced one was not');
+    }
+
+    /**
      * The destructive asymmetry. `--orphans` compares a *scoped* referenced-set
      * against an *unscoped* physical listing, so under tenancy every other
      * tenant's object looks unreferenced and `--apply` deletes it. There is no

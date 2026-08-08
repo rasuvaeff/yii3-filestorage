@@ -297,7 +297,11 @@ final class ConfigWiringTest
         $tester = new CommandTester($container->get(StatCommand::class));
         $tester->execute([]);
 
-        Assert::string($tester->getDisplay())->contains('current scope only');
+        // Whitespace squeezed out: SymfonyStyle wraps to the console width,
+        // and that width is not the same on every CI runner — the phrase fits
+        // one line on Linux and straddles two on Windows.
+        Assert::string((string) preg_replace('/[\s!\[\]]+/u', ' ', $tester->getDisplay()))
+            ->contains('current scope only');
     }
 
     /**

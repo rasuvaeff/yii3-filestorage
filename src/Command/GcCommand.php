@@ -202,11 +202,20 @@ final class GcCommand extends Command
         // looked at.
         $names = $storeName === null ? $this->stores->names() : [$storeName];
 
-        // Every path any row points at, read once. A per-object lookup would be
-        // one query per object, and this walks the whole store.
+        // Every *directory* any row points at, read once — not every path.
+        // A row's relativePath is `<…>/<key>/original.<ext>`, while
+        // writeDerivative() puts previews beside it as `<key>/thumb.webp`, and
+        // the store walk yields those too. Comparing paths therefore matched no
+        // row against any derivative and swept every preview in the store as an
+        // orphan. This is the same reason StoreInterface::delete() removes the
+        // directory rather than the object.
+        //
+        // Keyed by store as well: two stores can hold the same relative path,
+        // and a row in one of them must not make an object in the other look
+        // referenced.
         $referenced = [];
         foreach ($this->files() as $file) {
-            $referenced[$file->relativePath] = true;
+            $referenced[$file->storeName . ':' . $file->directory()] = true;
         }
 
         $found = 0;
@@ -246,7 +255,7 @@ final class GcCommand extends Command
 
             foreach ($page as $object) {
                 $after = $object->relativePath;
-                if (isset($referenced[$object->relativePath])) {
+                if (isset($referenced[$storeName . ':' . self::directoryOf($object->relativePath)])) {
                     continue;
                 }
 
@@ -283,6 +292,19 @@ final class GcCommand extends Command
             $last = $page[\count($page) - 1];
             $after = $last->id;
         }
+    }
+
+    /**
+     * The parent directory of an object, matching {@see File::directory()} so
+     * the two sides of the comparison are the same shape. An object sitting at
+     * the store root has none, and answers itself — which can only be an
+     * orphan, because every path this package generates has a key directory.
+     */
+    private static function directoryOf(string $relativePath): string
+    {
+        $slash = strrpos($relativePath, '/');
+
+        return $slash === false || $slash === 0 ? $relativePath : substr($relativePath, 0, $slash);
     }
 
     private function scopedSweepRefusal(): string
