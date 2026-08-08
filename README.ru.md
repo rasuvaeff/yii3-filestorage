@@ -287,8 +287,30 @@ final readonly class QuotaStorage implements StorageInterface
 }
 ```
 
-Забиндите свой декоратор на `StorageInterface` в слое приложения. Форкать ядро
-ради этого не нужно.
+Забиндите свой декоратор на `StorageInterface` в слое приложения, а внутренний
+фасад принимайте как `Storage`, а не как `StorageInterface`:
+
+```php
+// config/common/di/filestorage.php
+use Rasuvaeff\Yii3Filestorage\Storage;
+use Rasuvaeff\Yii3Filestorage\StorageInterface;
+
+return [
+    StorageInterface::class => static fn (Storage $inner, Quotas $quotas): StorageInterface
+        => new QuotaStorage($inner, $quotas),
+];
+```
+
+Ядро биндит два идентификатора на один фасад: `Storage::class` его строит, а
+`StorageInterface::class` — алиас на него. `Storage::class` — тот идентификатор,
+который продолжает означать «обычный фасад» после того, как приложение
+переопределило интерфейс: декоратор, запросивший `StorageInterface`, получил бы
+сам себя, и контейнер ответит `CircularReferenceException` на рецепт, который
+читается безупречно. Конструктор выше остаётся типизированным как
+`StorageInterface`, чтобы класс тестировался любым дублем; конкретный
+идентификатор называет только проводка.
+
+Форкать ядро ради этого не нужно.
 
 ## Тестирование своего кода
 

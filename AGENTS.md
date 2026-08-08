@@ -48,9 +48,9 @@ monorepo is what sees that: a throwaway project, `composer install --no-dev`,
 the whole `add → find → stream → remove` path plus the ledger protocol driven
 through the shipped doubles alone.
 
-DI wiring: core `config/di.php` binds the facade, `StoreRegistry`, path
-generator, MIME detector, id generator, `ExtensionMap`, both policy registries
-and all six commands. It must **not** bind `StoreInterface` or
+DI wiring: core `config/di.php` binds the facade under **two** ids, plus
+`StoreRegistry`, path generator, MIME detector, id generator, `ExtensionMap`,
+both policy registries and all six commands. It must **not** bind `StoreInterface` or
 `RepositoryInterface` — `yiisoft/config` allows exactly one vendor package per
 key, so those belong to `-flysystem`/`-db` or to the application. Two packages
 binding one of them is a `Duplicate key` error by design.
@@ -221,6 +221,21 @@ asserting only one half lets the operands be swapped undetected.
   relative key makes the second run skip a `notes.txt` it never imported and
   report that as a skip, which reads as success. `--limit` bounds the work, not
   the memory: the listing is materialised and sorted up front.
+- **`Storage::class` carries the definition and `StorageInterface::class` is an
+  alias to it, and the concrete id is not redundant.** With nothing overridden
+  the two resolve to one object. The moment an application rebinds the
+  interface — which is the documented way to decorate — they resolve to
+  different ones: the interface to the wrapper, `Storage::class` to what the
+  wrapper wraps. Every decorator — `-db`'s
+  deduplicating storage is the first, and quotas/metrics/AV are the documented
+  next ones — is bound to the interface and has to be handed the *undecorated*
+  facade. With one id the decorator's own dependency resolves to the decorator:
+  `CircularReferenceException` from a recipe that reads perfectly, with nothing
+  naming the cause. Proven by
+  `ConfigWiringTest::anApplicationCanRebindTheInterfaceToSomethingThatWrapsTheBase`,
+  and by `-db`'s `theDocumentedApplicationOverrideResolves`, which is the test
+  that loads *both* packages' `config/di.php`. Collapsing the alias back into a
+  single closure is a silent break of every consumer that decorates.
 - **`import` resolves `StorageInterface`, deliberately.** Reaching past the
   facade to a store and a repository would be shorter and would silently import
   everything unique in an application that had enabled deduplication — which is

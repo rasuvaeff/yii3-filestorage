@@ -34,6 +34,7 @@ use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryBlobLedger;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\CountingStorage;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\FixedScope;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Rasuvaeff\Yii3Filestorage\Url\ProxyUrlGeneratorInterface;
@@ -73,6 +74,37 @@ final class ConfigWiringTest
         $file = $storage->add(Upload::fromStream($factory->createStream('hello'), 'a.txt', $factory));
 
         Assert::same($storage->content($file), 'hello');
+    }
+
+    /**
+     * The reason `Storage::class` is bound separately. An application that
+     * rebinds `StorageInterface` to something wrapping the plain facade — which
+     * is how `-db` offers deduplication — needs an id for the thing being
+     * wrapped. If the wrapper's own dependency resolved through
+     * `StorageInterface` it would resolve to the wrapper, and the container
+     * would answer `CircularReferenceException` for a recipe that reads
+     * perfectly.
+     */
+    public function anApplicationCanRebindTheInterfaceToSomethingThatWrapsTheBase(): void
+    {
+        $container = $this->container([
+            StorageInterface::class => static fn(Storage $inner): StorageInterface => new CountingStorage($inner),
+        ]);
+
+        $decorated = $container->get(StorageInterface::class);
+        $base = $container->get(Storage::class);
+
+        Assert::instanceOf($decorated, CountingStorage::class);
+        Assert::notSame($decorated, $base, 'the two ids resolve to different objects once one is decorated');
+        Assert::same($decorated->inner, $base, 'and the wrapper was handed the base, not itself');
+
+        // Delegation, not just construction: a wrapper that resolved without
+        // reaching the real facade would satisfy the assertions above.
+        $factory = new Psr17Factory();
+        $file = $decorated->add(Upload::fromStream($factory->createStream('hello'), 'a.txt', $factory));
+
+        Assert::same($decorated->added, 1);
+        Assert::same($base->content($file), 'hello');
     }
 
     public function coreServicesResolveToTheirDefaultImplementations(): void

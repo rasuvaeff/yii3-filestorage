@@ -63,7 +63,15 @@ return [
     // app layer beats the vendor layer.
     StoreRegistry::class => static fn (StoreInterface $store): StoreRegistry => new StoreRegistry([$store]),
 
-    StorageInterface::class => static fn (
+    // Two ids for one facade, and the second one is not decoration. A package
+    // that decorates the facade — `-db`'s deduplicating storage is the first,
+    // and it will not be the last — has to be handed the undecorated one. With
+    // `StorageInterface` as the only id, an application that rebinds it to a
+    // decorator makes the decorator's own dependency resolve to itself:
+    // `CircularReferenceException`, and nothing about the recipe says why. The
+    // concrete class is the id that always means "core's plain facade", whatever
+    // the application has done to the interface.
+    Storage::class => static fn (
         StoreRegistry $stores,
         RepositoryInterface $repository,
         PathGeneratorInterface $pathGenerator,
@@ -73,7 +81,7 @@ return [
         DeliveryPolicyRegistry $deliveryPolicies,
         ClockInterface $clock,
         ?ProxyUrlGeneratorInterface $proxyUrls = null,
-    ): StorageInterface => new Storage(
+    ): Storage => new Storage(
         stores: $stores,
         repository: $repository,
         pathGenerator: $pathGenerator,
@@ -88,6 +96,8 @@ return [
         integrityHashMaxBytes: $params['rasuvaeff/yii3-filestorage']['integrityHashMaxBytes'],
         proxyUrls: $proxyUrls,
     ),
+
+    StorageInterface::class => Storage::class,
 
     CheckCommand::class => static fn (
         StoreRegistry $stores,
