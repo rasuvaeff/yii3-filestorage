@@ -119,7 +119,7 @@ final class FinfoMimeTypeDetectorTest
     {
         return (string) base64_decode(
             'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
-            true,
+            strict: true,
         );
     }
 }

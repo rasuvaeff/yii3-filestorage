@@ -292,7 +292,7 @@ final class ConfigWiringTest
     {
         $container = $this->container();
         $source = sys_get_temp_dir() . '/fs-wiring-' . bin2hex(random_bytes(8));
-        mkdir($source . '/tree', 0o775, true);
+        mkdir($source . '/tree', 0o775, recursive: true);
         file_put_contents($source . '/tree/a.txt', 'hello');
 
         $tester = new CommandTester($container->get(ImportCommand::class));
@@ -304,7 +304,7 @@ final class ConfigWiringTest
 
         // Landed in the container's own repository, through the container's own
         // facade — the wiring, not a hand-built command.
-        $files = iterator_to_array($container->get(RepositoryInterface::class)->files(null, 10), false);
+        $files = iterator_to_array($container->get(RepositoryInterface::class)->files(null, 10), preserve_keys: false);
 
         Assert::same($tester->getStatusCode(), Command::SUCCESS);
         Assert::same(\count($files), 1);

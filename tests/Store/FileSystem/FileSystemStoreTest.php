@@ -112,7 +112,7 @@ final class FileSystemStoreTest
                 'text/plain',
                 maxBytes: 10,
             );
-            Assert::true(false, 'the write should have been refused');
+            Assert::true(actual: false, message: 'the write should have been refused');
         } catch (UploadTooLargeException $e) {
             Assert::true(str_contains($e->getMessage(), '10 byte limit'));
             Assert::same($this->filesUnder($this->root), [], 'nothing at all was left behind');
@@ -159,7 +159,7 @@ final class FileSystemStoreTest
                 new RandomPathGenerator(),
                 'text/plain',
             );
-            Assert::true(false, 'the stalled write should have been refused');
+            Assert::true(actual: false, message: 'the stalled write should have been refused');
         } catch (StoreException $e) {
             Assert::true(str_contains($e->getMessage(), 'before EOF'));
             Assert::same($this->filesUnder($this->root), [], 'the partial output was removed');
@@ -290,7 +290,7 @@ final class FileSystemStoreTest
 
         try {
             $this->store->writeDerivative($file, $thumb, $this->factory->createStream(str_repeat('x', 50)), 10);
-            Assert::true(false, 'the derivative should have been refused');
+            Assert::true(actual: false, message: 'the derivative should have been refused');
         } catch (UploadTooLargeException) {
             Assert::false($this->store->hasDerivative($file, $thumb));
             Assert::same($this->filesUnder($this->root, '.part'), []);
@@ -305,7 +305,7 @@ final class FileSystemStoreTest
 
         $paths = array_map(
             static fn(StoredObjectId $id): string => $id->relativePath,
-            iterator_to_array($this->store->objects(), false),
+            iterator_to_array($this->store->objects(), preserve_keys: false),
         );
 
         sort($paths);
@@ -330,7 +330,7 @@ final class FileSystemStoreTest
      */
     public function theInventoryDoesNotSkipAFileBesideADirectoryThatSharesItsPrefix(): void
     {
-        mkdir($this->root . '/a', 0o775, true);
+        mkdir($this->root . '/a', 0o775, recursive: true);
         file_put_contents($this->root . '/a/x.txt', 'inside the directory');
         file_put_contents($this->root . '/a.txt', 'beside it');
 
@@ -339,7 +339,7 @@ final class FileSystemStoreTest
         // One at a time, which is what a paging caller does and what a
         // single-pass listing would never exercise.
         while (true) {
-            $page = iterator_to_array($this->store->objects(afterPath: $after, limit: 1), false);
+            $page = iterator_to_array($this->store->objects(afterPath: $after, limit: 1), preserve_keys: false);
             if ($page === []) {
                 break;
             }
@@ -359,14 +359,14 @@ final class FileSystemStoreTest
      */
     public function theInventoryIsOrderedTheWayTheCursorCompares(): void
     {
-        mkdir($this->root . '/a', 0o775, true);
+        mkdir($this->root . '/a', 0o775, recursive: true);
         file_put_contents($this->root . '/a/x.txt', 'x');
         file_put_contents($this->root . '/a.txt', 'y');
         file_put_contents($this->root . '/a-b.txt', 'z');
 
         $paths = array_map(
             static fn(StoredObjectId $id): string => $id->relativePath,
-            iterator_to_array($this->store->objects(), false),
+            iterator_to_array($this->store->objects(), preserve_keys: false),
         );
 
         for ($i = 1, $n = count($paths); $i < $n; ++$i) {
@@ -383,12 +383,12 @@ final class FileSystemStoreTest
             $this->write("body {$i}");
         }
 
-        $first = iterator_to_array($this->store->objects(limit: 2), false);
+        $first = iterator_to_array($this->store->objects(limit: 2), preserve_keys: false);
         Assert::same(count($first), 2);
 
         $second = iterator_to_array(
             $this->store->objects(afterPath: $first[1]->relativePath, limit: 2),
-            false,
+            preserve_keys: false,
         );
 
         Assert::same(count($second), 2);
@@ -433,7 +433,7 @@ final class FileSystemStoreTest
 
         try {
             $this->store->write($this->upload('escaping'), 'docs', $fixed, 'text/plain');
-            Assert::true(false, 'the write should have been refused');
+            Assert::true(actual: false, message: 'the write should have been refused');
         } catch (StoreException $e) {
             Assert::true(str_contains($e->getMessage(), 'escapes the root of store "upload"'));
             Assert::same(self::filesUnder($outside), [], 'and nothing was written outside');
@@ -451,7 +451,7 @@ final class FileSystemStoreTest
     {
         $outside = sys_get_temp_dir() . '/fs-outside-leaf-' . bin2hex(random_bytes(6));
         mkdir($outside);
-        mkdir($this->root . '/docs/xx/yy', 0o775, true);
+        mkdir($this->root . '/docs/xx/yy', 0o775, recursive: true);
         if (!$this->createSymlink($outside, $this->root . '/docs/xx/yy/key')) {
             FileHelper::removeDirectory($outside);
 
@@ -468,7 +468,7 @@ final class FileSystemStoreTest
 
         try {
             $this->store->write($this->upload('escaping'), 'docs', $fixed, 'text/plain');
-            Assert::true(false, 'the write should have been refused');
+            Assert::true(actual: false, message: 'the write should have been refused');
         } catch (StoreException $e) {
             Assert::true(str_contains($e->getMessage(), 'escapes the root of store "upload"'));
             Assert::same(self::filesUnder($outside), []);
@@ -491,7 +491,7 @@ final class FileSystemStoreTest
             }
         };
 
-        mkdir($this->root . '/docs/key', 0o775, true);
+        mkdir($this->root . '/docs/key', 0o775, recursive: true);
         file_put_contents($this->root . '/docs/key/original.txt.part', 'a write in flight');
 
         Expect::exception(StoreException::class)->withMessageContaining('staging file');
@@ -508,7 +508,7 @@ final class FileSystemStoreTest
     {
         $outside = sys_get_temp_dir() . '/fs-outside-' . bin2hex(random_bytes(6));
         file_put_contents($outside, 'secret');
-        mkdir($this->root . '/docs/escape', 0o775, true);
+        mkdir($this->root . '/docs/escape', 0o775, recursive: true);
         if (!$this->createSymlink($outside, $this->root . '/docs/escape/original.txt')) {
             unlink($outside);
 
@@ -535,7 +535,7 @@ final class FileSystemStoreTest
         $outside = sys_get_temp_dir() . '/fs-outside-dir-' . bin2hex(random_bytes(6));
         mkdir($outside);
         file_put_contents($outside . '/secret.txt', 'secret');
-        mkdir($this->root . '/docs', 0o775, true);
+        mkdir($this->root . '/docs', 0o775, recursive: true);
         if (!$this->createSymlink($outside, $this->root . '/docs/linked')) {
             FileHelper::removeDirectory($outside);
 
@@ -543,7 +543,7 @@ final class FileSystemStoreTest
         }
 
         try {
-            Assert::same(iterator_to_array($this->store->objects(), false), []);
+            Assert::same(iterator_to_array($this->store->objects(), preserve_keys: false), []);
         } finally {
             FileHelper::removeDirectory($outside);
         }

@@ -43,7 +43,7 @@ final class Uuid7IdGeneratorTest
         $hex = str_replace('-', '', $this->generator->generate());
 
         Assert::same($hex[12], '7', 'version nibble');
-        Assert::true(\in_array($hex[16], ['8', '9', 'a', 'b'], true), 'variant nibble');
+        Assert::true(\in_array($hex[16], ['8', '9', 'a', 'b'], strict: true), 'variant nibble');
     }
 
     /**

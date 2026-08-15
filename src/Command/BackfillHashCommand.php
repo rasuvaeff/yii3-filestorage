@@ -71,7 +71,7 @@ final class BackfillHashCommand extends Command
         $last = null;
 
         while ($seen < $limit) {
-            $page = iterator_to_array($this->repository->files($after, max(1, min(500, $limit - $seen))), false);
+            $page = iterator_to_array($this->repository->files($after, max(1, min(500, $limit - $seen))), preserve_keys: false);
             if ($page === []) {
                 break;
             }

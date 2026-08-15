@@ -179,8 +179,8 @@ final class HmacUrlSignerTest
         // and comparing false with false is how this assertion used to pass
         // while proving nothing.
         Assert::same(
-            base64_decode(strtr($forged, '-_', '+/') . '=', true),
-            base64_decode(strtr($parts[3], '-_', '+/') . '=', true),
+            base64_decode(strtr($forged, '-_', '+/') . '=', strict: true),
+            base64_decode(strtr($parts[3], '-_', '+/') . '=', strict: true),
             'the two encodings really do decode to the same bytes',
         );
 
@@ -190,7 +190,7 @@ final class HmacUrlSignerTest
         // exists to protect.
         $signedPart = $parts[0] . '.' . $parts[1] . '.' . $parts[2] . '.' . $forged;
         $signature = rtrim(strtr(base64_encode(
-            hash_hmac('sha256', $signedPart, self::ACTIVE, true),
+            hash_hmac('sha256', $signedPart, self::ACTIVE, binary: true),
         ), '+/', '-_'), '=');
 
         Assert::null($this->signer->verify($signedPart . '.' . $signature));
@@ -199,7 +199,7 @@ final class HmacUrlSignerTest
         // rejection above is about the encoding and not about the re-signing.
         $canonical = $parts[0] . '.' . $parts[1] . '.' . $parts[2] . '.' . $parts[3];
         $canonicalSignature = rtrim(strtr(base64_encode(
-            hash_hmac('sha256', $canonical, self::ACTIVE, true),
+            hash_hmac('sha256', $canonical, self::ACTIVE, binary: true),
         ), '+/', '-_'), '=');
 
         Assert::instanceOf(

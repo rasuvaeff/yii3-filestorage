@@ -68,7 +68,7 @@ final class VerifyCommand extends Command
         $last = null;
 
         while ($checked < $limit) {
-            $page = iterator_to_array($this->repository->files($after, max(1, min(500, $limit - $checked))), false);
+            $page = iterator_to_array($this->repository->files($after, max(1, min(500, $limit - $checked))), preserve_keys: false);
             if ($page === []) {
                 break;
             }

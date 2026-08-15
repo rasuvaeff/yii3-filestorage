@@ -89,7 +89,7 @@ final readonly class UploadPolicy
      */
     public function assertAcceptable(Upload $upload, ?string $detectedMimeType): void
     {
-        if ($this->allowedMimeTypes !== [] && !in_array($detectedMimeType, $this->allowedMimeTypes, true)) {
+        if ($this->allowedMimeTypes !== [] && !in_array($detectedMimeType, $this->allowedMimeTypes, strict: true)) {
             $allowed = implode(', ', $this->allowedMimeTypes);
 
             throw new PolicyViolationException(

@@ -147,7 +147,7 @@ final class PublicFileSystemStoreTest
 
         $paths = array_map(
             static fn(StoredObjectId $id): string => $id->relativePath,
-            iterator_to_array($this->store->objects(), false),
+            iterator_to_array($this->store->objects(), preserve_keys: false),
         );
         Assert::same(count($paths), 2, 'the original and its derivative');
 
