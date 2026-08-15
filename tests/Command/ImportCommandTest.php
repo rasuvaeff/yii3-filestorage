@@ -48,7 +48,7 @@ final class ImportCommandTest
         $this->store = new InMemoryStore('memory', $this->factory);
         $this->source = sys_get_temp_dir() . '/fs-import-' . bin2hex(random_bytes(8));
         $this->manifest = $this->source . '-manifest/import.jsonl';
-        mkdir($this->source, 0o775, true);
+        mkdir($this->source, 0o775, recursive: true);
     }
 
     #[AfterTest]
@@ -221,7 +221,7 @@ final class ImportCommandTest
 
         $this->run(['--apply' => true]);
 
-        $files = iterator_to_array($this->repository->files(null, 10), false);
+        $files = iterator_to_array($this->repository->files(null, 10), preserve_keys: false);
 
         Assert::same($files[0]->metadata['importSource'], 'nested/a.txt');
     }
@@ -232,7 +232,7 @@ final class ImportCommandTest
 
         $this->run(['--apply' => true, '--group' => 'documents']);
 
-        $files = iterator_to_array($this->repository->files(null, 10), false);
+        $files = iterator_to_array($this->repository->files(null, 10), preserve_keys: false);
 
         Assert::same($files[0]->groupName, 'documents');
     }
@@ -245,7 +245,7 @@ final class ImportCommandTest
     public function symbolicLinksAreNotFollowed(): void
     {
         $outside = $this->source . '-outside';
-        mkdir($outside, 0o775, true);
+        mkdir($outside, 0o775, recursive: true);
         file_put_contents($outside . '/secret.txt', 'not yours');
         symlink($outside . '/secret.txt', $this->source . '/link.txt');
 
@@ -529,7 +529,7 @@ final class ImportCommandTest
         $this->file('a.txt', 'one');
 
         $display = $this->run(['--apply' => true])->getDisplay();
-        $files = iterator_to_array($this->repository->files(null, 10), false);
+        $files = iterator_to_array($this->repository->files(null, 10), preserve_keys: false);
 
         Assert::string($display)->contains('+ a.txt → ' . $files[0]->id);
     }
@@ -607,7 +607,7 @@ final class ImportCommandTest
     public function manifestLinesThatAreNotEntriesSkipNothing(): void
     {
         $this->file('a.txt', 'one');
-        mkdir(\dirname($this->manifest), 0o775, true);
+        mkdir(\dirname($this->manifest), 0o775, recursive: true);
         file_put_contents(
             $this->manifest,
             "123\n" . json_encode(['id' => 'x']) . "\n" . json_encode(['source' => ['a.txt']]) . "\n",
@@ -719,7 +719,7 @@ final class ImportCommandTest
         $this->file('nested/a.txt', 'one');
 
         $this->run(['--apply' => true]);
-        $files = iterator_to_array($this->repository->files(null, 10), false);
+        $files = iterator_to_array($this->repository->files(null, 10), preserve_keys: false);
 
         Assert::same($files[0]->metadata['importSource'], 'nested/a.txt');
         // Against the *resolved* root: the command walks realpath($directory),
@@ -738,7 +738,7 @@ final class ImportCommandTest
         $path = $this->source . '/' . $relative;
         $directory = \dirname($path);
         if (!is_dir($directory)) {
-            mkdir($directory, 0o775, true);
+            mkdir($directory, 0o775, recursive: true);
         }
 
         file_put_contents($path, $contents);

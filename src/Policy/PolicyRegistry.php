@@ -90,7 +90,7 @@ final readonly class PolicyRegistry
     private static function policyFromArray(string $group, array $policy): UploadPolicy
     {
         foreach (array_keys($policy) as $option) {
-            if (!\is_string($option) || !\in_array($option, self::OPTIONS, true)) {
+            if (!\is_string($option) || !\in_array($option, self::OPTIONS, strict: true)) {
                 throw new InvalidArgumentException(sprintf(
                     'Unknown upload policy option "%s" for group "%s". Known options: %s',
                     \is_string($option) ? $option : (string) $option,
@@ -120,7 +120,7 @@ final readonly class PolicyRegistry
             allowedMimeTypes: $mimeTypes,
             maxBytes: self::intOption($policy, 'maxBytes', $defaults->maxBytes, $group),
             maxPixels: self::intOption($policy, 'maxPixels', $defaults->maxPixels, $group),
-            requireImageDimensions: self::boolOption($policy, 'requireImageDimensions', false, $group),
+            requireImageDimensions: self::boolOption($policy, 'requireImageDimensions', default: false, group: $group),
         );
     }
 

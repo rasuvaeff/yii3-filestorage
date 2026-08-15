@@ -23,7 +23,7 @@ final class StoreResultTest
         Assert::same($result->relativePath, 'a/b/original.png');
         Assert::same($result->size, 42);
         Assert::same($result->externalId, 'bucket/key');
-        Assert::same($result->created, true);
+        Assert::same($result->created, expected: true);
     }
 
     /**

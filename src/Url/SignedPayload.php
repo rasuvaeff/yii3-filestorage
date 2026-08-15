@@ -87,7 +87,7 @@ final readonly class SignedPayload
     {
         try {
             /** @var mixed $data */
-            $data = json_decode($payload, true, flags: JSON_THROW_ON_ERROR);
+            $data = json_decode($payload, associative: true, flags: JSON_THROW_ON_ERROR);
         } catch (JsonException) {
             return null;
         }

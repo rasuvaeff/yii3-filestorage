@@ -121,7 +121,7 @@ final class InMemoryStoreTest
                 'text/plain',
                 maxBytes: 10,
             );
-            Assert::true(false, 'the write should have been refused');
+            Assert::true(actual: false, message: 'the write should have been refused');
         } catch (UploadTooLargeException) {
             Assert::same($this->store->paths(), []);
             Assert::same($this->store->writeCount(), 0);
@@ -148,13 +148,13 @@ final class InMemoryStoreTest
 
         $first = array_map(
             static fn(StoredObjectId $id): string => $id->relativePath,
-            iterator_to_array($this->store->objects(limit: 2), false),
+            iterator_to_array($this->store->objects(limit: 2), preserve_keys: false),
         );
         Assert::same($first, array_slice($paths, 0, 2));
 
         $second = array_map(
             static fn(StoredObjectId $id): string => $id->relativePath,
-            iterator_to_array($this->store->objects(afterPath: $first[1], limit: 10), false),
+            iterator_to_array($this->store->objects(afterPath: $first[1], limit: 10), preserve_keys: false),
         );
         Assert::same($second, array_slice($paths, 2));
     }

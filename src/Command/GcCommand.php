@@ -271,14 +271,14 @@ final class GcCommand extends Command
         $after = null;
 
         while ($found < $limit) {
-            $page = iterator_to_array($store->objects($after, 500), false);
+            $page = iterator_to_array($store->objects($after, 500), preserve_keys: false);
             if ($page === []) {
                 break;
             }
 
             foreach ($page as $object) {
                 $after = $object->relativePath;
-                if (isset($referenced[$storeName . ':' . self::directoryOf($object->relativePath)])) {
+                if (isset($referenced[$storeName . ':' . $this->directoryOf($object->relativePath)])) {
                     continue;
                 }
 
@@ -322,7 +322,7 @@ final class GcCommand extends Command
         $after = null;
 
         while (true) {
-            $page = iterator_to_array($this->repository->files($after, 500), false);
+            $page = iterator_to_array($this->repository->files($after, 500), preserve_keys: false);
             if ($page === []) {
                 return;
             }
@@ -375,7 +375,7 @@ final class GcCommand extends Command
      * the store root has none, and answers itself — which can only be an
      * orphan, because every path this package generates has a key directory.
      */
-    private static function directoryOf(string $relativePath): string
+    private function directoryOf(string $relativePath): string
     {
         $slash = strrpos($relativePath, '/');
 

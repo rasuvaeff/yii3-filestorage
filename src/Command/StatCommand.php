@@ -64,7 +64,7 @@ final class StatCommand extends Command
         $after = null;
 
         while (true) {
-            $page = iterator_to_array($this->repository->files($after, 500), false);
+            $page = iterator_to_array($this->repository->files($after, 500), preserve_keys: false);
             if ($page === []) {
                 break;
             }

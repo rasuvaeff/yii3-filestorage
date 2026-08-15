@@ -64,7 +64,7 @@ final readonly class DeliveryPolicyRegistry
             }
 
             foreach (array_keys($policy) as $option) {
-                if (!\is_string($option) || !\in_array($option, self::OPTIONS, true)) {
+                if (!\is_string($option) || !\in_array($option, self::OPTIONS, strict: true)) {
                     throw new InvalidArgumentException(sprintf(
                         'Unknown delivery policy option "%s" for group "%s". Known options: %s',
                         \is_string($option) ? $option : (string) $option,
@@ -75,8 +75,8 @@ final readonly class DeliveryPolicyRegistry
             }
 
             $policies[$group] = new DeliveryPolicy(
-                allowDirectPublicUrl: self::boolOption($policy, 'allowDirectPublicUrl', false, $group),
-                forceDownload: self::boolOption($policy, 'forceDownload', true, $group),
+                allowDirectPublicUrl: self::boolOption($policy, 'allowDirectPublicUrl', default: false, group: $group),
+                forceDownload: self::boolOption($policy, 'forceDownload', default: true, group: $group),
             );
         }
 

@@ -122,7 +122,7 @@ final class StorageTest
     {
         try {
             $this->storage()->add($this->upload('x'), groupName: 'not/a/group');
-            Assert::true(false, 'the group name should have been rejected');
+            Assert::true(actual: false, message: 'the group name should have been rejected');
         } catch (InvalidArgumentException $e) {
             Assert::true(str_contains($e->getMessage(), 'Invalid group name'));
             Assert::same($this->store->writeCount(), 0);
@@ -149,7 +149,7 @@ final class StorageTest
 
         try {
             $storage->add($this->upload('plain text', 'a.png'), groupName: 'avatars');
-            Assert::true(false, 'the upload should have been rejected');
+            Assert::true(actual: false, message: 'the upload should have been rejected');
         } catch (PolicyViolationException) {
             Assert::same($this->store->writeCount(), 0);
             Assert::same($this->repository->count(), 0);
@@ -232,7 +232,7 @@ final class StorageTest
 
         try {
             $storage->remove($file->id);
-            Assert::true(false, 'remove() should have reported the failure');
+            Assert::true(actual: false, message: 'remove() should have reported the failure');
         } catch (RemoveException $e) {
             Assert::true(
                 str_contains($e->getMessage(), 'from store "memory"; it is now an orphan'),
@@ -253,7 +253,7 @@ final class StorageTest
 
         try {
             $storage->add($this->upload('doomed'));
-            Assert::true(false, 'add() should have failed');
+            Assert::true(actual: false, message: 'add() should have failed');
         } catch (AddException $e) {
             Assert::same($e->getPrevious()?->getMessage(), 'database is down');
             Assert::same($this->store->paths(), [], 'the object was compensated away');

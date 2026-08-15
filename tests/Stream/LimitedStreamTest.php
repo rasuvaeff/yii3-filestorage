@@ -148,7 +148,7 @@ final class LimitedStreamTest
 
         Assert::true($stream->isReadable());
         Assert::true($stream->isSeekable());
-        Assert::same($stream->getMetadata('seekable'), true);
+        Assert::same($stream->getMetadata('seekable'), expected: true);
     }
 
     public function detachAndCloseReachTheInnerStream(): void
@@ -161,7 +161,7 @@ final class LimitedStreamTest
         $closable = new LimitedStream($this->factory->createStream('0123456789'), 0, 4);
         $closable->close();
 
-        Assert::true(true, 'closing twice must not blow up');
+        Assert::true(actual: true, message: 'closing twice must not blow up');
         $closable->close();
     }
 

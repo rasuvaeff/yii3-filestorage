@@ -6,6 +6,7 @@ namespace Rasuvaeff\Yii3Filestorage\Tests\Url;
 
 use InvalidArgumentException;
 use Rasuvaeff\PropertyTesting\ArbitraryInterface;
+use Rasuvaeff\PropertyTesting\Classify;
 use Rasuvaeff\PropertyTesting\Gen;
 use Rasuvaeff\PropertyTesting\Property;
 use Rasuvaeff\Yii3Filestorage\Url\SignedPayload;
@@ -136,9 +137,28 @@ final class SignedPayloadTest
         $payload = new SignedPayload(fileId: $fileId, variant: $variant, scopeId: $scopeId);
         $restored = SignedPayload::fromCanonicalJson($payload->toCanonicalJson());
 
+        // The optional members are where a canonical encoder can quietly
+        // differ: omitting a null key and writing it as null produce different
+        // bytes, and only one of them re-encodes to the same token.
+        Classify::cover($variant === null && $scopeId === null, 'both optionals absent', 15.0);
+        Classify::cover($variant !== null && $scopeId !== null, 'both optionals present', 15.0);
+        Classify::when($variant === null xor $scopeId === null, 'exactly one optional present');
+
         Assert::same($restored?->fileId, $fileId);
         Assert::same($restored?->variant, $variant);
         Assert::same($restored?->scopeId, $scopeId);
+    }
+
+    /**
+     * @return iterable<string, array{string, ?string, ?string}>
+     */
+    public static function everyAcceptedPayloadRoundTripsExamples(): iterable
+    {
+        yield 'shortest id, no optionals' => ['a', null, null];
+        yield 'both optionals present' => ['a', 'thumb', 'tenant-1'];
+        yield 'multibyte id' => ['日本語', null, null];
+        yield 'multibyte scope' => ['a', null, 'Ωπ→'];
+        yield 'id that looks like JSON' => ['a.b-c_1', 'w200', '0123456789'];
     }
 
     /**

@@ -406,7 +406,7 @@ final class ImportCommand extends Command
         $done = [];
         while (($line = fgets($handle)) !== false) {
             /** @var mixed $entry */
-            $entry = json_decode(trim($line), true);
+            $entry = json_decode(trim($line), associative: true);
             // A truncated final line is what a crash mid-append leaves. Skipping
             // it re-imports one file, which is the right way round: the
             // alternative is refusing to read a manifest that is 99% good.
@@ -429,7 +429,7 @@ final class ImportCommand extends Command
         // concurrent creator is an expected outcome rather than a problem —
         // and the warning it emits is enough to fail a test run that treats
         // warnings as errors.
-        if (!is_dir($directory) && !@mkdir($directory, 0o775, true) && !is_dir($directory)) {
+        if (!is_dir($directory) && !@mkdir($directory, 0o775, recursive: true) && !is_dir($directory)) {
             return null;
         }
 

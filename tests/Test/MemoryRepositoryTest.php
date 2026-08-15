@@ -87,7 +87,7 @@ final class MemoryRepositoryTest
 
         $ids = array_map(
             static fn(File $file): string => $file->id,
-            iterator_to_array($this->repository->files(limit: 2), false),
+            iterator_to_array($this->repository->files(limit: 2), preserve_keys: false),
         );
 
         Assert::same($ids, ['a', 'b']);
@@ -101,7 +101,7 @@ final class MemoryRepositoryTest
 
         $ids = array_map(
             static fn(File $file): string => $file->id,
-            iterator_to_array($this->repository->files(afterId: 'b', limit: 10), false),
+            iterator_to_array($this->repository->files(afterId: 'b', limit: 10), preserve_keys: false),
         );
 
         Assert::same($ids, ['c', 'd']);
@@ -152,12 +152,12 @@ final class MemoryRepositoryTest
 
         $ids = array_map(
             static fn(File $file): string => $file->id,
-            iterator_to_array($this->repository->files(null, 10), false),
+            iterator_to_array($this->repository->files(null, 10), preserve_keys: false),
         );
 
         Assert::same($ids, ['10', '100', '9'], 'string order, not numeric');
 
-        $after = iterator_to_array($this->repository->files('10', 10), false);
+        $after = iterator_to_array($this->repository->files('10', 10), preserve_keys: false);
 
         Assert::same(array_map(static fn(File $f): string => $f->id, $after), ['100', '9']);
     }

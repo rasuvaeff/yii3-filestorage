@@ -60,7 +60,7 @@ final readonly class FinfoMimeTypeDetector implements MimeTypeDetectorInterface
 
         $detected = (new finfo(FILEINFO_MIME_TYPE))->buffer($bytes);
 
-        return $detected === false || $detected === '' || in_array($detected, self::NON_TYPES, true)
+        return $detected === false || $detected === '' || in_array($detected, self::NON_TYPES, strict: true)
             ? null
             : $detected;
     }
