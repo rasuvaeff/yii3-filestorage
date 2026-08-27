@@ -8,6 +8,8 @@ use DateTimeImmutable;
 use InvalidArgumentException;
 use Nyholm\Psr7\Factory\Psr17Factory;
 use Override;
+use Rasuvaeff\Understudy\Arg;
+use Rasuvaeff\Understudy\Understudy;
 use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
 use Rasuvaeff\Yii3Filestorage\Exception\UploadTooLargeException;
 use Rasuvaeff\Yii3Filestorage\File;
@@ -25,6 +27,8 @@ use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
 use Yiisoft\Files\FileHelper;
+
+use function Rasuvaeff\Understudy\when;
 
 #[Test]
 #[Covers(FileSystemStore::class)]
@@ -83,13 +87,7 @@ final class FileSystemStoreTest
      */
     public function aPathCollisionIsAnErrorRatherThanSilentSharing(): void
     {
-        $fixed = new class implements PathGeneratorInterface {
-            #[Override]
-            public function generate(string $groupName, Upload $upload, ?string $mediaType): string
-            {
-                return 'docs/fixed/original.txt';
-            }
-        };
+        $fixed = $this->fixedPathGenerator('docs/fixed/original.txt');
 
         $this->store->write($this->upload('first'), 'docs', $fixed, 'text/plain');
 
@@ -423,13 +421,7 @@ final class FileSystemStoreTest
             return;
         }
 
-        $fixed = new class implements PathGeneratorInterface {
-            #[Override]
-            public function generate(string $groupName, Upload $upload, ?string $mediaType): string
-            {
-                return 'docs/key/original.txt';
-            }
-        };
+        $fixed = $this->fixedPathGenerator('docs/key/original.txt');
 
         try {
             $this->store->write($this->upload('escaping'), 'docs', $fixed, 'text/plain');
@@ -458,13 +450,7 @@ final class FileSystemStoreTest
             return;
         }
 
-        $fixed = new class implements PathGeneratorInterface {
-            #[Override]
-            public function generate(string $groupName, Upload $upload, ?string $mediaType): string
-            {
-                return 'docs/xx/yy/key/original.txt';
-            }
-        };
+        $fixed = $this->fixedPathGenerator('docs/xx/yy/key/original.txt');
 
         try {
             $this->store->write($this->upload('escaping'), 'docs', $fixed, 'text/plain');
@@ -483,13 +469,7 @@ final class FileSystemStoreTest
      */
     public function aLeftoverStagingFileRefusesASecondWriteToTheSameTarget(): void
     {
-        $fixed = new class implements PathGeneratorInterface {
-            #[Override]
-            public function generate(string $groupName, Upload $upload, ?string $mediaType): string
-            {
-                return 'docs/key/original.txt';
-            }
-        };
+        $fixed = $this->fixedPathGenerator('docs/key/original.txt');
 
         mkdir($this->root . '/docs/key', 0o775, recursive: true);
         file_put_contents($this->root . '/docs/key/original.txt.part', 'a write in flight');
@@ -569,6 +549,18 @@ final class FileSystemStoreTest
             ->withMessageContaining('does not exist and could not be created. Create it and make it writable');
 
         new FileSystemStore('upload', $blockingPath . '/deeper', $this->factory);
+    }
+
+    /**
+     * A generator pinned to one path, so two writes can be aimed at the same
+     * target.
+     */
+    private function fixedPathGenerator(string $path): PathGeneratorInterface
+    {
+        $generator = Understudy::for(PathGeneratorInterface::class);
+        when(static fn(): string => $generator->generate(Arg::any(), Arg::any(), Arg::any()))->returns($path);
+
+        return $generator;
     }
 
     private function createSymlink(string $target, string $link): bool

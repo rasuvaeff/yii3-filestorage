@@ -7,6 +7,10 @@ namespace Rasuvaeff\Yii3Filestorage\Tests\Command;
 use DateInterval;
 use DateTimeImmutable;
 use Nyholm\Psr7\Factory\Psr17Factory;
+use Psr\Http\Message\StreamFactoryInterface;
+use Psr\Http\Message\StreamInterface;
+use Rasuvaeff\Understudy\Arg;
+use Rasuvaeff\Understudy\Understudy;
 use Rasuvaeff\Yii3Filestorage\Command\ImportCommand;
 use Rasuvaeff\Yii3Filestorage\Id\Uuid7IdGenerator;
 use Rasuvaeff\Yii3Filestorage\Mime\FinfoMimeTypeDetector;
@@ -19,7 +23,7 @@ use Rasuvaeff\Yii3Filestorage\StorageInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
-use Rasuvaeff\Yii3Filestorage\Tests\Support\UnreadableAtPathFactory;
+use RuntimeException;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
 use Testo\Assert;
@@ -29,6 +33,8 @@ use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
 use Yiisoft\Files\FileHelper;
 use Yiisoft\Test\Support\Clock\StaticClock;
+
+use function Rasuvaeff\Understudy\when;
 
 #[Test]
 #[Covers(ImportCommand::class)]
@@ -664,10 +670,16 @@ final class ImportCommandTest
         // Not chmod: the suite runs as root in the container, and root reads a
         // 000 file quite happily. The factory refuses the path instead, which
         // is the same failure PSR-17 specifies.
-        $tester = new CommandTester(new ImportCommand(
-            $this->storage(null),
-            new UnreadableAtPathFactory($this->factory, 'locked.txt'),
-        ));
+        $factory = Understudy::for(StreamFactoryInterface::class);
+        Understudy::forwarding($factory, $this->factory);
+        when(static fn(): StreamInterface => $factory->createStreamFromFile(
+            Arg::satisfies(
+                static fn(mixed $path): bool => \is_string($path) && str_ends_with($path, 'locked.txt'),
+                'a path ending with locked.txt',
+            ),
+            Arg::any(),
+        ))->throws(new RuntimeException('The file cannot be opened'));
+        $tester = new CommandTester(new ImportCommand($this->storage(null), $factory));
         $tester->execute(['directory' => $this->source, '--manifest' => $this->manifest, '--apply' => true]);
 
         Assert::same($tester->getStatusCode(), Command::FAILURE);
