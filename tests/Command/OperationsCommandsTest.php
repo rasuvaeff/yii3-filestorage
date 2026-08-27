@@ -6,20 +6,21 @@ namespace Rasuvaeff\Yii3Filestorage\Tests\Command;
 
 use DateTimeImmutable;
 use Nyholm\Psr7\Factory\Psr17Factory;
+use Rasuvaeff\Understudy\Understudy;
 use Rasuvaeff\Yii3Filestorage\Command\BackfillHashCommand;
 use Rasuvaeff\Yii3Filestorage\Command\GcCommand;
 use Rasuvaeff\Yii3Filestorage\Command\StatCommand;
 use Rasuvaeff\Yii3Filestorage\Command\VerifyCommand;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
+use Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Store\BlobId;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
+use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryBlobLedger;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
-use Rasuvaeff\Yii3Filestorage\Tests\Support\FixedScope;
-use Rasuvaeff\Yii3Filestorage\Tests\Support\UnwalkableStore;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
@@ -28,6 +29,8 @@ use Testo\Codecov\Covers;
 use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
 use Yiisoft\Test\Support\Clock\StaticClock;
+
+use function Rasuvaeff\Understudy\when;
 
 #[Test]
 #[Covers(GcCommand::class)]
@@ -406,7 +409,7 @@ final class OperationsCommandsTest
     public function gcSaysWhenAStoreCannotBeWalked(): void
     {
         $display = $this->run(
-            new GcCommand(new StoreRegistry([new UnwalkableStore('opaque')]), $this->repository, $this->clock()),
+            new GcCommand(new StoreRegistry([$this->unwalkableStore('opaque')]), $this->repository, $this->clock()),
             ['--orphans' => true, '--apply' => true],
         )->getDisplay();
 
@@ -580,7 +583,7 @@ final class OperationsCommandsTest
                 $this->registry(),
                 $this->repository,
                 $this->clock(),
-                scopes: new FixedScope('tenant-a'),
+                scopes: $this->tenantScope(),
             ),
             ['--orphans' => true, '--apply' => true],
         );
@@ -610,7 +613,7 @@ final class OperationsCommandsTest
                 $this->repository,
                 $this->clock(),
                 $this->ledger,
-                new FixedScope('tenant-a'),
+                $this->tenantScope(),
             ),
             ['--apply' => true],
         );
@@ -1157,7 +1160,7 @@ final class OperationsCommandsTest
         $shared = $this->storeFile('a');
         $this->reuse('b', $shared);
 
-        $display = $this->run(new StatCommand($this->repository, new FixedScope('tenant-a')))->getDisplay();
+        $display = $this->run(new StatCommand($this->repository, $this->tenantScope()))->getDisplay();
 
         // With the colon: the note explaining the omission names the figure too.
         Assert::string($display)->notContains('Distinct objects:');
@@ -1184,7 +1187,7 @@ final class OperationsCommandsTest
         $this->row('b', 'documents', 200);
 
         $display = $this->normalise(
-            $this->run(new StatCommand($this->repository, new FixedScope('tenant-a')))->getDisplay(),
+            $this->run(new StatCommand($this->repository, $this->tenantScope()))->getDisplay(),
         );
 
         Assert::string($display)->contains('Group (current scope)');
@@ -1198,7 +1201,7 @@ final class OperationsCommandsTest
      */
     public function statSaysWhoseEmptinessItIsUnderTenancy(): void
     {
-        $display = $this->run(new StatCommand($this->repository, new FixedScope('tenant-a')))->getDisplay();
+        $display = $this->run(new StatCommand($this->repository, $this->tenantScope()))->getDisplay();
 
         Assert::string($display)->contains('No files stored in the current scope');
     }
@@ -1327,6 +1330,33 @@ final class OperationsCommandsTest
         $tester->execute($arguments);
 
         return $tester;
+    }
+
+    /**
+     * A tenant that never changes. Binding one at all is what makes an
+     * installation multi-tenant as far as this package is concerned — which is
+     * the condition `gc --orphans` refuses on.
+     */
+    private function tenantScope(): FileScopeProviderInterface
+    {
+        $scopes = Understudy::for(FileScopeProviderInterface::class);
+        when(static fn(): ?string => $scopes->currentScopeId())->returns('tenant-a');
+
+        return $scopes;
+    }
+
+    /**
+     * A store with no `MaintenanceStoreInterface`: it cannot be enumerated, so
+     * orphans in it cannot be found. Real adapters like this exist — an
+     * API-backed store with no listing endpoint — and `gc` has to say so rather
+     * than report "no orphans" about a store it never looked at.
+     */
+    private function unwalkableStore(string $name): StoreInterface
+    {
+        $store = Understudy::for(StoreInterface::class);
+        when(static fn(): string => $store->name())->returns($name);
+
+        return $store;
     }
 
     private function registry(): StoreRegistry

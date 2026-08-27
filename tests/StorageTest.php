@@ -8,12 +8,15 @@ use DateInterval;
 use DateTimeImmutable;
 use InvalidArgumentException;
 use Nyholm\Psr7\Factory\Psr17Factory;
-use Override;
+use Rasuvaeff\Understudy\Arg;
+use Rasuvaeff\Understudy\Invocation;
+use Rasuvaeff\Understudy\Understudy;
 use Rasuvaeff\Yii3Filestorage\Exception\AddException;
 use Rasuvaeff\Yii3Filestorage\Exception\ContentTooLargeException;
 use Rasuvaeff\Yii3Filestorage\Exception\InvalidConfigException;
 use Rasuvaeff\Yii3Filestorage\Exception\PolicyViolationException;
 use Rasuvaeff\Yii3Filestorage\Exception\RemoveException;
+use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Id\Uuid7IdGenerator;
 use Rasuvaeff\Yii3Filestorage\Mime\FinfoMimeTypeDetector;
@@ -27,19 +30,20 @@ use Rasuvaeff\Yii3Filestorage\Repository\RepositoryInterface;
 use Rasuvaeff\Yii3Filestorage\Storage;
 use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
+use Rasuvaeff\Yii3Filestorage\Store\StoreUrlProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
-use Rasuvaeff\Yii3Filestorage\Tests\Support\FailingRepository;
-use Rasuvaeff\Yii3Filestorage\Tests\Support\UndeletableStore;
-use Rasuvaeff\Yii3Filestorage\Tests\Support\UrlAwareStore;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Rasuvaeff\Yii3Filestorage\Url\ProxyUrlGeneratorInterface;
+use RuntimeException;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Expect;
 use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
 use Yiisoft\Test\Support\Clock\StaticClock;
+
+use function Rasuvaeff\Understudy\when;
 
 #[Test]
 #[Covers(Storage::class)]
@@ -194,27 +198,9 @@ final class StorageTest
         $storage = $this->storage();
         $file = $storage->add($this->upload('x'));
 
-        $racing = new readonly class ($this->repository) implements RepositoryInterface {
-            public function __construct(private MemoryRepository $inner) {}
-
-            #[Override]
-            public function find(string $id): ?File
-            {
-                return $this->inner->find($id);
-            }
-
-            #[Override]
-            public function save(File $file): void
-            {
-                $this->inner->save($file);
-            }
-
-            #[Override]
-            public function delete(string $id): bool
-            {
-                return false;
-            }
-        };
+        $racing = Understudy::for(RepositoryInterface::class);
+        Understudy::forwarding($racing, $this->repository);
+        when(static fn(): bool => $racing->delete(Arg::any()))->returns(false);
 
         Assert::false($this->storage(repository: $racing)->remove($file->id));
         Assert::same($this->store->bytesAt($file->relativePath), 'x', 'the object survives');
@@ -226,7 +212,9 @@ final class StorageTest
      */
     public function aFailedObjectDeleteLeavesAnOrphanAndSaysSo(): void
     {
-        $store = new UndeletableStore($this->store);
+        $store = Understudy::for(StoreInterface::class);
+        Understudy::forwarding($store, $this->store);
+        when(static fn() => $store->delete(Arg::any()))->throws(new StoreException('the object store is unreachable'));
         $storage = $this->storage(store: $store);
         $file = $storage->add($this->upload('x'));
 
@@ -249,7 +237,9 @@ final class StorageTest
      */
     public function aFailedMetadataSaveRemovesTheObjectItJustWrote(): void
     {
-        $storage = $this->storage(repository: new FailingRepository());
+        $repository = Understudy::for(RepositoryInterface::class);
+        when(static fn() => $repository->save(Arg::any()))->throws(new RuntimeException('database is down'));
+        $storage = $this->storage(repository: $repository);
 
         try {
             $storage->add($this->upload('doomed'));
@@ -399,7 +389,7 @@ final class StorageTest
 
     public function urlForPrefersAPublicUrlOnlyWhenThePolicyAllowsIt(): void
     {
-        $store = new UrlAwareStore($this->store, 'https://cdn.example.com');
+        $store = $this->urlAwareStore();
 
         $blocked = $this->storage(store: $store);
         $file = $blocked->add($this->upload('x'));
@@ -423,16 +413,20 @@ final class StorageTest
 
     public function temporaryUrlPassesTheGroupsDeliveryOptionsToTheStore(): void
     {
-        $store = new UrlAwareStore($this->store, 'https://cdn.example.com');
+        $store = $this->urlAwareStore();
         $storage = $this->storage(store: $store);
         $file = $storage->add($this->upload('a plain text body', 'my report.pdf'));
 
         $storage->temporaryUrl($file, $this->clock->now());
 
-        Assert::instanceOf($store->lastOptions, DeliveryOptions::class);
-        Assert::same($store->lastOptions?->downloadName, 'my report.pdf');
-        Assert::same($store->lastOptions?->responseMediaType, 'text/plain');
-        Assert::true($store->lastOptions?->forceDownload);
+        $options = Understudy::lastCall(
+            static fn(): string => $store->temporaryUrl(Arg::any(), Arg::any(), Arg::any()),
+        )?->args[2];
+
+        Assert::instanceOf($options, DeliveryOptions::class);
+        Assert::same($options->downloadName, 'my report.pdf');
+        Assert::same($options->responseMediaType, 'text/plain');
+        Assert::true($options->forceDownload);
     }
 
     /**
@@ -441,24 +435,21 @@ final class StorageTest
      */
     public function urlForFallsBackToTheProxyGenerator(): void
     {
-        $proxy = new class implements ProxyUrlGeneratorInterface {
-            public ?DateTimeImmutable $expiresAt = null;
-
-            #[Override]
-            public function url(File $file, DateTimeImmutable $expiresAt): string
-            {
-                $this->expiresAt = $expiresAt;
-
-                return "https://app.example.com/files/{$file->id}";
-            }
-        };
+        $proxy = Understudy::for(ProxyUrlGeneratorInterface::class);
+        when(static fn(): string => $proxy->url(Arg::any(), Arg::any()))->answers(
+            static fn(Invocation $call): string => "https://app.example.com/files/{$call->args[0]->id}",
+        );
 
         $storage = $this->storage(proxyUrls: $proxy);
         $file = $storage->add($this->upload('x'));
 
         Assert::same($storage->urlFor($file), "https://app.example.com/files/{$file->id}");
+
+        $expiresAt = Understudy::lastCall(static fn(): string => $proxy->url(Arg::any(), Arg::any()))?->args[1];
+
+        Assert::instanceOf($expiresAt, DateTimeImmutable::class);
         Assert::same(
-            $proxy->expiresAt?->format(File::TIMESTAMP_FORMAT),
+            $expiresAt->format(File::TIMESTAMP_FORMAT),
             '2026-08-06T13:00:00.123456+00:00',
             'the default TTL is applied to the injected clock',
         );
@@ -466,17 +457,8 @@ final class StorageTest
 
     public function urlForHonoursAnExplicitExpiry(): void
     {
-        $proxy = new class implements ProxyUrlGeneratorInterface {
-            public ?DateTimeImmutable $expiresAt = null;
-
-            #[Override]
-            public function url(File $file, DateTimeImmutable $expiresAt): string
-            {
-                $this->expiresAt = $expiresAt;
-
-                return 'https://app.example.com/x';
-            }
-        };
+        $proxy = Understudy::for(ProxyUrlGeneratorInterface::class);
+        when(static fn(): string => $proxy->url(Arg::any(), Arg::any()))->returns('https://app.example.com/x');
 
         $storage = $this->storage(proxyUrls: $proxy);
         $file = $storage->add($this->upload('x'));
@@ -484,7 +466,10 @@ final class StorageTest
 
         $storage->urlFor($file, $explicit);
 
-        Assert::same($proxy->expiresAt, $explicit);
+        Assert::same(
+            Understudy::lastCall(static fn(): string => $proxy->url(Arg::any(), Arg::any()))?->args[1],
+            $explicit,
+        );
     }
 
     public function anInvalidDefaultGroupIsRejectedAtConstruction(): void
@@ -492,6 +477,28 @@ final class StorageTest
         Expect::exception(InvalidArgumentException::class)->withMessageContaining('Invalid default group');
 
         $this->storage(defaultGroup: 'has spaces');
+    }
+
+    /**
+     * A store that can produce both kinds of URL, so `urlFor()`'s ordering and
+     * the delivery options it passes down can be observed. Writes are answered
+     * by the real in-memory store; `InMemoryStore` deliberately implements no
+     * URL capability, which is what makes it useful for the opposite case.
+     */
+    private function urlAwareStore(string $baseUrl = 'https://cdn.example.com'): StoreUrlProviderInterface
+    {
+        $store = Understudy::for(StoreUrlProviderInterface::class);
+        when(static fn(): string => $store->name())->returns('memory');
+        when(fn() => $store->write(Arg::any(), Arg::any(), Arg::any(), Arg::any(), Arg::any()))
+            ->answers(fn(Invocation $call) => $this->store->write(...$call->args));
+        when(static fn(): ?string => $store->publicUrl(Arg::any()))->answers(
+            static fn(Invocation $call): string => $baseUrl . '/' . $call->args[0]->relativePath,
+        );
+        when(static fn(): ?string => $store->temporaryUrl(Arg::any(), Arg::any(), Arg::any()))->answers(
+            static fn(Invocation $call): string => $baseUrl . '/temp/' . $call->args[0]->relativePath,
+        );
+
+        return $store;
     }
 
     private function upload(string $body, string $name = 'thing.txt'): Upload

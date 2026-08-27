@@ -8,6 +8,9 @@ use DateTimeImmutable;
 use Nyholm\Psr7\Factory\Psr17Factory;
 use Psr\Clock\ClockInterface;
 use Psr\Http\Message\StreamFactoryInterface;
+use Rasuvaeff\Understudy\Arg;
+use Rasuvaeff\Understudy\Invocation;
+use Rasuvaeff\Understudy\Understudy;
 use Rasuvaeff\Yii3Filestorage\Command\BackfillHashCommand;
 use Rasuvaeff\Yii3Filestorage\Command\CheckCommand;
 use Rasuvaeff\Yii3Filestorage\Command\GcCommand;
@@ -35,7 +38,6 @@ use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryBlobLedger;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\CountingStorage;
-use Rasuvaeff\Yii3Filestorage\Tests\Support\FixedScope;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Rasuvaeff\Yii3Filestorage\Url\ProxyUrlGeneratorInterface;
 use Symfony\Component\Console\Command\Command;
@@ -47,6 +49,8 @@ use Yiisoft\Di\Container;
 use Yiisoft\Di\ContainerConfig;
 use Yiisoft\Files\FileHelper;
 use Yiisoft\Test\Support\Clock\StaticClock;
+
+use function Rasuvaeff\Understudy\when;
 
 /**
  * `config/di.php` is covered by neither cs, nor psalm, nor the unit suite — it
@@ -151,16 +155,14 @@ final class ConfigWiringTest
     public function bindingTheProxyGeneratorGivesAPrivateStoreAUrl(): void
     {
         $container = $this->container([
-            ProxyUrlGeneratorInterface::class => static fn(): ProxyUrlGeneratorInterface
-                => new class implements ProxyUrlGeneratorInterface {
-                    #[\Override]
-                    public function url(
-                        \Rasuvaeff\Yii3Filestorage\File $file,
-                        \DateTimeImmutable $expiresAt,
-                    ): string {
-                        return "https://app.example.com/files/{$file->id}";
-                    }
-                },
+            ProxyUrlGeneratorInterface::class => static function (): ProxyUrlGeneratorInterface {
+                $proxy = Understudy::for(ProxyUrlGeneratorInterface::class);
+                when(static fn(): string => $proxy->url(Arg::any(), Arg::any()))->answers(
+                    static fn(Invocation $call): string => "https://app.example.com/files/{$call->args[0]->id}",
+                );
+
+                return $proxy;
+            },
         ]);
 
         $factory = new Psr17Factory();
@@ -270,8 +272,12 @@ final class ConfigWiringTest
     public function gcSeesTheScopeProviderWhenTheApplicationBindsOne(): void
     {
         $container = $this->maintenanceContainer([
-            FileScopeProviderInterface::class => static fn(): FileScopeProviderInterface
-                => new FixedScope('tenant-a'),
+            FileScopeProviderInterface::class => static function (): FileScopeProviderInterface {
+                $scopes = Understudy::for(FileScopeProviderInterface::class);
+                when(static fn(): ?string => $scopes->currentScopeId())->returns('tenant-a');
+
+                return $scopes;
+            },
         ]);
 
         $tester = new CommandTester($container->get(GcCommand::class));
@@ -322,8 +328,12 @@ final class ConfigWiringTest
     public function statSeesTheScopeProviderWhenTheApplicationBindsOne(): void
     {
         $container = $this->maintenanceContainer([
-            FileScopeProviderInterface::class => static fn(): FileScopeProviderInterface
-                => new FixedScope('tenant-a'),
+            FileScopeProviderInterface::class => static function (): FileScopeProviderInterface {
+                $scopes = Understudy::for(FileScopeProviderInterface::class);
+                when(static fn(): ?string => $scopes->currentScopeId())->returns('tenant-a');
+
+                return $scopes;
+            },
         ]);
 
         $tester = new CommandTester($container->get(StatCommand::class));

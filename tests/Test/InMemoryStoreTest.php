@@ -7,6 +7,8 @@ namespace Rasuvaeff\Yii3Filestorage\Tests\Test;
 use DateTimeImmutable;
 use InvalidArgumentException;
 use Nyholm\Psr7\Factory\Psr17Factory;
+use Rasuvaeff\Understudy\Arg;
+use Rasuvaeff\Understudy\Understudy;
 use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
 use Rasuvaeff\Yii3Filestorage\Exception\UploadTooLargeException;
 use Rasuvaeff\Yii3Filestorage\File;
@@ -23,6 +25,8 @@ use Testo\Expect;
 use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
 use Yiisoft\Test\Support\Clock\StaticClock;
+
+use function Rasuvaeff\Understudy\when;
 
 #[Test]
 #[Covers(InMemoryStore::class)]
@@ -92,13 +96,7 @@ final class InMemoryStoreTest
      */
     public function aPathCollisionIsAnError(): void
     {
-        $fixed = new class implements PathGeneratorInterface {
-            #[\Override]
-            public function generate(string $groupName, Upload $upload, ?string $mediaType): string
-            {
-                return 'docs/fixed/original.txt';
-            }
-        };
+        $fixed = $this->fixedPathGenerator('docs/fixed/original.txt');
 
         $this->store->write($this->upload('first'), 'docs', $fixed, 'text/plain');
 
@@ -206,6 +204,18 @@ final class InMemoryStoreTest
         Expect::exception(InvalidArgumentException::class)->withMessageContaining('Invalid store name');
 
         new InMemoryStore('bad name', $this->factory);
+    }
+
+    /**
+     * A generator pinned to one path, so two writes can be aimed at the same
+     * target.
+     */
+    private function fixedPathGenerator(string $path): PathGeneratorInterface
+    {
+        $generator = Understudy::for(PathGeneratorInterface::class);
+        when(static fn(): string => $generator->generate(Arg::any(), Arg::any(), Arg::any()))->returns($path);
+
+        return $generator;
     }
 
     private function upload(string $body): Upload

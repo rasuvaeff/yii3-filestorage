@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Filestorage\Tests\Command;
 
 use Nyholm\Psr7\Factory\Psr17Factory;
+use Rasuvaeff\Understudy\Understudy;
 use Rasuvaeff\Yii3Filestorage\Command\CheckCommand;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicy;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicyRegistry;
@@ -19,10 +20,6 @@ use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
-use Rasuvaeff\Yii3Filestorage\Tests\Support\BareStore;
-use Rasuvaeff\Yii3Filestorage\Tests\Support\FailingRepository;
-use Rasuvaeff\Yii3Filestorage\Tests\Support\FixedScope;
-use Rasuvaeff\Yii3Filestorage\Tests\Support\NullScopedFileResolver;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
 use Testo\Assert;
@@ -31,6 +28,8 @@ use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
 use Yiisoft\Files\FileHelper;
+
+use function Rasuvaeff\Understudy\when;
 
 #[Test]
 #[Covers(CheckCommand::class)]
@@ -127,7 +126,10 @@ final class CheckCommandTest
      */
     public function aBaseOnlyStoreIsReportedAsSuch(): void
     {
-        $display = $this->run(store: new BareStore('bare'))->getDisplay();
+        $bare = Understudy::for(StoreInterface::class);
+        when(static fn(): string => $bare->name())->returns('bare');
+
+        $display = $this->run(store: $bare)->getDisplay();
 
         Assert::string($display)->contains('base only');
         Assert::string($display)->notContains('maintenance');
@@ -148,7 +150,7 @@ final class CheckCommandTest
 
     public function aRepositoryWithoutMaintenanceSupportIsFlagged(): void
     {
-        $display = $this->run(repository: new FailingRepository())->getDisplay();
+        $display = $this->run(repository: Understudy::for(RepositoryInterface::class))->getDisplay();
 
         Assert::string($display)->contains('MaintenanceRepositoryInterface');
     }
@@ -289,7 +291,7 @@ final class CheckCommandTest
      */
     public function tenantModeWithoutAScopedResolverIsAnError(): void
     {
-        $tester = $this->run(scopes: new FixedScope('tenant-a'));
+        $tester = $this->run(scopes: $this->tenantScope());
 
         Assert::same($tester->getStatusCode(), Command::FAILURE);
         Assert::string((string) preg_replace('/[\s!\[\]]+/u', ' ', $tester->getDisplay()))
@@ -299,8 +301,8 @@ final class CheckCommandTest
     public function tenantModeWithBothSidesBoundIsSound(): void
     {
         $tester = $this->run(
-            scopes: new FixedScope('tenant-a'),
-            scopedFiles: new NullScopedFileResolver(),
+            scopes: $this->tenantScope(),
+            scopedFiles: Understudy::for(ScopedFileResolverInterface::class),
         );
 
         Assert::same($tester->getStatusCode(), Command::SUCCESS);
@@ -315,8 +317,8 @@ final class CheckCommandTest
     public function tenantModeWarnsThatTheMaintenanceCommandsChange(): void
     {
         $display = (string) preg_replace('/[\s!\[\]]+/u', ' ', $this->run(
-            scopes: new FixedScope('tenant-a'),
-            scopedFiles: new NullScopedFileResolver(),
+            scopes: $this->tenantScope(),
+            scopedFiles: Understudy::for(ScopedFileResolverInterface::class),
         )->getDisplay());
 
         Assert::string($display)->contains('gc --orphans` refuses and `filestorage:stat` withholds');
@@ -329,10 +331,23 @@ final class CheckCommandTest
      */
     public function aResolverWithoutAScopeProviderIsNotAnError(): void
     {
-        $tester = $this->run(scopedFiles: new NullScopedFileResolver());
+        $tester = $this->run(scopedFiles: Understudy::for(ScopedFileResolverInterface::class));
 
         Assert::same($tester->getStatusCode(), Command::SUCCESS);
         Assert::string($tester->getDisplay())->contains('Single-scope');
+    }
+
+    /**
+     * A tenant that never changes. Binding one at all is what makes an
+     * installation multi-tenant as far as this package is concerned — which is
+     * the condition the tenant-wiring gate looks for.
+     */
+    private function tenantScope(): FileScopeProviderInterface
+    {
+        $scopes = Understudy::for(FileScopeProviderInterface::class);
+        when(static fn(): ?string => $scopes->currentScopeId())->returns('tenant-a');
+
+        return $scopes;
     }
 
     /**
