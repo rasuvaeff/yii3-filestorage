@@ -670,17 +670,27 @@ final class ImportCommandTest
         // Not chmod: the suite runs as root in the container, and root reads a
         // 000 file quite happily. The factory refuses the path instead, which
         // is the same failure PSR-17 specifies.
-        $factory = Understudy::for(StreamFactoryInterface::class);
-        Understudy::forwarding($factory, $this->factory);
-        when(static fn(): StreamInterface => $factory->createStreamFromFile(
-            Arg::satisfies(
-                static fn(mixed $path): bool => \is_string($path) && str_ends_with($path, 'locked.txt'),
-                'a path ending with locked.txt',
-            ),
-            Arg::any(),
-        ))->throws(new RuntimeException('The file cannot be opened'));
-        $tester = new CommandTester(new ImportCommand($this->storage(null), $factory));
-        $tester->execute(['directory' => $this->source, '--manifest' => $this->manifest, '--apply' => true]);
+        //
+        // scope(), because the forwarding double's call log retains the file
+        // streams it returned until the context is dropped — and the adapter
+        // resets after `#[AfterTest]`, where tearDown's removeDirectory() on
+        // Windows refuses a tree with an open handle in it.
+        $tester = Understudy::scope(function (): CommandTester {
+            $factory = Understudy::for(StreamFactoryInterface::class);
+            Understudy::forwarding($factory, $this->factory);
+            when(static fn(): StreamInterface => $factory->createStreamFromFile(
+                Arg::satisfies(
+                    static fn(mixed $path): bool => \is_string($path) && str_ends_with($path, 'locked.txt'),
+                    'a path ending with locked.txt',
+                ),
+                Arg::any(),
+            ))->throws(new RuntimeException('The file cannot be opened'));
+
+            $tester = new CommandTester(new ImportCommand($this->storage(null), $factory));
+            $tester->execute(['directory' => $this->source, '--manifest' => $this->manifest, '--apply' => true]);
+
+            return $tester;
+        });
 
         Assert::same($tester->getStatusCode(), Command::FAILURE);
         Assert::same($this->repository->count(), 2, 'the other two still landed');
