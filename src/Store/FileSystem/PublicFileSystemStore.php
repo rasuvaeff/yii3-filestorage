@@ -186,10 +186,15 @@ final readonly class PublicFileSystemStore implements
     }
 
     /**
-     * @return non-empty-string
+     * @param non-empty-string $relativePath Every path reaching here is
+     *        validated non-empty: `File::requireRelativePath()` for uploads,
+     *        a `directory() . '/' . fileName()` concat for derivatives.
      */
     private function encodePath(string $relativePath): string
     {
+        // No `non-empty-string` return claim: rawurlencode('') is '', so
+        // psalm cannot prove implode() non-empty here, and both call sites
+        // prepend a non-empty base URL anyway.
         return implode('/', array_map(rawurlencode(...), explode('/', $relativePath)));
     }
 }
