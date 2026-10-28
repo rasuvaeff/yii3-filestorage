@@ -6,6 +6,8 @@ namespace Rasuvaeff\Yii3Filestorage\Policy;
 
 use InvalidArgumentException;
 use Rasuvaeff\Yii3Filestorage\Exception\PolicyViolationException;
+use Rasuvaeff\Yii3Filestorage\Exception\UnsupportedMediaTypeException;
+use Rasuvaeff\Yii3Filestorage\Exception\UploadSizeException;
 use Rasuvaeff\Yii3Filestorage\Upload;
 
 /**
@@ -92,7 +94,7 @@ final readonly class UploadPolicy
         if ($this->allowedMimeTypes !== [] && !in_array($detectedMimeType, $this->allowedMimeTypes, strict: true)) {
             $allowed = implode(', ', $this->allowedMimeTypes);
 
-            throw new PolicyViolationException(
+            throw new UnsupportedMediaTypeException(
                 'Media type ' . ($detectedMimeType ?? '<unrecognised>')
                 . " is not accepted here. Allowed: {$allowed}",
             );
@@ -100,7 +102,7 @@ final readonly class UploadPolicy
 
         $size = $upload->size();
         if ($this->maxBytes > 0 && $size !== null && $size > $this->maxBytes) {
-            throw new PolicyViolationException(
+            throw new UploadSizeException(
                 "Upload is {$size} bytes, over the {$this->maxBytes} byte limit for this group",
             );
         }

@@ -9,6 +9,9 @@ use RuntimeException;
 /**
  * The upload does not satisfy the accept rules of its group.
  *
+ * Not final: {@see UploadSizeException} and {@see UnsupportedMediaTypeException}
+ * narrow the two branches an HTTP caller must tell apart (413 vs 415).
+ *
  * @api
  */
-final class PolicyViolationException extends RuntimeException implements FilestorageException {}
+class PolicyViolationException extends RuntimeException implements FilestorageException {}

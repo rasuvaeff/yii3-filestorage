@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- `Exception\UploadSizeException` and `Exception\UnsupportedMediaTypeException`
+  extend `PolicyViolationException` and are thrown by the corresponding
+  `UploadPolicy::assertAcceptable()` branches — an HTTP layer can answer 413
+  and 415 without sniffing messages. `PolicyViolationException` is no longer
+  final for exactly this reason. #17
+
 ## 0.2.0 — 2026-10-28
 
 - `Store\DerivativeResolverInterface`: resolves a named preset to a generated,
