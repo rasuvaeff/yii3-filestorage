@@ -564,7 +564,10 @@ SVG вне групп, которым разрешены прямые публи
 ```php
 // config/console-maintenance/di/filestorage.php — скелет без scope:
 // те же сторы, тот же репозиторий, БЕЗ привязки FileScopeProviderInterface.
-StoreInterface::class => /* продакшн-стор, достаточно чтения */,
+// Стор, умеющий перечислять И удалять объекты: gc --orphans --apply
+// обходит его и вызывает deleteObject() на каждом orphan — read-only
+// привязка подметать не сможет.
+StoreInterface::class => /* продакшн-стор, с перечислением + удалением */,
 RepositoryInterface::class => /* репозиторий -db */,
 // FileScopeProviderInterface: сознательно НЕ привязан здесь.
 ```
@@ -572,7 +575,9 @@ RepositoryInterface::class => /* репозиторий -db */,
 ```bash
 APP_CONFIG_ROOT=config/console-maintenance ./yii filestorage:check   # должен напечатать "Single-scope"
 APP_CONFIG_ROOT=config/console-maintenance ./yii filestorage:gc --orphans --apply
-``` Сбор блобов это не затрагивает: реестр
+```
+
+Сбор блобов это не затрагивает: реестр
 ключуется физической идентичностью, а не арендатором, поэтому обычный
 `gc --apply` работает в установке любого вида.
 

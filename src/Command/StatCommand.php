@@ -113,7 +113,11 @@ final class StatCommand extends Command
                 'scoped' => $scoped,
                 'groups' => new \stdClass(),
                 'total' => ['files' => 0, 'bytes' => 0],
-            ]);
+            ] + ($scoped ? [] : [
+                'distinctObjects' => 0,
+                'sharedRows' => 0,
+                'sharedBytes' => 0,
+            ]));
 
             return Command::SUCCESS;
         }
@@ -133,6 +137,15 @@ final class StatCommand extends Command
         );
 
         if ($scoped) {
+            // The logical half only: the physical figures a scoped walk
+            // cannot know are simply absent from the object, the same
+            // withholding the text mode prints a note about.
+            self::maybeJson($input, $output, $log, [
+                'scoped' => true,
+                'groups' => $groups,
+                'total' => ['files' => $files, 'bytes' => $bytes],
+            ]);
+
             return Command::SUCCESS;
         }
 

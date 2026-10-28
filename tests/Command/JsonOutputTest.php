@@ -61,12 +61,35 @@ final class JsonOutputTest
         Assert::true(\is_array($decoded['log']));
     }
 
+    /** Scoped: the logical half only — physical keys absent, not zero. */
+    public function statScopedEmitsTheLogicalHalfOnly(): void
+    {
+        $this->storeFile('a', 'docs');
+
+        $decoded = $this->jsonOutput(
+            new StatCommand($this->repository, $this->tenantScope()),
+            ['--format' => 'json'],
+        );
+
+        Assert::true($decoded['scoped']);
+        Assert::same($decoded['groups'], ['docs' => ['files' => 1, 'bytes' => 5]]);
+        Assert::same($decoded['total'], ['files' => 1, 'bytes' => 5]);
+        Assert::false(isset($decoded['distinctObjects']));
+        Assert::false(isset($decoded['sharedRows']));
+        Assert::false(isset($decoded['sharedBytes']));
+    }
+
     public function statWithNothingStoredStillReports(): void
     {
         $decoded = $this->jsonOutput(new StatCommand($this->repository), ['--format' => 'json']);
 
         Assert::same($decoded['total'], ['files' => 0, 'bytes' => 0]);
         Assert::same($decoded['groups'], []);
+        // The unscoped empty report keeps the physical keys at zero — a
+        // consumer parses one schema, not two.
+        Assert::same($decoded['distinctObjects'], 0);
+        Assert::same($decoded['sharedRows'], 0);
+        Assert::same($decoded['sharedBytes'], 0);
     }
 
     public function verifyCountsItsProblems(): void

@@ -556,7 +556,9 @@ in, so a wrong wiring is visible before anything sweeps:
 ```php
 // config/console-maintenance/di/filestorage.php — the unscoped skeleton:
 // same stores, same repository, NO FileScopeProviderInterface binding.
-StoreInterface::class => /* the production store, read is enough */,
+// A store that can list AND delete objects: gc --orphans --apply walks it
+// and calls deleteObject() on each orphan — a read-only binding cannot sweep.
+StoreInterface::class => /* the production store, with listing + deletion */,
 RepositoryInterface::class => /* the -db repository */,
 // FileScopeProviderInterface: deliberately NOT bound here.
 

@@ -85,6 +85,11 @@ final class Json
      */
     public static function emit(OutputInterface $output, array $report): void
     {
-        $output->writeln(json_encode($report, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+        // RAW: the console would otherwise interpret a `<...>` sequence in
+        // a value as one of its own tags and rewrite the object.
+        $output->writeln(
+            json_encode($report, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+            OutputInterface::OUTPUT_RAW,
+        );
     }
 }
