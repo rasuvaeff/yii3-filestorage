@@ -233,7 +233,9 @@ foreach ((new GroupFiles($repository, 'avatars', metadataKey: 'width'))() as $fi
 ```
 
 The same maintenance walk the commands use, filtered by group (and optionally
-by metadata-key presence). Honest about the cost: it pages the whole ledger —
+by metadata-key presence). It takes the maintenance repository — the one
+`gc`/`stat` run through (`$repository instanceof MaintenanceRepositoryInterface`;
+every real backend has it, `Test\MemoryRepository` included). Honest about the cost: it pages the whole ledger —
 right for a backfill or an audit, wrong for a request. A backend that can
 filter natively should implement the same shape as a `WHERE`; this class is
 the contract that method would satisfy.

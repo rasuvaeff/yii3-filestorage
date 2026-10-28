@@ -99,7 +99,6 @@ Public readonly properties: `id`, `storeName`, `externalId`, `groupName`,
 
 ```php
 Upload::fromUploadedFile(UploadedFileInterface $file, StreamFactoryInterface $f, int $maxSpoolBytes = 268435456): self;
-GroupFiles(MaintenanceRepositoryInterface $repository, string $groupName, ?string $metadataKey = null) — the group-filtered walk (O(all rows); presence-filter on metadata; a native WHERE belongs to the backend). Invoke: `(new GroupFiles(...))()` yields File.
 Upload::fromDataUrl(string $dataUrl, string $originalName, StreamFactoryInterface $f, ?string &$clientMediaTypeHint = null): Upload  // RFC 2397; strict base64, percent-decoded text
 Upload::fromStream(StreamInterface $s, string $originalName, StreamFactoryInterface $f, int $maxSpoolBytes = 268435456, ?string $clientMediaTypeHint = null): self;
 Upload::fromPath(string $path, StreamFactoryInterface $f, ?string $originalName = null, int $maxSpoolBytes = 268435456): self;
@@ -406,3 +405,10 @@ answers `CircularReferenceException`:
 StorageInterface::class => static fn (Storage $inner, Quotas $quotas): StorageInterface
     => new QuotaStorage($inner, $quotas),
 ```
+
+## GroupFiles
+
+`GroupFiles(MaintenanceRepositoryInterface $repository, string $groupName, ?string $metadataKey = null)` —
+the group-filtered walk: `(new GroupFiles($repo, 'avatars'))()` yields `File`.
+O(all rows) — right for a backfill/audit, wrong for a request; a native WHERE
+belongs to the backend. `metadataKey` filters on presence, not value.
