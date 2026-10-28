@@ -221,6 +221,23 @@ validator, so a metadata change that left it untouched would serve stale
 caches. `description` travels the same way — build the new `File` via
 `File::fromArray()` with the field changed, then `save()` it.
 
+### The files of one group
+
+```php
+use Rasuvaeff\Yii3Filestorage\GroupFiles;
+
+foreach ((new GroupFiles($repository, 'avatars'))() as $file) { /* ... */ }
+
+// Or only those whose metadata carries a key — "every image we know the size of".
+foreach ((new GroupFiles($repository, 'avatars', metadataKey: 'width'))() as $file) { /* ... */ }
+```
+
+The same maintenance walk the commands use, filtered by group (and optionally
+by metadata-key presence). Honest about the cost: it pages the whole ledger —
+right for a backfill or an audit, wrong for a request. A backend that can
+filter natively should implement the same shape as a `WHERE`; this class is
+the contract that method would satisfy.
+
 ### Reading
 
 ```php
