@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryOptions;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicy;
+use Rasuvaeff\Yii3Filestorage\Store\DerivativeDescriptor;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Data\DataProvider;
@@ -79,6 +80,51 @@ final class DeliveryOptionsTest
         $options = DeliveryOptions::fromFile($this->file(originalName: "\r\n\0"), new DeliveryPolicy());
 
         Assert::same($options->downloadName, 'file');
+    }
+
+    /**
+     * A rendition carries the group's disposition, its own authoritative media
+     * type, and the original's name wearing the rendition's extension — a WebP
+     * thumbnail of "photo.jpg" downloads as "photo.webp".
+     */
+    public function forVariantTakesTypeAndExtensionFromTheRendition(): void
+    {
+        $options = DeliveryOptions::forVariant(
+            $this->file(originalName: 'photo.jpg', mimeType: 'image/jpeg'),
+            new DeliveryPolicy(forceDownload: true),
+            new DerivativeDescriptor(name: 'thumb-v2', extension: 'webp', mediaType: 'image/webp'),
+        );
+
+        Assert::true($options->forceDownload);
+        Assert::same($options->responseMediaType, 'image/webp');
+        Assert::same($options->downloadName, 'photo.webp');
+    }
+
+    /**
+     * The original's extension is replaced, not appended to — and a name with
+     * no extension, or one that strips to nothing, still yields a usable file
+     * name.
+     */
+    #[DataProvider('variantNameProvider')]
+    public function forVariantRenamesTheExtension(string $originalName, string $expected): void
+    {
+        $options = DeliveryOptions::forVariant(
+            $this->file(originalName: $originalName),
+            new DeliveryPolicy(),
+            new DerivativeDescriptor(name: 'thumb-v1', extension: 'webp', mediaType: 'image/webp'),
+        );
+
+        Assert::same($options->downloadName, $expected);
+    }
+
+    /**
+     * @return iterable<string, array{non-empty-string, non-empty-string}>
+     */
+    public static function variantNameProvider(): iterable
+    {
+        yield 'extension is replaced' => ['photo.jpeg', 'photo.webp'];
+        yield 'no extension' => ['photo', 'photo.webp'];
+        yield 'strips to nothing' => ["\r\n\0", 'file.webp'];
     }
 
     private function file(string $originalName = 'thing.bin', ?string $mimeType = 'text/plain'): File

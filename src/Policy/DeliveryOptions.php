@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Filestorage\Policy;
 
 use Rasuvaeff\Yii3Filestorage\File;
+use Rasuvaeff\Yii3Filestorage\Store\DerivativeDescriptor;
 
 /**
  * The response shape a file must be delivered with, wherever it is served from.
@@ -41,6 +42,24 @@ final readonly class DeliveryOptions
             forceDownload: $policy->forceDownload,
             responseMediaType: $file->mimeType ?? self::DEFAULT_MEDIA_TYPE,
             downloadName: $name === '' ? self::DEFAULT_DOWNLOAD_NAME : $name,
+        );
+    }
+
+    /**
+     * The delivery shape of a derivative rendition: the group's policy still
+     * governs the disposition, but the media type and the extension come from
+     * the rendition itself — a WebP thumbnail of a JPEG upload is served as
+     * WebP, under the original's name wearing the rendition's extension.
+     */
+    public static function forVariant(File $file, DeliveryPolicy $policy, DerivativeDescriptor $derivative): self
+    {
+        $name = str_replace(["\r", "\n", "\0"], '', $file->originalName);
+        $base = pathinfo($name, PATHINFO_FILENAME);
+
+        return new self(
+            forceDownload: $policy->forceDownload,
+            responseMediaType: $derivative->mediaType,
+            downloadName: ($base === '' ? self::DEFAULT_DOWNLOAD_NAME : $base) . '.' . $derivative->extension,
         );
     }
 }

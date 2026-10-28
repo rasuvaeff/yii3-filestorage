@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Url\ProxyUrlGeneratorInterface::variantUrl()`: the signed proxy URL for a
   named derivative rendition; the variant is inside the HMAC, as with
   presigned store URLs. #15
+- `Policy\DeliveryOptions::forVariant()`: the delivery shape of a rendition —
+  the group's disposition, the rendition's authoritative media type and
+  extension (a WebP thumbnail of `photo.jpg` downloads as `photo.webp`). #15
 
 ## 0.1.1 — 2026-08-08
 
