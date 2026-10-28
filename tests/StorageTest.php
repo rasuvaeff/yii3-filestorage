@@ -344,6 +344,22 @@ final class StorageTest
     }
 
     /**
+     * A body several read-chunks long must be hashed and read whole — a
+     * per-chunk overwrite in either loop would keep only the last piece and
+     * still produce a plausible-looking digest.
+     */
+    public function aMultiChunkBodyIsHashedAndReadWhole(): void
+    {
+        $body = str_repeat('a', 262_144) . str_repeat('b', 262_144) . 'tail';
+        $storage = $this->storage(maxInlineBytes: 1_048_576, integrityHashMaxBytes: 1_048_576);
+
+        $file = $storage->add($this->upload($body, 'big.bin'));
+
+        Assert::same($file->contentHash, hash('sha256', $body));
+        Assert::same($storage->content($file), $body);
+    }
+
+    /**
      * The limit is inclusive: a file exactly at it is still hashed. Otherwise
      * `integrityHashMaxBytes` would silently mean "one byte less than this".
      */
@@ -375,6 +391,18 @@ final class StorageTest
 
         Assert::null($file->contentHash);
         Assert::same($this->store->bytesAt($file->relativePath), '12345', 'the file is still stored in full');
+    }
+
+    /**
+     * The cap counts the whole body, not the last chunk: a multi-chunk body
+     * over the limit is not hashed even when its final read alone is under it.
+     */
+    public function theHashCapCountsTheWholeBodyNotTheLastChunk(): void
+    {
+        $body = str_repeat('a', 262_144) . str_repeat('b', 10);
+        $storage = $this->storage(integrityHashMaxBytes: 262_150);
+
+        Assert::null($storage->add($this->upload($body, 'big.bin'))->contentHash);
     }
 
     public function urlIsNullWhenTheStoreCannotProduceOne(): void
