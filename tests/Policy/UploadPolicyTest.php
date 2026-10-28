@@ -10,6 +10,8 @@ use Rasuvaeff\PropertyTesting\ArbitraryInterface;
 use Rasuvaeff\PropertyTesting\Gen;
 use Rasuvaeff\PropertyTesting\Property;
 use Rasuvaeff\Yii3Filestorage\Exception\PolicyViolationException;
+use Rasuvaeff\Yii3Filestorage\Exception\UnsupportedMediaTypeException;
+use Rasuvaeff\Yii3Filestorage\Exception\UploadSizeException;
 use Rasuvaeff\Yii3Filestorage\Policy\UploadPolicy;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Testo\Assert;
@@ -54,7 +56,7 @@ final class UploadPolicyTest
     {
         $policy = new UploadPolicy(allowedMimeTypes: ['image/png']);
 
-        Expect::exception(PolicyViolationException::class)->withMessageContaining('Allowed: image/png');
+        Expect::exception(UnsupportedMediaTypeException::class)->withMessageContaining('Allowed: image/png');
 
         $policy->assertAcceptable($this->upload('x'), 'text/plain');
     }
@@ -67,7 +69,7 @@ final class UploadPolicyTest
     {
         $policy = new UploadPolicy(allowedMimeTypes: ['image/png']);
 
-        Expect::exception(PolicyViolationException::class)->withMessageContaining('<unrecognised>');
+        Expect::exception(UnsupportedMediaTypeException::class)->withMessageContaining('<unrecognised>');
 
         $policy->assertAcceptable($this->upload('x'), null);
     }
@@ -76,7 +78,7 @@ final class UploadPolicyTest
     {
         $policy = new UploadPolicy(maxBytes: 4);
 
-        Expect::exception(PolicyViolationException::class)->withMessageContaining('over the 4 byte limit');
+        Expect::exception(UploadSizeException::class)->withMessageContaining('over the 4 byte limit');
 
         $policy->assertAcceptable($this->upload('12345'), 'text/plain');
     }
@@ -258,6 +260,30 @@ final class UploadPolicyTest
             'cap' => Gen::intBetween(1, 2_000),
             'over' => Gen::intBetween(1, 500),
         ];
+    }
+
+    /**
+     * The typed violations must stay substitutable for the parent: consumers
+     * catch `PolicyViolationException` and have answered 400 with it all
+     * along — narrowing the hierarchy is not allowed to break them.
+     */
+    public function typedViolationsRemainPolicyViolations(): void
+    {
+        $upload = $this->upload('xxxxx');
+
+        try {
+            (new UploadPolicy(maxBytes: 4))->assertAcceptable($upload, 'text/plain');
+            Assert::true(false, 'a policy violation was expected');
+        } catch (PolicyViolationException $e) {
+            Assert::instanceOf($e, UploadSizeException::class);
+        }
+
+        try {
+            (new UploadPolicy(allowedMimeTypes: ['image/png']))->assertAcceptable($upload, 'text/plain');
+            Assert::true(false, 'a policy violation was expected');
+        } catch (PolicyViolationException $e) {
+            Assert::instanceOf($e, UnsupportedMediaTypeException::class);
+        }
     }
 
     private function upload(string $body): Upload

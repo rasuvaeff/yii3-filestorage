@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Exception\UploadSizeException` and `Exception\UnsupportedMediaTypeException`
   extend `PolicyViolationException` and are thrown by the corresponding
   `UploadPolicy::assertAcceptable()` branches — an HTTP layer can answer 413
-  and 415 without sniffing messages. #17
+  and 415 without sniffing messages. `PolicyViolationException` is no longer
+  final for exactly this reason. #17
 
 ## 0.2.0 — 2026-10-28
 
