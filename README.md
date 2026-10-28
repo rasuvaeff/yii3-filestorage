@@ -457,6 +457,12 @@ eventually runs against the wrong database. `verify` has no `--apply` at all:
 what to do about a missing object — restore, re-upload, delete the row — is not
 a decision a command should make for you.
 
+The four report commands (`check`, `stat`, `verify`, `gc`) take
+`--format=json`: stdout becomes exactly one machine-consumable object — stable
+keys, counts and rows instead of tables — and everything the text mode would
+have printed travels inside it under `log`, so a dashboard or a cron wrapper
+parses instead of scraping.
+
 All four page by id and print the last one they reached, so a table too large
 for one run is a sequence of bounded runs:
 
@@ -542,6 +548,27 @@ Run the sweep from a maintenance entry point that leaves the scope provider
 unbound, where the repository sees every row. Blob collection is unaffected:
 the ledger is keyed by physical identity, not by tenant, so plain `gc --apply`
 works in either kind of installation.
+
+A maintenance entry point is a console config set of its own, with the scope
+provider deliberately absent — `filestorage:check` reports which mode it runs
+in, so a wrong wiring is visible before anything sweeps:
+
+```php
+// config/console-maintenance/di/filestorage.php — the unscoped skeleton:
+// same stores, same repository, NO FileScopeProviderInterface binding.
+// A store that can list AND delete objects: gc --orphans --apply walks it
+// and calls deleteObject() on each orphan — a read-only binding cannot sweep.
+StoreInterface::class => /* the production store, with listing + deletion */,
+RepositoryInterface::class => /* the -db repository */,
+// FileScopeProviderInterface: deliberately NOT bound here.
+
+// config/console-maintenance/params.php (or your entry script's bootstrap):
+// run `./yii filestorage:check` first — it must print "Single-scope".
+```
+
+```bash
+APP_CONFIG_ROOT=config/console-maintenance ./yii filestorage:gc --orphans --apply
+```
 
 `filestorage:stat` reads through the same scoped repository and splits along the
 same line, one step milder. Counts and byte totals are *logical* — they describe

@@ -15,7 +15,6 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
-use Symfony\Component\Console\Style\SymfonyStyle;
 
 /**
  * Checks that every row still has the bytes it claims.
@@ -48,6 +47,7 @@ final class VerifyCommand extends Command
     #[Override]
     protected function configure(): void
     {
+        Json::configure($this);
         $this
             ->addOption('deep', null, InputOption::VALUE_NONE, 'Also re-read each object and compare its hash')
             ->addOption('after', null, InputOption::VALUE_REQUIRED, 'Resume after this file id')
@@ -57,7 +57,8 @@ final class VerifyCommand extends Command
     #[Override]
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $io = new SymfonyStyle($input, $output);
+        $log = [];
+        $io = Json::style($input, $output, $log);
         $deep = (bool) $input->getOption('deep');
         $limit = max(1, (int) $input->getOption('limit'));
         $after = $this->stringOption($input, 'after');
@@ -66,6 +67,9 @@ final class VerifyCommand extends Command
         $missing = 0;
         $mismatched = 0;
         $last = null;
+
+        /** @var list<array{id: string, problem: string, relativePath: string}> $problems */
+        $problems = [];
 
         while ($checked < $limit) {
             $page = iterator_to_array($this->repository->files($after, max(1, min(500, $limit - $checked))), preserve_keys: false);
@@ -84,6 +88,7 @@ final class VerifyCommand extends Command
                 }
 
                 $problem === 'missing' ? $missing++ : $mismatched++;
+                $problems[] = ['id' => $file->id, 'problem' => $problem, 'relativePath' => $file->relativePath];
                 $io->text(sprintf('  %s: %s (%s)', $problem, $file->id, $file->relativePath));
             }
         }
@@ -96,6 +101,7 @@ final class VerifyCommand extends Command
 
         if ($missing === 0 && $mismatched === 0) {
             $io->success('Every row has its object.');
+            self::maybeJson($input, $output, $log, $deep, $limit, $checked, $last, $problems);
 
             return Command::SUCCESS;
         }
@@ -106,8 +112,39 @@ final class VerifyCommand extends Command
             $missing === 1 ? '' : 's',
             $mismatched === 0 ? '' : sprintf(', %d with the wrong content', $mismatched),
         ));
+        self::maybeJson($input, $output, $log, $deep, $limit, $checked, $last, $problems);
 
         return Command::FAILURE;
+    }
+
+    /**
+     * @param array<int, string> $log
+     * @param list<array{id: string, problem: string, relativePath: string}> $problems
+     */
+    private static function maybeJson(
+        InputInterface $input,
+        OutputInterface $output,
+        array $log,
+        bool $deep,
+        int $limit,
+        int $checked,
+        ?string $last,
+        array $problems,
+    ): void {
+        if (!Json::enabled($input)) {
+            return;
+        }
+
+        Json::emit($output, [
+            'deep' => $deep,
+            'limit' => $limit,
+            'checked' => $checked,
+            'lastId' => $last,
+            'missing' => \count(array_filter($problems, static fn(array $p): bool => $p['problem'] === 'missing')),
+            'corrupt' => \count(array_filter($problems, static fn(array $p): bool => $p['problem'] === 'corrupt')),
+            'problems' => $problems,
+            'log' => $log,
+        ]);
     }
 
     /**

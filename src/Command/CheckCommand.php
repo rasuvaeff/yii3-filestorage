@@ -23,7 +23,6 @@ use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
-use Symfony\Component\Console\Style\SymfonyStyle;
 
 /**
  * Reports what is wired, what each store can do, and what is unsafe.
@@ -73,16 +72,35 @@ final class CheckCommand extends Command
     }
 
     #[Override]
+    protected function configure(): void
+    {
+        Json::configure($this);
+    }
+
+    #[Override]
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $io = new SymfonyStyle($input, $output);
+        $log = [];
+        $io = Json::style($input, $output, $log);
         $errors = [];
         $warnings = [];
+
+        /** @var list<array{name: string, class: string, capabilities: list<string>, default: bool}> $storeRows */
+        $storeRows = [];
+
+        /** @var list<array{group: string, accepts: list<string>, maxBytes: int, maxPixels: int, directPublicUrl: bool}> $groupRows */
+        $groupRows = [];
 
         $io->section('Stores');
         $rows = [];
         foreach ($this->stores->names() as $name) {
             $store = $this->stores->get($name);
+            $storeRows[] = [
+                'name' => $name,
+                'class' => $store::class,
+                'capabilities' => $this->capabilities($store),
+                'default' => $name === $this->stores->defaultName(),
+            ];
             $rows[] = [
                 $name . ($name === $this->stores->defaultName() ? ' (default)' : ''),
                 $store::class,
@@ -141,6 +159,13 @@ final class CheckCommand extends Command
             $delivery = $this->deliveryPolicies->for($group);
             $allowed = $upload->allowedMimeTypes === [] ? 'anything' : implode(', ', $upload->allowedMimeTypes);
 
+            $groupRows[] = [
+                'group' => $group,
+                'accepts' => $upload->allowedMimeTypes,
+                'maxBytes' => $upload->maxBytes,
+                'maxPixels' => $upload->maxPixels,
+                'directPublicUrl' => $delivery->allowDirectPublicUrl,
+            ];
             $rows[] = [
                 $group,
                 $allowed,
@@ -164,12 +189,46 @@ final class CheckCommand extends Command
         }
 
         if ($errors !== []) {
+            self::maybeJson($input, $output, $log, false, $errors, $warnings, $storeRows, $groupRows);
+
             return Command::FAILURE;
         }
 
         $io->success('File storage configuration looks sound.');
+        self::maybeJson($input, $output, $log, true, $errors, $warnings, $storeRows, $groupRows);
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * @param array<int, string> $log
+     * @param list<string> $errors
+     * @param list<string> $warnings
+     * @param list<array{name: string, class: string, capabilities: list<string>, default: bool}> $storeRows
+     * @param list<array{group: string, accepts: list<string>, maxBytes: int, maxPixels: int, directPublicUrl: bool}> $groupRows
+     */
+    private static function maybeJson(
+        InputInterface $input,
+        OutputInterface $output,
+        array $log,
+        bool $ok,
+        array $errors,
+        array $warnings,
+        array $storeRows,
+        array $groupRows,
+    ): void {
+        if (!Json::enabled($input)) {
+            return;
+        }
+
+        Json::emit($output, [
+            'ok' => $ok,
+            'errors' => $errors,
+            'warnings' => $warnings,
+            'stores' => $storeRows,
+            'groups' => $groupRows,
+            'log' => $log,
+        ]);
     }
 
     /**
