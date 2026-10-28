@@ -32,11 +32,11 @@ interface DerivativeResolverInterface
      * @return StreamInterface|null Null only when the object vanished between
      *         generation and read — treat it like any missing file.
      *
-     * @throws \Rasuvaeff\Yii3Filestorage\Exception\FilestorageException When
-     *         the preset is not configured, or generation fails. A caller
-     *         serving HTTP maps an unresolvable preset to a 404 and lets a
-     *         generation failure surface: the first is "no such URL target",
-     *         the second is breakage worth seeing.
+     * @throws \Rasuvaeff\Yii3Filestorage\Exception\UnresolvableVariantException
+     *         When the preset is not configured — an HTTP caller maps it to a
+     *         404. A preset that exists but fails to render throws another
+     *         {@see \Rasuvaeff\Yii3Filestorage\Exception\FilestorageException}
+     *         subtype, which a caller should let surface.
      */
     public function stream(File $file, string $presetName): ?StreamInterface;
 
@@ -46,8 +46,8 @@ interface DerivativeResolverInterface
      *
      * @param non-empty-string $presetName
      *
-     * @throws \Rasuvaeff\Yii3Filestorage\Exception\FilestorageException When
-     *         the preset is not configured.
+     * @throws \Rasuvaeff\Yii3Filestorage\Exception\UnresolvableVariantException
+     *         When the preset is not configured.
      */
     public function descriptor(string $presetName): DerivativeDescriptor;
 }

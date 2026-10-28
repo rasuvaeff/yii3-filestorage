@@ -136,7 +136,13 @@ Optional capabilities, all extending `StoreInterface`:
 | `ContentAddressableStoreInterface` | `putIfAbsent(Upload, StoredObjectId, int $maxBytes = 0)` — atomic, immutable |
 | `MaintenanceStoreInterface` | `objects(?string $afterPath, int $limit)`, `deleteObject(StoredObjectId)` |
 | `DerivativeAwareStoreInterface` | `hasDerivative()`, `derivativeStream()`, `writeDerivative()` |
-| `DerivativeResolverInterface` | `stream(File, presetName): ?StreamInterface` (lazy generation), `descriptor(presetName): DerivativeDescriptor`. Implemented by `-images`' `Derivatives`; consumed by `-web` to serve variant tokens. `FilestorageException` = preset not configured (map to 404) or generation failed (surface it) |
+
+A service contract, not a store capability: `Store\DerivativeResolverInterface` —
+`stream(File, presetName): ?StreamInterface` (lazy generation) and
+`descriptor(presetName): DerivativeDescriptor`. Implemented by `-images`'
+`Derivatives`, consumed by `-web` to serve variant tokens. `UnresolvableVariantException`
+= preset not configured (an HTTP caller maps it to 404); any other
+`FilestorageException` from it is a generation failure and should surface.
 | `DerivativeUrlProviderInterface` | `publicDerivativeUrl()`, `temporaryDerivativeUrl()` |
 
 Implementations: `Store\FileSystem\FileSystemStore` (derivatives, maintenance,

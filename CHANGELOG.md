@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   streamable rendition (`stream()` + `descriptor()`). Contract home is core so
   `-web` can serve variant tokens without depending on `-images`, whose
   `Derivatives` facade is the reference implementation. #15
+- `Exception\UnresolvableVariantException`: the named preset is not configured —
+  typed apart from a generation failure, so an HTTP caller can map one to 404
+  and let the other surface. #15
 - `Url\ProxyUrlGeneratorInterface::variantUrl()`: the signed proxy URL for a
   named derivative rendition; the variant is inside the HMAC, as with
   presigned store URLs. #15
