@@ -309,7 +309,7 @@ read-only PSR-7 window for `206` responses, no buffering.
 
 All implement `Exception\FilestorageException`:
 `AddException`, `RemoveException`, `StoreException`, `ContentTooLargeException`,
-`UploadTooLargeException`, `UploadFailedException`, `PolicyViolationException`,
+`UploadTooLargeException`, `UploadFailedException`, `PolicyViolationException` (size → `UploadSizeException`, media type → `UnsupportedMediaTypeException`, both subclasses),
 `InvalidConfigException`, `LedgerException`, `BlobBusyException`.
 
 ### Test doubles (`src/Test/`, installed with the package)
