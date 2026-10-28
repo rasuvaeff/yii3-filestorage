@@ -62,6 +62,69 @@ final class UploadTest
         Assert::same($upload->stream()->getContents(), 'hello');
     }
 
+    public function fromDataUrlDecodesBase64WithAMediaTypeHint(): void
+    {
+        $upload = Upload::fromDataUrl(
+            'data:image/png;base64,' . base64_encode('png bytes'),
+            'logo.png',
+            $this->factory,
+            $hint,
+        );
+
+        Assert::same($upload->stream()->getContents(), 'png bytes');
+        Assert::same($upload->originalName, 'logo.png');
+        Assert::same($hint, 'image/png');
+        Assert::same($upload->clientMediaTypeHint, 'image/png');
+
+        // The marker without a media type: still base64, still no hint.
+        $markerOnly = Upload::fromDataUrl('data:;base64,' . base64_encode('x'), 'y.bin', $this->factory, $noHint);
+        Assert::same($markerOnly->stream()->getContents(), 'x');
+        Assert::null($noHint);
+    }
+
+    /** RFC 2397 default: percent-encoded text, no base64 marker. */
+    public function fromDataUrlDecodesThePercentEncodedForm(): void
+    {
+        $upload = Upload::fromDataUrl('data:,a%20b%2Fc', 'note.txt', $this->factory, $hint);
+
+        Assert::same($upload->stream()->getContents(), 'a b/c');
+        Assert::null($hint);
+
+        // Percent-decoded, not left literal and not form-decoded: '+' stays
+        // the plus it is in RFC 2397.
+        Assert::same(Upload::fromDataUrl('data:,a%41+b', 'n.txt', $this->factory)->stream()->getContents(), 'aA+b');
+    }
+
+    /** No media type at all: the hint stays null, detection belongs to storage. */
+    public function fromDataUrlWithoutABase64MarkerIsPlainText(): void
+    {
+        $upload = Upload::fromDataUrl('data:text/plain,aGVsbG8=', 'x.txt', $this->factory, $hint);
+
+        // Not base64-decoded: no marker means percent-encoded text, and the
+        // literal '=' survives.
+        Assert::same($upload->stream()->getContents(), 'aGVsbG8=');
+        Assert::same($hint, 'text/plain');
+    }
+
+    #[DataProvider('badDataUrlProvider')]
+    public function fromDataUrlRefusesWhatItCannotParse(string $dataUrl, string $messagePart): void
+    {
+        Expect::exception(UploadFailedException::class)->withMessageContaining($messagePart);
+
+        Upload::fromDataUrl($dataUrl, 'x.bin', $this->factory);
+    }
+
+    /**
+     * @return iterable<string, array{non-empty-string, non-empty-string}>
+     */
+    public static function badDataUrlProvider(): iterable
+    {
+        yield 'not a data url' => ['https://example.test/x', 'must start with "data:"'];
+        yield 'no comma' => ['data:image/png', 'contain ","'];
+        yield 'base64 payload does not decode' => ['data:image/png;base64,***not base64***', 'does not decode'];
+        yield 'malformed media type' => ['data:not a type,x', 'Malformed media type'];
+    }
+
     public function aNonSeekableStreamIsSpooledIntoASeekableOne(): void
     {
         $upload = Upload::fromStream(

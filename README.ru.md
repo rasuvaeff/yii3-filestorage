@@ -177,6 +177,14 @@ $file = $storage->add(
 
 // Из пути.
 $file = $storage->add(Upload::fromPath('/tmp/import.csv', $streamFactory));
+
+// Из RFC 2397 data URL — rich-text редакторы, JSON API, мобильные клиенты.
+$file = $storage->add(Upload::fromDataUrl(
+    'data:image/png;base64,' . $base64Payload,
+    'logo.png',
+    $streamFactory,
+    $clientHint, // заявленный в URL media type, по ссылке — подсказка, не факт
+));
 ```
 
 `$file` — неизменяемый `File`: `id`, `storeName`, `groupName`, `relativePath`,
