@@ -148,7 +148,7 @@ A service contract, not a store capability: `Store\DerivativeResolverInterface` 
 Implementations: `Store\FileSystem\FileSystemStore` (derivatives, maintenance,
 range), `Store\FileSystem\PublicFileSystemStore` (the above plus public URLs;
 `temporaryUrl()` is always null — a web server has no signature to check),
-`Test\InMemoryStore` (base + maintenance only, deliberately no URL/range).
+`Test\InMemoryStore (base + maintenance only; Test\UrlCapableInMemoryStore adds StoreUrlProviderInterface with publicUrls/temporaryUrls toggles)` (base + maintenance only, deliberately no URL/range).
 
 `StoreRegistry`: `get(?string $name)`, `has()`, `names()`, `defaultName()`.
 Built by core from the one `StoreInterface` a backend binds.
