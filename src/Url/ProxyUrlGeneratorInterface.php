@@ -24,4 +24,18 @@ interface ProxyUrlGeneratorInterface
      * @return non-empty-string|null
      */
     public function url(File $file, DateTimeImmutable $expiresAt): ?string;
+
+    /**
+     * The proxy URL for a named derivative rendition rather than the original.
+     *
+     * The variant travels inside the signed payload
+     * ({@see \Rasuvaeff\Yii3Filestorage\Url\SignedPayload}), so a URL minted
+     * for a thumbnail cannot be replayed for the full-resolution file — the
+     * same guarantee presigned store URLs carry.
+     *
+     * @param non-empty-string $variant
+     *
+     * @return non-empty-string|null
+     */
+    public function variantUrl(File $file, string $variant, DateTimeImmutable $expiresAt): ?string;
 }

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- `Store\DerivativeResolverInterface`: resolves a named preset to a generated,
+  streamable rendition (`stream()` + `descriptor()`). Contract home is core so
+  `-web` can serve variant tokens without depending on `-images`, whose
+  `Derivatives` facade is the reference implementation. #15
+- `Url\ProxyUrlGeneratorInterface::variantUrl()`: the signed proxy URL for a
+  named derivative rendition; the variant is inside the HMAC, as with
+  presigned store URLs. #15
+
 ## 0.1.1 — 2026-08-08
 
 - `config/di.php` now binds the facade under `Storage::class` and makes

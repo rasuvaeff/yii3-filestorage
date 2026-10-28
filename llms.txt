@@ -136,6 +136,7 @@ Optional capabilities, all extending `StoreInterface`:
 | `ContentAddressableStoreInterface` | `putIfAbsent(Upload, StoredObjectId, int $maxBytes = 0)` — atomic, immutable |
 | `MaintenanceStoreInterface` | `objects(?string $afterPath, int $limit)`, `deleteObject(StoredObjectId)` |
 | `DerivativeAwareStoreInterface` | `hasDerivative()`, `derivativeStream()`, `writeDerivative()` |
+| `DerivativeResolverInterface` | `stream(File, presetName): ?StreamInterface` (lazy generation), `descriptor(presetName): DerivativeDescriptor`. Implemented by `-images`' `Derivatives`; consumed by `-web` to serve variant tokens. `FilestorageException` = preset not configured (map to 404) or generation failed (surface it) |
 | `DerivativeUrlProviderInterface` | `publicDerivativeUrl()`, `temporaryDerivativeUrl()` |
 
 Implementations: `Store\FileSystem\FileSystemStore` (derivatives, maintenance,
@@ -284,7 +285,10 @@ new SigningKeyRing(string $activeKeyId, array $keys);   // key ids /^[A-Za-z0-9]
 new HmacUrlSigner(ClockInterface $clock, SigningKeyRing $keys);
 new SignedPayload(string $fileId, ?string $variant = null, ?string $scopeId = null);
 
-interface ProxyUrlGeneratorInterface { public function url(File $file, DateTimeImmutable $expiresAt): ?string; }
+interface ProxyUrlGeneratorInterface {
+    public function url(File $file, DateTimeImmutable $expiresAt): ?string;
+    public function variantUrl(File $file, string $variant, DateTimeImmutable $expiresAt): ?string;
+}
 ```
 
 Local only: the same application signs and verifies. S3 presigning is
