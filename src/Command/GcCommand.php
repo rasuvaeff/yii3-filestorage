@@ -76,12 +76,15 @@ final class GcCommand extends Command
             ->addOption('orphans', null, InputOption::VALUE_NONE, 'Also sweep objects with no metadata row')
             ->addOption('store', null, InputOption::VALUE_REQUIRED, 'Limit the orphan sweep to one store')
             ->addOption('limit', null, InputOption::VALUE_REQUIRED, 'Stop after this many deletions', '1000');
+
+        Json::configure($this);
     }
 
     #[Override]
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $io = new SymfonyStyle($input, $output);
+        $log = [];
+        $io = Json::style($input, $output, $log);
         $apply = (bool) $input->getOption('apply');
         $limit = max(1, (int) $input->getOption('limit'));
 
@@ -92,6 +95,13 @@ final class GcCommand extends Command
         $orphansRequested = (bool) $input->getOption('orphans');
         if ($orphansRequested && $this->scopes !== null) {
             $io->error($this->scopedSweepRefusal());
+            if (Json::enabled($input)) {
+                Json::emit($output, [
+                    'applied' => $apply,
+                    'error' => $this->scopedSweepRefusal(),
+                    'log' => $log,
+                ]);
+            }
 
             return Command::FAILURE;
         }
@@ -117,6 +127,15 @@ final class GcCommand extends Command
                 $orphans === 1 ? '' : 's',
             ),
         ));
+
+        if (Json::enabled($input)) {
+            Json::emit($output, [
+                'applied' => $apply,
+                'blobsCollected' => $blobs,
+                'orphanObjects' => $orphans,
+                'log' => $log,
+            ]);
+        }
 
         return Command::SUCCESS;
     }

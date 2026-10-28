@@ -11,7 +11,6 @@ use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
-use Symfony\Component\Console\Style\SymfonyStyle;
 
 /**
  * What is actually stored, by group.
@@ -50,9 +49,16 @@ final class StatCommand extends Command
     }
 
     #[Override]
+    protected function configure(): void
+    {
+        Json::configure($this);
+    }
+
+    #[Override]
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $io = new SymfonyStyle($input, $output);
+        $log = [];
+        $io = Json::style($input, $output, $log);
         $scoped = $this->scopes !== null;
 
         /** @var array<string, array{files: int, bytes: int}> $groups */
@@ -103,6 +109,11 @@ final class StatCommand extends Command
 
         if ($files === 0) {
             $io->success($scoped ? 'No files stored in the current scope.' : 'No files stored.');
+            self::maybeJson($input, $output, $log, [
+                'scoped' => $scoped,
+                'groups' => new \stdClass(),
+                'total' => ['files' => 0, 'bytes' => 0],
+            ]);
 
             return Command::SUCCESS;
         }
@@ -139,7 +150,31 @@ final class StatCommand extends Command
                 self::human($sharedBytes),
             ));
 
+        self::maybeJson($input, $output, $log, [
+            'scoped' => $scoped,
+            'groups' => $groups,
+            'total' => ['files' => $files, 'bytes' => $bytes],
+            'distinctObjects' => \count($paths),
+            'sharedRows' => $files - \count($paths),
+            'sharedBytes' => $sharedBytes,
+        ]);
+
         return Command::SUCCESS;
+    }
+
+    /**
+     * @param array<string, mixed> $report
+     * @param array<int, string> $log
+     */
+    private static function maybeJson(
+        InputInterface $input,
+        OutputInterface $output,
+        array $log,
+        array $report,
+    ): void {
+        if (Json::enabled($input)) {
+            Json::emit($output, $report + ['log' => $log]);
+        }
     }
 
     /**

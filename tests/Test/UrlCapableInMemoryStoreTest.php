@@ -30,11 +30,10 @@ final class UrlCapableInMemoryStoreTest
             $store->publicUrl($this->file()),
             'https://public.example.test/memory/docs/ab/thing.txt',
         );
-        Assert::string($store->temporaryUrl(
-            $this->file(),
-            new DateTimeImmutable('2026-01-01T01:00:00+00:00'),
-            $this->options(),
-        ))->contains('expires=1767229200');
+        Assert::same(
+            $store->temporaryUrl($this->file(), new DateTimeImmutable('2026-01-01T01:00:00+00:00'), $this->options()),
+            'https://signed.example.test/docs/ab/thing.txt?expires=1767229200',
+        );
     }
 
     /**
@@ -78,6 +77,41 @@ final class UrlCapableInMemoryStoreTest
 
         $store->delete($file);
         Assert::false($store->exists($file));
+    }
+
+    /**
+     * A body larger than the double's read chunk must survive the copy loop
+     * whole — a per-chunk overwrite would keep only the last piece.
+     */
+    public function aMultiChunkBodySurvivesTheCopyLoop(): void
+    {
+        $store = $this->store();
+        $body = str_repeat('a', 262_144) . str_repeat('b', 262_144) . 'tail';
+        $result = $store->write(
+            Upload::fromStream((new Psr17Factory())->createStream($body), 'big.bin', new Psr17Factory()),
+            'docs',
+            new RandomPathGenerator(),
+            maxBytes: strlen($body),
+        );
+
+        $file = $this->file($result->relativePath);
+        Assert::same($store->size($file), strlen($body));
+        Assert::same((string) ($store->stream($file) ?? ''), $body);
+    }
+
+    /** The byte cap is inclusive: a body exactly at it is stored. */
+    public function theByteCapIsInclusive(): void
+    {
+        $store = $this->store();
+        $result = $store->write(
+            Upload::fromStream((new Psr17Factory())->createStream('12345'), 'x.bin', new Psr17Factory()),
+            'docs',
+            new RandomPathGenerator(),
+            maxBytes: 5,
+        );
+
+        $file = $this->file($result->relativePath);
+        Assert::same((string) ($store->stream($file) ?? ''), '12345');
     }
 
     private function store(bool $publicUrls = true, bool $temporaryUrls = true): UrlCapableInMemoryStore

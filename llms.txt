@@ -333,6 +333,7 @@ No clock double ships here. Everything takes a PSR-20 clock; use
 | `Command\VerifyCommand` | `filestorage:verify` | Rows whose object is missing. `--deep` re-reads and compares the hash. Non-zero on any finding |
 | `Command\BackfillHashCommand` | `filestorage:backfill-hash` | Fills `contentHash` on rows written before hashing was on |
 | `Command\GcCommand` | `filestorage:gc` | Collects unreferenced blobs; `--orphans` also sweeps objects no row points at |
+`--format=json` on check/stat/verify/gc: stdout = one JSON object (stable keys; human output inside `log`)
 | `Command\ImportCommand` | `filestorage:import <dir>` | Walks a tree, `add()`s every file, records completions in a manifest and skips them next time |
 
 Rules:

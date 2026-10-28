@@ -161,4 +161,17 @@ final class MemoryRepositoryTest
 
         Assert::same(array_map(static fn(File $f): string => $f->id, $after), ['100', '9']);
     }
+
+    public function allReturnsAListNotAMap(): void
+    {
+        $this->repository->save($this->file('b'));
+        $this->repository->save($this->file('a'));
+
+        \assert(method_exists($this->repository, 'all'));
+        $all = $this->repository->all();
+
+        Assert::true(array_is_list($all));
+        Assert::same(count($all), 2);
+    }
+
 }

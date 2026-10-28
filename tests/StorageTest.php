@@ -433,6 +433,25 @@ final class StorageTest
      * The fallback that makes `urlFor()` worth calling: install `-web` and a
      * private store suddenly has a URL, with no template change.
      */
+    /**
+     * The store-native temporary URL wins over the proxy even when both can
+     * mint one — the ladder's order is public → temporary → proxy, and a
+     * coalescing that tries the proxy first answers through the application
+     * for a store that can presign.
+     */
+    public function aStoreTemporaryUrlWinsOverTheProxy(): void
+    {
+        $proxy = Understudy::for(ProxyUrlGeneratorInterface::class);
+        when(static fn(): string => $proxy->url(Arg::any(), Arg::any()))->answers(
+            static fn(Invocation $call): string => "https://app.example.com/files/{$call->args[0]->id}",
+        );
+
+        $storage = $this->storage(store: $this->urlAwareStore(), proxyUrls: $proxy);
+        $file = $storage->add($this->upload('x'));
+
+        Assert::same($storage->urlFor($file), "https://cdn.example.com/temp/{$file->relativePath}");
+    }
+
     public function urlForFallsBackToTheProxyGenerator(): void
     {
         $proxy = Understudy::for(ProxyUrlGeneratorInterface::class);
