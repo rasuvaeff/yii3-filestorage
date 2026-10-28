@@ -184,6 +184,26 @@ $file = $storage->add(Upload::fromPath('/tmp/import.csv', $streamFactory));
 `createdAt`, `updatedAt`. `toArray()` / `fromArray()` дают точный round-trip,
 включая микросекунды.
 
+### Обновление метаданных
+
+Строки обновляются через ту же иммутабельность, что и весь остальной API —
+`File::withMetadata()` возвращает новый `File`, репозиторий его сохраняет.
+Инжектируйте `RepositoryInterface` рядом с фасадом и вызовите `save()`:
+
+```php
+$file = $storage->find($id);
+
+$repository->save($file->withMetadata(
+    [...$file->metadata, 'width' => 320, 'height' => 200],
+    $clock->now(),
+));
+```
+
+Аргумент-время — не для красоты: `updatedAt` участвует в валидаторе загрузок,
+и изменение метаданных без него отдавало бы устаревшие кэши. `description`
+обновляется так же — соберите новый `File` через `File::fromArray()` с
+изменённым полем и сохраните.
+
 ### Чтение
 
 ```php

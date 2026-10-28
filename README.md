@@ -184,6 +184,26 @@ $file = $storage->add(Upload::fromPath('/tmp/import.csv', $streamFactory));
 `createdAt`, `updatedAt`. `toArray()` / `fromArray()` round-trip exactly,
 including microseconds.
 
+### Updating metadata
+
+Rows are updated through the same immutability the rest of the API uses —
+`File::withMetadata()` returns a new `File` and the repository persists it.
+Inject `RepositoryInterface` next to the facade and `save()` the new value:
+
+```php
+$file = $storage->find($id);
+
+$repository->save($file->withMetadata(
+    [...$file->metadata, 'width' => 320, 'height' => 200],
+    $clock->now(),
+));
+```
+
+The timestamp argument is the point: `updatedAt` is part of the download
+validator, so a metadata change that left it untouched would serve stale
+caches. `description` travels the same way — build the new `File` via
+`File::fromArray()` with the field changed, then `save()` it.
+
 ### Reading
 
 ```php
