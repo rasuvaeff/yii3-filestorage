@@ -405,3 +405,10 @@ answers `CircularReferenceException`:
 StorageInterface::class => static fn (Storage $inner, Quotas $quotas): StorageInterface
     => new QuotaStorage($inner, $quotas),
 ```
+
+## GroupFiles
+
+`GroupFiles(MaintenanceRepositoryInterface $repository, string $groupName, ?string $metadataKey = null)` —
+the group-filtered walk: `(new GroupFiles($repo, 'avatars'))()` yields `File`.
+O(all rows) — right for a backfill/audit, wrong for a request; a native WHERE
+belongs to the backend. `metadataKey` filters on presence, not value.
