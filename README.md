@@ -21,6 +21,15 @@ that does not accidentally serve an uploaded HTML file from your own origin.
 backends are built against it. The path layout and the signed-token format are
 already frozen — see [Frozen decisions](#frozen-decisions).
 
+**The road to 1.0.** Already frozen: the directory-per-file layout, the
+`v1.<key>.<expires>.<payload>.<hmac>` token format, the store/repository
+contracts, and the group policy vocabulary — every backend package is built
+against them. What blocks 1.0: the §16 foundation gate of the family plan
+(notably real multi-node concurrency exposure for the blob ledger) and a
+window of production time on the `-db`/`-flysystem` backends. In practice the
+core has been stable since 0.1 — the 0.x is honesty about what *could* change,
+not a forecast that it will.
+
 ## Requirements
 
 - PHP 8.3+
