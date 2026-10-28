@@ -48,6 +48,81 @@ composer require rasuvaeff/yii3-filestorage
 | Файлы в S3/GCS/Azure | этот пакет + `rasuvaeff/yii3-filestorage-flysystem` |
 | Подписанные URL, загрузка, поддержка `Range` | добавить `rasuvaeff/yii3-filestorage-web` |
 | Просто попробовать | забиндить `FileSystemStore` и `Test\MemoryRepository` вручную (ниже) |
+| Производные изображений (превью, пресеты) | добавьте `rasuvaeff/yii3-filestorage-images` (процессор: `ext-imagick` и/или `ext-gd`) |
+| Привязка файлов к сущностям (аватар, счёт…) | добавьте `rasuvaeff/yii3-filestorage-attachments` |
+
+### Проводка всего семейства
+
+README каждого пакета показывает свой срез; здесь — сборка целиком. Приложение
+с приватными файлами на локальном диске, превью изображений, подписанными URL
+и загрузкой:
+
+```bash
+composer require rasuvaeff/yii3-filestorage \
+  rasuvaeff/yii3-filestorage-db \
+  rasuvaeff/yii3-filestorage-web \
+  rasuvaeff/yii3-filestorage-images
+```
+
+```php
+// config/common/di/filestorage.php — единственная проводка, которой нет
+// в семействе: физическое хранилище выбирает деплой.
+StoreInterface::class => static fn (StreamFactoryInterface $streams): StoreInterface
+    => new FileSystemStore(
+        name: 'upload',
+        rootPath: '/app/runtime/upload',
+        streamFactory: $streams,
+    ),
+
+// Опционально: размеры изображения — в File::$metadata при загрузке.
+StorageInterface::class => static fn (Storage $storage): StorageInterface
+    => new ImageMetadataStorage($storage),
+```
+
+```php
+// config/common/params.php — политики групп (ядро), таблицы (-db), пресеты (-images)
+return [
+    'rasuvaeff/yii3-filestorage' => [
+        'policies' => [
+            '*' => ['maxBytes' => 20_971_520],
+            'avatar' => ['allowedMimeTypes' => ['image/png', 'image/jpeg'], 'maxBytes' => 2_097_152],
+        ],
+    ],
+    'rasuvaeff/yii3-filestorage-db' => [
+        'fileTable' => 'filestorage_file',
+        'blobTable' => 'filestorage_blob',
+        'blobReservationTable' => 'filestorage_blob_reservation',
+        'tablePrefix' => '',
+    ],
+    'rasuvaeff/yii3-filestorage-images' => [
+        'presets' => [
+            'thumb' => ['version' => 1, 'width' => 200, 'height' => 200, 'fit' => 'cover', 'format' => 'webp'],
+        ],
+    ],
+];
+```
+
+```php
+// config/common/routes.php
+Route::get('/files/{token}')->action(FileDownloadAction::class),
+Route::post('/avatars')->action(fn (FileUploadAction $action) => $action), // группа из проводки
+```
+
+```php
+// config/common/di/db-migration.php — миграции семейства регистрируются
+// по namespace (yiisoft/db-migration ^2.1; см. README -db)
+MigrationService::class => [
+    'setSourceNamespaces()' => [['Rasuvaeff\\Yii3FilestorageDb\\Migration']],
+],
+```
+
+Когда установлены все четыре, больше ничего не нужно: `-db` биндит
+репозиторий и миграции, `-web` — подписывальщик и `ProxyUrlGeneratorInterface`,
+`-images` — пресеты, процессор и `DerivativeResolverInterface`, а
+`Storage::urlFor()` / `Derivatives::urlFor()` для приватного filesystem-стора
+откатываются на подписанный прокси-маршрут. Attachments (`-attachments`) и
+Flysystem-хранилища (`-flysystem`) подключаются так же; каждый биндит только
+свои ключи, поэтому два пакета семейства не могут конфликтовать при мерже.
 
 ## Использование
 
