@@ -47,7 +47,82 @@ Those come from a backend package, or from your application.
 | Files on local disk, metadata in a database | this package + `rasuvaeff/yii3-filestorage-db`, bind `FileSystemStore` |
 | Files on S3/GCS/Azure | this package + `rasuvaeff/yii3-filestorage-flysystem` |
 | Signed download URLs, uploads, `Range` support | add `rasuvaeff/yii3-filestorage-web` |
+| Image derivatives (thumbnails, presets) | add `rasuvaeff/yii3-filestorage-images` (processor: `ext-imagick` and/or `ext-gd`) |
+| Attaching files to entities (avatar, invoice…) | add `rasuvaeff/yii3-filestorage-attachments` |
 | Just trying it out | bind `FileSystemStore` and `Test\MemoryRepository` yourself (below) |
+
+### Wiring the whole family
+
+Each package's README shows its slice; this is the assembly. An application
+with private files on local disk, image thumbnails, signed URLs and uploads:
+
+```bash
+composer require rasuvaeff/yii3-filestorage \
+  rasuvaeff/yii3-filestorage-db \
+  rasuvaeff/yii3-filestorage-web \
+  rasuvaeff/yii3-filestorage-images
+```
+
+```php
+// config/common/di/filestorage.php — the one binding the family does NOT
+// provide: the physical store is your deployment's choice.
+StoreInterface::class => static fn (StreamFactoryInterface $streams): StoreInterface
+    => new FileSystemStore(
+        name: 'upload',
+        rootPath: '/app/runtime/upload',
+        streamFactory: $streams,
+    ),
+
+// Optional: record image dimensions into File::$metadata on upload.
+StorageInterface::class => static fn (Storage $storage): StorageInterface
+    => new ImageMetadataStorage($storage),
+```
+
+```php
+// config/common/params.php — group policies (core), tables (-db), presets (-images)
+return [
+    'rasuvaeff/yii3-filestorage' => [
+        'policies' => [
+            '*' => ['maxBytes' => 20_971_520],
+            'avatar' => ['allowedMimeTypes' => ['image/png', 'image/jpeg'], 'maxBytes' => 2_097_152],
+        ],
+    ],
+    'rasuvaeff/yii3-filestorage-db' => [
+        'fileTable' => 'filestorage_file',
+        'blobTable' => 'filestorage_blob',
+        'blobReservationTable' => 'filestorage_blob_reservation',
+        'tablePrefix' => '',
+    ],
+    'rasuvaeff/yii3-filestorage-images' => [
+        'presets' => [
+            'thumb' => ['version' => 1, 'width' => 200, 'height' => 200, 'fit' => 'cover', 'format' => 'webp'],
+        ],
+    ],
+];
+```
+
+```php
+// config/common/routes.php
+Route::get('/files/{token}')->action(FileDownloadAction::class),
+Route::post('/avatars')->action(fn (FileUploadAction $action) => $action), // group from wiring
+```
+
+```php
+// config/common/di/db-migration.php — the family's migrations register by
+// namespace (yiisoft/db-migration ^2.1; see the -db README)
+MigrationService::class => [
+    'setSourceNamespaces()' => [['Rasuvaeff\\Yii3FilestorageDb\\Migration']],
+],
+```
+
+With all four installed, no other wiring is needed: `-db` binds the
+repository and its migrations, `-web` binds the signer and
+`ProxyUrlGeneratorInterface`, `-images` binds the presets, the processor and
+`DerivativeResolverInterface` — and `Storage::urlFor()` /
+`Derivatives::urlFor()` fall back to the signed proxy route for the private
+filesystem store. Attachments (`-attachments`) and Flysystem stores
+(`-flysystem`) join the same way when needed; each binds only its own keys,
+so no two family packages can conflict in a merge.
 
 ## Usage
 
