@@ -252,7 +252,11 @@ schema change, and what stops derivatives leaking when a file is deleted. A
 rendition is described by a `DerivativeDescriptor` — a *named* preset, never
 free-form dimensions, because free-form parameters turn one upload into an
 unbounded set of addressable derivatives — and a store reports one back as a
-`DerivativeObject`. The
+`DerivativeObject`. Serving a rendition over HTTP goes through
+`Store\DerivativeResolverInterface` (`-images`' `Derivatives` implements it,
+`-web` consumes it — neither depends on the other), and
+`Url\ProxyUrlGeneratorInterface::variantUrl()` mints the signed proxy URL for
+one, with the variant inside the HMAC. The
 extension comes from the **detected** media type through the `symfony/mime`
 table; the client filename never contributes it, and an unrecognised type
 becomes `original.bin`.
