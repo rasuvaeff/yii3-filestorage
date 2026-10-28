@@ -177,6 +177,14 @@ $file = $storage->add(
 
 // From a path.
 $file = $storage->add(Upload::fromPath('/tmp/import.csv', $streamFactory));
+
+// From an RFC 2397 data URL — rich-text editors, JSON APIs, mobile clients.
+$file = $storage->add(Upload::fromDataUrl(
+    'data:image/png;base64,' . $base64Payload,
+    'logo.png',
+    $streamFactory,
+    $clientHint, // the URL's media type claim, by reference — a hint, not a fact
+));
 ```
 
 `$file` is an immutable `File`: `id`, `storeName`, `groupName`, `relativePath`,

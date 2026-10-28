@@ -108,6 +108,79 @@ final readonly class Upload
     }
 
     /**
+     * From an RFC 2397 data URL — `data:[<mediatype>][;base64],<payload>` —
+     * the form rich-text editors, JSON APIs and mobile clients commonly send.
+     *
+     * Both payload forms decode: `;base64` (strict — trailing garbage is an
+     * error, not a truncated file) and the default percent-encoded text.
+     * The media type, when present, comes back by reference: the client's
+     * claim about the bytes is a hint for exactly the same consumers that
+     * read {@see $clientMediaTypeHint}, and the authoritative detection
+     * still happens at storage time.
+     *
+     * @param non-empty-string $originalName The data URL carries none.
+     * @param-out non-empty-string|null $clientMediaTypeHint
+     *
+     * @throws UploadFailedException When the URL is not a data URL, its
+     *         payload does not decode, or the media type is malformed.
+     */
+    public static function fromDataUrl(
+        string $dataUrl,
+        string $originalName,
+        StreamFactoryInterface $streamFactory,
+        ?string &$clientMediaTypeHint = null,
+        int $maxSpoolBytes = self::DEFAULT_MAX_SPOOL_BYTES,
+    ): self {
+        if (!str_starts_with($dataUrl, 'data:')) {
+            throw new UploadFailedException('Not a data URL: it must start with "data:" and contain ","');
+        }
+
+        $comma = strpos($dataUrl, ',');
+        if ($comma === false) {
+            throw new UploadFailedException('Not a data URL: it must start with "data:" and contain ","');
+        }
+
+        $header = substr($dataUrl, 5, $comma - 5);
+        $payload = substr($dataUrl, $comma + 1);
+        $clientMediaTypeHint = null;
+
+        $base64 = false;
+        foreach (explode(';', $header) as $part) {
+            if ($part === 'base64') {
+                $base64 = true;
+                continue;
+            }
+
+            if ($part === '') {
+                continue;
+            }
+
+            if (preg_match('~^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$~', $part) !== 1) {
+                throw new UploadFailedException("Malformed media type \"{$part}\" in the data URL");
+            }
+
+            $clientMediaTypeHint = $part;
+        }
+
+        if ($base64) {
+            $bytes = base64_decode($payload, strict: true);
+            if ($bytes === false) {
+                throw new UploadFailedException('The data URL claims base64 but its payload does not decode');
+            }
+        } else {
+            $bytes = rawurldecode($payload);
+        }
+
+        return self::fromStream(
+            stream: $streamFactory->createStream($bytes),
+            originalName: $originalName,
+            streamFactory: $streamFactory,
+            maxSpoolBytes: $maxSpoolBytes,
+            clientMediaTypeHint: $clientMediaTypeHint,
+        );
+    }
+
+    /**
      * Always rewound. Callers may read it to the end; the next call rewinds again.
      */
     public function stream(): StreamInterface
