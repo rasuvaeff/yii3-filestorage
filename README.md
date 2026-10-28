@@ -321,6 +321,7 @@ Test doubles ship in `src/`, not `tests/`, so they are actually installed:
 | Class | Use |
 |---|---|
 | `Test\InMemoryStore` | A store with no disk. Implements the base contract and maintenance only — **not** URLs or ranges, so you can test what your code does when a store cannot presign |
+| `Test\UrlCapableInMemoryStore` | The URL-capable variant, by composition over `InMemoryStore` — `StoreUrlProviderInterface` with `publicUrls`/`temporaryUrls` toggles, so the fallback ladder of `urlFor()` (public → temporary → proxy) is exercisable without an object store |
 | `Test\MemoryRepository` | Metadata in an array |
 | `Test\MemoryBlobLedger` | The dedup state machine in an array: revival, reservation expiry, lease stealing, conditional completion. What it cannot reproduce is concurrency — a PHP array has no isolation levels — so proving two writers race correctly still needs the database |
 
