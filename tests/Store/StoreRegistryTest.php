@@ -88,6 +88,34 @@ final class StoreRegistryTest
         new StoreRegistry([$this->store('a'), $this->store('a')]);
     }
 
+    /**
+     * Both wiring diagnostics are whole sentences a confused operator can act
+     * on; truncating either one hides the remedy half.
+     */
+    public function anEmptyRegistryNamesTheWholeDiagnostic(): void
+    {
+        try {
+            new StoreRegistry([]);
+            Assert::true(actual: false, message: 'expected InvalidConfigException');
+        } catch (InvalidConfigException $e) {
+            Assert::same(
+                $e->getMessage(),
+                'No store is registered. Bind a StoreInterface — a backend package does it, '
+                . 'or the application does it in config/common/di/',
+            );
+        }
+    }
+
+    public function aMissingDefaultListsEveryRegisteredStore(): void
+    {
+        try {
+            new StoreRegistry([$this->store('a'), $this->store('b')], 'c');
+            Assert::true(actual: false, message: 'expected InvalidConfigException');
+        } catch (InvalidConfigException $e) {
+            Assert::same($e->getMessage(), 'Default store "c" is not registered. Registered stores: a, b');
+        }
+    }
+
     public function anUnregisteredDefaultIsRefused(): void
     {
         Expect::exception(InvalidConfigException::class)->withMessageContaining('Default store "c" is not registered');

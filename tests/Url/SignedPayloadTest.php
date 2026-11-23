@@ -177,4 +177,39 @@ final class SignedPayloadTest
             'scopeId' => Gen::nullable(Gen::stringFrom('abcdef0123456789-Ωπ→', 1, 30)),
         ];
     }
+
+    /**
+     * The id cap is inclusive: 255 characters verify, 256 are refused. The
+     * boundary is what an off-by-one in the guard silently moves.
+     */
+    public function anIdOfExactly255CharactersIsAccepted(): void
+    {
+        $payload = new SignedPayload(str_repeat('a', 255));
+        Assert::same($payload->fileId, str_repeat('a', 255));
+
+        Expect::exception(InvalidArgumentException::class)->withMessageContaining('file id');
+        new SignedPayload(str_repeat('a', 256));
+    }
+
+    public function aScopeOfExactly255CharactersIsAccepted(): void
+    {
+        $payload = new SignedPayload('f', scopeId: str_repeat('t', 255));
+        Assert::same($payload->scopeId, str_repeat('t', 255));
+
+        Expect::exception(InvalidArgumentException::class)->withMessageContaining('scope');
+        new SignedPayload('f', scopeId: str_repeat('t', 256));
+    }
+
+    /**
+     * The canonical-JSON parser answers null (not an exception) for anything
+     * that is not exactly the one canonical shape: a non-array payload, a
+     * payload with the wrong keys, and undecodable bytes.
+     */
+    public function fromCanonicalJsonRejectsNonPayloadsQuietly(): void
+    {
+        Assert::null(SignedPayload::fromCanonicalJson('"just a string"'));
+        Assert::null(SignedPayload::fromCanonicalJson('42'));
+        Assert::null(SignedPayload::fromCanonicalJson('{not json'));
+        Assert::null(SignedPayload::fromCanonicalJson('{"fileId":"a","scopeId":null}'), 'keys in the wrong order are not canonical');
+    }
 }

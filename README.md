@@ -32,7 +32,7 @@ not a forecast that it will.
 
 ## Requirements
 
-- PHP 8.3+
+- PHP 8.3 – 8.6
 - `ext-fileinfo`
 - `psr/clock` ^1.0
 - `psr/http-message` ^2.0, `psr/http-factory` ^1.0 (and a PSR-17 implementation

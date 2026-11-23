@@ -6,8 +6,11 @@ namespace Rasuvaeff\Yii3Filestorage\Tests\Stream;
 
 use InvalidArgumentException;
 use Nyholm\Psr7\Factory\Psr17Factory;
+use Nyholm\Psr7\Stream;
+use Override;
 use Rasuvaeff\Yii3Filestorage\Stream\LimitedStream;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\ForwardOnlyStream;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\StallingStream;
 use RuntimeException;
 use Testo\Assert;
 use Testo\Codecov\Covers;
@@ -96,6 +99,44 @@ final class LimitedStreamTest
         Assert::same($stream->read(1), '5');
     }
 
+    /**
+     * Seeking exactly to the end of the window is legal — it is where a
+     * reader that consumed the whole range lands.
+     */
+    public function seekingToTheEndOfTheWindowIsAllowed(): void
+    {
+        $stream = $this->window('0123456789', 0, 4);
+        $stream->seek(4);
+
+        Assert::true($stream->eof());
+    }
+
+    /**
+     * The position advances by what each read returned, so two reads land the
+     * window at byte 4 — a position reset per read would serve the same bytes
+     * twice to a streaming consumer.
+     */
+    public function thePositionAdvancesAcrossConsecutiveReads(): void
+    {
+        $stream = $this->window('0123456789', 0, 6);
+
+        Assert::same($stream->read(2), '01');
+        Assert::same($stream->read(2), '23');
+        Assert::same($stream->tell(), 4);
+    }
+
+    /**
+     * getContents() materialises the whole window: a window longer than one
+     * read chunk must come back whole, not as its final chunk.
+     */
+    public function aWindowLongerThanOneChunkIsReadWhole(): void
+    {
+        $body = str_repeat('a', 262_144) . 'tail';
+        $stream = new LimitedStream($this->factory->createStream($body), 0, 262_148);
+
+        Assert::same($stream->getContents(), $body);
+    }
+
     public function seekingOutsideTheWindowIsRefused(): void
     {
         $stream = $this->window('0123456789', 2, 4);
@@ -161,8 +202,20 @@ final class LimitedStreamTest
         $closable = new LimitedStream($this->factory->createStream('0123456789'), 0, 4);
         $closable->close();
 
-        Assert::true(actual: true, message: 'closing twice must not blow up');
+        Assert::false($closable->isWritable(), 'close reaches the inner stream');
         $closable->close();
+    }
+
+    /**
+     * A window whose offset sits past the end of the stream is empty, and
+     * reports its size as zero — never a negative number.
+     */
+    public function aWindowStartingPastTheEndReportsZeroSize(): void
+    {
+        $limited = $this->window('0123456789', 12, 5);
+
+        Assert::same($limited->getSize(), 0);
+        Assert::same($limited->getContents(), '');
     }
 
     /**
@@ -190,6 +243,40 @@ final class LimitedStreamTest
         Assert::same($stream->getSize(), 0);
         Assert::same($stream->getContents(), '');
         Assert::true($stream->eof());
+    }
+
+    /**
+     * PSR-7 lets a stream decline to report its size — a PHP input stream, a
+     * network body. The window's length is the only answer left, and a null
+     * inner size must not crash the lookup or leak the whole stream's length.
+     */
+    public function aWindowOverASizelessStreamReportsTheWindowLength(): void
+    {
+        $inner = new class ($this->factory->createStream('0123456789')->detach()) extends Stream {
+            #[Override]
+            public function getSize(): ?int
+            {
+                return null;
+            }
+        };
+
+        $stream = new LimitedStream($inner, 2, 4);
+
+        Assert::same($stream->getSize(), 4);
+    }
+
+    /**
+     * An empty chunk before EOF is a stalled read, not the end of the window:
+     * returning what was gathered so far would serve a truncated range with a
+     * 200-style success. The window fails loudly instead.
+     */
+    public function aWindowRefusesAStreamThatStallsMidRead(): void
+    {
+        $stream = new LimitedStream(StallingStream::midStream('0123456789'), 0, 10);
+
+        Expect::exception(RuntimeException::class)->withMessageContaining('returned no bytes before EOF');
+
+        $stream->getContents();
     }
 
     private function window(string $body, int $offset, int $length): LimitedStream

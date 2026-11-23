@@ -39,6 +39,20 @@ final class FinfoMimeTypeDetectorTest
         );
     }
 
+    /**
+     * The exact message carries both the limit and the value that broke it: a
+     * dropped half would name the rule but not the configuration to fix.
+     */
+    public function aTooSmallWindowIsNamedInTheMessage(): void
+    {
+        try {
+            new FinfoMimeTypeDetector(5);
+            Assert::true(actual: false, message: 'the window should have been rejected');
+        } catch (InvalidArgumentException $e) {
+            Assert::same($e->getMessage(), 'sniffBytes must be at least 512, got 5');
+        }
+    }
+
     public function anEmptyUploadHasNoType(): void
     {
         Assert::null((new FinfoMimeTypeDetector())->detect($this->upload('')));
@@ -117,7 +131,7 @@ final class FinfoMimeTypeDetectorTest
 
     private function png(): string
     {
-        return (string) base64_decode(
+        return base64_decode(
             'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
             strict: true,
         );

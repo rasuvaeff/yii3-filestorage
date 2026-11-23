@@ -214,6 +214,40 @@ final class HmacUrlSignerTest
     }
 
     /**
+     * A signature segment whose length makes strict base64 fail outright —
+     * one character is length 1, which base64 rejects as impossible — is
+     * refused, not "verified against a garbage signature". Both sides of the
+     * decode guard have to answer null.
+     */
+    public function aSignatureThatDoesNotDecodeIsRejected(): void
+    {
+        foreach (['A', 'AAAAA'] as $signature) {
+            $parts = explode('.', $this->sign());
+            $parts[4] = $signature;
+
+            Assert::null($this->signer->verify(implode('.', $parts)), "signature \"{$signature}\" decodes to nothing");
+        }
+    }
+
+    /**
+     * A payload segment that fails to decode is rejected on the same guard —
+     * and, being past the signature check, only the decode itself can refuse
+     * it: the forged payload is re-signed so hash_equals passes and the
+     * canonical-decode guard is what answers.
+     */
+    public function aPayloadThatDoesNotDecodeIsRejected(): void
+    {
+        $parts = explode('.', $this->sign());
+        $parts[3] = 'AAAAA';
+        $signedPart = implode('.', [$parts[0], $parts[1], $parts[2], $parts[3]]);
+        $signature = rtrim(strtr(base64_encode(
+            hash_hmac('sha256', $signedPart, self::ACTIVE, binary: true),
+        ), '+/', '-_'), '=');
+
+        Assert::null($this->signer->verify($signedPart . '.' . $signature));
+    }
+
+    /**
      * Rotation is the whole reason the ring exists: new URLs use the new key
      * while URLs already in the wild keep working until they expire.
      */
@@ -244,6 +278,34 @@ final class HmacUrlSignerTest
         $other = new HmacUrlSigner($this->clock, new SigningKeyRing('active', ['active' => str_repeat('z', 32)]));
 
         Assert::null($this->signer->verify($other->sign(new SignedPayload('f-1'), $this->expiry())));
+    }
+
+    /**
+     * The expiry field allows at most eleven digits: a twelve- or twenty-digit
+     * year is refused on shape *before* the clock is consulted. Both tokens are
+     * re-signed with the real key, so the shape guard — and not the signature —
+     * is what rejects them.
+     */
+    #[DataProvider('overlongExpiryProvider')]
+    public function anExpiryBeyondElevenDigitsIsRefusedOnShape(string $expires): void
+    {
+        $parts = explode('.', $this->sign());
+        $parts[2] = $expires;
+        $signedPart = implode('.', [$parts[0], $parts[1], $parts[2], $parts[3]]);
+        $signature = rtrim(strtr(base64_encode(
+            hash_hmac('sha256', $signedPart, self::ACTIVE, binary: true),
+        ), '+/', '-_'), '=');
+
+        Assert::null($this->signer->verify($signedPart . '.' . $signature));
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function overlongExpiryProvider(): iterable
+    {
+        yield 'twelve digits' => [str_repeat('9', 12)];
+        yield 'twenty digits' => [str_repeat('9', 20)];
     }
 
     /**

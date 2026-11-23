@@ -123,6 +123,40 @@ final class UploadTest
         yield 'no comma' => ['data:image/png', 'contain ","'];
         yield 'base64 payload does not decode' => ['data:image/png;base64,***not base64***', 'does not decode'];
         yield 'malformed media type' => ['data:not a type,x', 'Malformed media type'];
+        yield 'media type with a second slash' => ['data:image/png/extra,x', 'Malformed media type "image/png/extra"'];
+        yield 'media type with a leading stray' => ['data: image/png,x', 'Malformed media type " image/png"'];
+    }
+
+    /**
+     * An empty header segment (the `data:;base64,` form) is skipped and the
+     * loop must keep going: bailing there would drop the base64 marker that
+     * follows and store the encoded text as if it were the payload.
+     */
+    public function anEmptyHeaderPartDoesNotAbortParameterParsing(): void
+    {
+        $upload = Upload::fromDataUrl('data:;base64,SGVsbG8=', 'x.bin', $this->factory);
+
+        Assert::same($upload->stream()->getContents(), 'Hello');
+        Assert::null($upload->clientMediaTypeHint);
+    }
+
+    /**
+     * The spool cap counts the whole stream, not the last chunk: a slow
+     * reader delivering 1000 bytes at a time crosses a 2500-byte cap on the
+     * third chunk, even though no single chunk ever exceeds it.
+     */
+    public function theSpoolCapCountsTheWholeBodyNotTheLastChunk(): void
+    {
+        $slow = new class (str_repeat('x', 5000)) extends ForwardOnlyStream {
+            #[\Override]
+            public function read(int $length): string
+            {
+                return parent::read(min($length, 1000));
+            }
+        };
+
+        Expect::exception(UploadTooLargeException::class)->withMessageContaining('spool cap of 2500 bytes');
+        Upload::fromStream($slow, 'a.txt', $this->factory, maxSpoolBytes: 2500);
     }
 
     public function aNonSeekableStreamIsSpooledIntoASeekableOne(): void

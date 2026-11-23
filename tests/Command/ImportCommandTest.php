@@ -23,6 +23,7 @@ use Rasuvaeff\Yii3Filestorage\StorageInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\UnflushableManifestStream;
 use RuntimeException;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
@@ -94,6 +95,12 @@ final class ImportCommandTest
         Assert::same($tester->getStatusCode(), Command::SUCCESS);
         Assert::same($this->repository->count(), 2);
         Assert::string($tester->getDisplay())->contains('Imported 2 files');
+        // Slashes stay unescaped in the manifest: it is a record a human may
+        // have to read, and an escaped one still matches a second run — this
+        // pins the encoding flags, not just the parse.
+        $manifest = (string) file_get_contents($this->manifest);
+        Assert::true(str_contains($manifest, '"path":"a.txt"'), 'unescaped slashes in the manifest');
+        Assert::false(str_contains($manifest, '\\\\'));
     }
 
     /**
@@ -143,7 +150,12 @@ final class ImportCommandTest
         $this->run(['--apply' => true, '--limit' => '2']);
 
         Assert::same($this->repository->count(), 2);
-        Assert::same(substr_count((string) file_get_contents($this->manifest), "\n"), 2);
+        $manifest = (string) file_get_contents($this->manifest);
+        Assert::same(substr_count($manifest, "\n"), 2);
+        // One record per line, newline-terminated: a manifest that opened with
+        // a blank line (or lost its final one) is a different file format.
+        Assert::true(str_ends_with($manifest, "\n"), 'the manifest ends with a newline');
+        Assert::true(str_starts_with($manifest, '{"source"'), 'the first record starts the file');
 
         $this->run(['--apply' => true]);
 
@@ -439,6 +451,57 @@ final class ImportCommandTest
     }
 
     /**
+     * A manifest whose every append fails at flush time — the disk filled up
+     * under it — is the one failure that leaves the store and the metadata
+     * written while the record of the import is lost. The run must say so per
+     * file, warn in the singular, and promise the re-import a later run will
+     * do.
+     */
+    public function oneUnflushedManifestAppendWarnsInTheSingular(): void
+    {
+        UnflushableManifestStream::register();
+        $this->file('a.txt', 'one');
+
+        $tester = $this->run(['--apply' => true, '--manifest' => 'fs-unflushable://manifest.jsonl']);
+        $display = $this->normalise($tester->getDisplay());
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        Assert::same($this->repository->count(), 1, 'the file was imported anyway');
+        // normalise() strips the "!" gutter, so the line is matched without it.
+        Assert::string($display)->contains('a.txt imported but not recorded in the manifest');
+        Assert::string($display)->contains(
+            '1 file imported but could not be written to the manifest, so a later run will import it again.',
+        );
+        Assert::string($display)->notContains('files imported but could not be written');
+    }
+
+    /**
+     * The plural half of the same warning, with the pronoun to match: two
+     * imports lost their manifest records, and the warning counts and refers
+     * to both.
+     */
+    public function twoUnflushedManifestAppendsWarnInThePlural(): void
+    {
+        UnflushableManifestStream::register();
+        $this->file('a.txt', 'one');
+        $this->file('b.txt', 'two');
+
+        $tester = $this->run(['--apply' => true, '--manifest' => 'fs-unflushable://manifest.jsonl']);
+        $display = $this->normalise($tester->getDisplay());
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        Assert::same($this->repository->count(), 2);
+        foreach (['a.txt', 'b.txt'] as $name) {
+            Assert::string($display)->contains("{$name} imported but not recorded in the manifest");
+        }
+        Assert::string($display)->contains(
+            '2 files imported but could not be written to the manifest, so a later run will import them again.',
+        );
+        Assert::string($display)->notContains('2 file imported but');
+        Assert::string($display)->notContains('import it again');
+    }
+
+    /**
      * Squeezes out the wrapping and the gutter SymfonyStyle adds to a block, so
      * a phrase can be asserted as one string.
      */
@@ -484,6 +547,43 @@ final class ImportCommandTest
      * A clean first run says nothing about skipping, and names the manifest so
      * the operator knows which file to keep.
      */
+    /**
+     * The limit counts files actually examined: with two files present and a
+     * limit of one, exactly one lands — a limit that imports everything is
+     * not a limit.
+     */
+    public function theLimitCapsTheRunAtTheSaidNumberOfFiles(): void
+    {
+        file_put_contents($this->source . '/one.txt', 'first');
+        file_put_contents($this->source . '/two.txt', 'second');
+
+        $this->run(['--apply' => true, '--limit' => '1']);
+
+        Assert::same(count($this->repository->all()), 1);
+    }
+
+    /**
+     * The run-abort path releases the manifest handle it may never have
+     * opened: an unopenable manifest plus an invocation error must still
+     * reach the error report, not die on fclose(null).
+     */
+    public function anAbortWithNoManifestHandleStillReportsCleanly(): void
+    {
+        file_put_contents($this->source . '/one.txt', 'first');
+
+        $tester = new CommandTester(new ImportCommand($this->storage(null), $this->factory));
+        $tester->execute([
+            'directory' => $this->source,
+            '--manifest' => $this->source . '/missing-dir/manifest.jsonl',
+            '--apply' => true,
+            '--store' => 'no-such-store',
+        ]);
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string((string) preg_replace('/[\s!\[\]]+/u', ' ', $tester->getDisplay()))
+            ->contains('Nothing further was imported.');
+    }
+
     public function theAppliedSummaryNamesTheManifestAndClaimsNoSkips(): void
     {
         $this->file('a.txt', 'one');
@@ -493,6 +593,26 @@ final class ImportCommandTest
 
         Assert::string($display)->contains('Imported 2 files. Manifest: ' . $this->manifest);
         Assert::string($display)->notContains('skipped');
+        // And nothing about manifest writes: every append succeeded, so the
+        // unrecorded warning stays silent.
+        Assert::string($display)->notContains('could not be written');
+    }
+
+    /**
+     * An empty `--group` is not a group name — it means "use the default".
+     * Treating the empty string as a group would reject the whole run over a
+     * value the shell produces by accident.
+     */
+    public function anEmptyGroupOptionFallsBackToTheDefault(): void
+    {
+        $this->file('a.txt', 'one');
+
+        $tester = $this->run(['--apply' => true, '--group' => '']);
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        Assert::same($this->repository->count(), 1);
+        $files = iterator_to_array($this->repository->files(null, 10), preserve_keys: false);
+        Assert::same($files[0]->groupName, 'common');
     }
 
     public function oneFileIsAFileAndNotFiles(): void

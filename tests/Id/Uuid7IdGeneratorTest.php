@@ -44,6 +44,14 @@ final class Uuid7IdGeneratorTest
 
         Assert::same($hex[12], '7', 'version nibble');
         Assert::true(\in_array($hex[16], ['8', '9', 'a', 'b'], strict: true), 'variant nibble');
+
+        // The variant bits live in byte 8, whose remaining six bits are random:
+        // a single draw can pass by luck even if the wrong byte was written.
+        // Twenty draws turn that luck into a one-in-a-hundred-trillion event.
+        foreach (range(1, 20) as $i) {
+            $draw = str_replace('-', '', $this->generator->generate());
+            Assert::true(\in_array($draw[16], ['8', '9', 'a', 'b'], strict: true), "variant nibble on draw {$i}");
+        }
     }
 
     /**

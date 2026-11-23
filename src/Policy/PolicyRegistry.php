@@ -100,7 +100,6 @@ final readonly class PolicyRegistry
             }
         }
 
-        /** @var mixed $allowed */
         $allowed = $policy['allowedMimeTypes'] ?? [];
         if (!\is_array($allowed)) {
             throw new InvalidArgumentException("allowedMimeTypes for group \"{$group}\" must be a list");
@@ -134,7 +133,6 @@ final readonly class PolicyRegistry
      */
     private static function boolOption(array $policy, string $key, bool $default, string $group): bool
     {
-        /** @var mixed $value */
         $value = $policy[$key] ?? $default;
         if (!\is_bool($value)) {
             throw new InvalidArgumentException("{$key} for group \"{$group}\" must be a boolean");
@@ -150,7 +148,6 @@ final readonly class PolicyRegistry
      */
     private static function intOption(array $policy, string $key, int $default, string $group): int
     {
-        /** @var mixed $value */
         $value = $policy[$key] ?? $default;
         if (!\is_int($value)) {
             throw new InvalidArgumentException("{$key} for group \"{$group}\" must be an integer");

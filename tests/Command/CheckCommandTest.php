@@ -73,7 +73,7 @@ final class CheckCommandTest
             repository: new MemoryRepository(),
         )->getDisplay();
 
-        foreach (['Stores', 'Metadata repository', 'Groups'] as $section) {
+        foreach (['Stores', 'Metadata repository', 'Tenancy', 'Groups'] as $section) {
             Assert::string($display)->contains($section);
         }
 
@@ -81,6 +81,115 @@ final class CheckCommandTest
         Assert::string($display)->contains(MemoryRepository::class, 'the repository class is named');
         Assert::string($display)->contains('Capabilities');
         Assert::string($display)->contains('Max pixels');
+        // The whole header row: a dropped column header is what a consumer
+        // diffing two reports first stumbles over.
+        Assert::string($this->flatten($display))->contains('Name Class Capabilities');
+    }
+
+    /**
+     * The machine object is the whole report in one shape: a dashboard parsing
+     * it must get every key with its exact value, and a dropped key or a
+     * flipped flag has to break this test rather than a consumer in production.
+     */
+    public function theMachineObjectCarriesTheWholeReport(): void
+    {
+        $tester = new CommandTester(new CheckCommand(
+            stores: new StoreRegistry([new InMemoryStore('memory', $this->factory)]),
+            repository: new MemoryRepository(),
+            policies: new PolicyRegistry(),
+            deliveryPolicies: new DeliveryPolicyRegistry(),
+        ));
+        $tester->execute(['--format' => 'json']);
+        $raw = trim($tester->getDisplay());
+        Assert::true((bool) preg_match('/\A\{.*\}\z/s', $raw), "stdout must be one JSON object, got: {$raw}");
+        /** @var array<string, mixed> $decoded */
+        $decoded = json_decode($raw, associative: true);
+
+        Assert::true($decoded['ok']);
+        Assert::same($decoded['errors'], []);
+        Assert::same($decoded['warnings'], [
+            'RepositoryInterface is bound to Test\MemoryRepository: every file record is lost when '
+            . 'the process ends. Install rasuvaeff/yii3-filestorage-db before using this anywhere real.',
+        ]);
+        Assert::same($decoded['stores'], [
+            [
+                'name' => 'memory',
+                'class' => InMemoryStore::class,
+                'capabilities' => ['maintenance'],
+                'default' => true,
+            ],
+        ]);
+        Assert::same($decoded['groups'], [
+            [
+                'group' => '*',
+                'accepts' => [],
+                'maxBytes' => 0,
+                'maxPixels' => 40_000_000,
+                'directPublicUrl' => false,
+            ],
+        ]);
+        // The log is the decorated report the text mode would have printed —
+        // its content is covered by the text-mode tests; here it only has to
+        // be present as an array.
+        Assert::true(\is_array($decoded['log']));
+    }
+
+    /**
+     * The error object carries the same refusal the text report does — the
+     * full explanation, both interfaces named, the fix spelled out. A consumer
+     * redisplaying it must not lose the second half of the sentence.
+     */
+    public function theMachineObjectCarriesTheWholeTenantError(): void
+    {
+        $tester = new CommandTester(new CheckCommand(
+            stores: new StoreRegistry([new InMemoryStore('memory', $this->factory)]),
+            repository: new MemoryRepository(),
+            policies: new PolicyRegistry(),
+            deliveryPolicies: new DeliveryPolicyRegistry(),
+            scopes: $this->tenantScope(),
+        ));
+        $tester->execute(['--format' => 'json']);
+        /** @var array<string, mixed> $decoded */
+        $decoded = json_decode(trim($tester->getDisplay()), associative: true);
+
+        Assert::false($decoded['ok']);
+        Assert::same($decoded['errors'], [sprintf(
+            'A %s is bound but nothing binds %s, so a signed download has no scoped way to resolve a file '
+            . '— and resolving by id alone reads any file whose id leaks. Install a repository backend that '
+            . 'ships one (rasuvaeff/yii3-filestorage-db does), or unbind the scope provider if this '
+            . 'installation is not multi-tenant.',
+            FileScopeProviderInterface::class,
+            ScopedFileResolverInterface::class,
+        )]);
+        Assert::same($decoded['warnings'], [
+            'RepositoryInterface is bound to Test\MemoryRepository: every file record is lost when '
+            . 'the process ends. Install rasuvaeff/yii3-filestorage-db before using this anywhere real.',
+            'Tenancy is on, so `filestorage:gc --orphans` refuses and `filestorage:stat` withholds its '
+            . 'physical figures: both compare tenant-filtered rows against unfiltered objects. Run them from a '
+            . 'maintenance entry point that leaves the scope provider unbound.',
+        ]);
+        Assert::same($decoded['stores'][0]['name'] ?? null, 'memory');
+    }
+
+    /**
+     * A scope provider that has no current tenant is still multi-tenant — the
+     * report must say whose scope it looked at, and "(none)" is the answer.
+     */
+    public function aScopeWithoutACurrentTenantIsReportedAsNone(): void
+    {
+        $scopes = Understudy::for(FileScopeProviderInterface::class);
+        when(static fn(): ?string => $scopes->currentScopeId())->returns(null);
+
+        $display = $this->run(
+            scopes: $scopes,
+            scopedFiles: Understudy::for(ScopedFileResolverInterface::class),
+        )->getDisplay();
+
+        Assert::string($display)->contains('current scope (none).');
+        Assert::same($this->run(
+            scopes: $scopes,
+            scopedFiles: Understudy::for(ScopedFileResolverInterface::class),
+        )->getStatusCode(), Command::SUCCESS);
     }
 
     /**
@@ -150,9 +259,14 @@ final class CheckCommandTest
 
     public function aRepositoryWithoutMaintenanceSupportIsFlagged(): void
     {
-        $display = $this->run(repository: Understudy::for(RepositoryInterface::class))->getDisplay();
+        $display = $this->flatten(
+            $this->run(repository: Understudy::for(RepositoryInterface::class))->getDisplay(),
+        );
 
-        Assert::string($display)->contains('MaintenanceRepositoryInterface');
+        Assert::string($display)->contains(
+            'The repository does not implement MaintenanceRepositoryInterface, so filestorage:verify, '
+            . ':stat and :backfill-hash cannot run against it.',
+        );
     }
 
     public function everyConfiguredGroupIsListedWithItsRules(): void
@@ -197,6 +311,10 @@ final class CheckCommandTest
 
         Assert::string($display)->contains('unlimited');
         Assert::string($display)->contains('anything');
+        // Both columns, not just one: the size and pixel cells are spelled out
+        // independently, and a test that matches the word once would pass with
+        // either of the two broken.
+        Assert::same(substr_count($display, 'unlimited'), 2);
     }
 
     /**
@@ -213,7 +331,11 @@ final class CheckCommandTest
         );
 
         Assert::same($tester->getStatusCode(), Command::FAILURE);
-        Assert::string($tester->getDisplay())->contains('any media type');
+        Assert::string($this->flatten($tester->getDisplay()))->contains(
+            'Group "*" allows direct public URLs while accepting any media type. '
+            . 'Set an explicit allowedMimeTypes list that excludes active content, or set '
+            . 'allowDirectPublicUrl to false.',
+        );
     }
 
     /**
@@ -233,7 +355,24 @@ final class CheckCommandTest
         );
 
         Assert::same($tester->getStatusCode(), Command::FAILURE);
-        Assert::string($tester->getDisplay())->contains('image/svg+xml');
+        Assert::string($this->flatten($tester->getDisplay()))->contains(
+            'Group "assets" allows direct public URLs and accepts image/svg+xml. '
+            . 'Served from your own origin these execute as your site. Remove them from allowedMimeTypes, '
+            . 'or set allowDirectPublicUrl to false so delivery goes through a route that forces a download.',
+        );
+    }
+
+    /**
+     * The decorated report is the whole stdout in text mode — a machine object
+     * leaking into it would break every human reader and every tool that
+     * scrapes the output.
+     */
+    public function textModeEmitsNoMachineObject(): void
+    {
+        $tester = $this->run();
+
+        Assert::false((bool) preg_match('/\A\{.*\}\z/s', trim($tester->getDisplay())));
+        Assert::false(str_contains($tester->getDisplay(), '"ok"'), 'no JSON keys in text mode');
     }
 
     public function directPublicUrlsWithAnInertAllowListArePermitted(): void
@@ -250,6 +389,15 @@ final class CheckCommandTest
 
         Assert::same($tester->getStatusCode(), Command::SUCCESS);
         Assert::string($tester->getDisplay())->contains('direct public URL');
+    }
+
+    /**
+     * Squeezes the wrapping and the gutter SymfonyStyle adds to a block out, so
+     * a whole sentence can be asserted as one string.
+     */
+    private function flatten(string $display): string
+    {
+        return trim((string) preg_replace('/[\s!]+/u', ' ', $display));
     }
 
     /**
@@ -296,6 +444,8 @@ final class CheckCommandTest
         Assert::same($tester->getStatusCode(), Command::FAILURE);
         Assert::string((string) preg_replace('/[\s!\[\]]+/u', ' ', $tester->getDisplay()))
             ->contains('is bound but nothing binds');
+        Assert::string((string) preg_replace('/[\s!\[\]]+/u', ' ', $tester->getDisplay()))
+            ->contains('current scope tenant-a');
     }
 
     public function tenantModeWithBothSidesBoundIsSound(): void

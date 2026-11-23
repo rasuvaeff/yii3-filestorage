@@ -128,7 +128,7 @@ final class BackfillHashCommand extends Command
     private function hash(File $file): ?string
     {
         $stream = $this->storeFor($file->storeName)?->stream($file);
-        if ($stream === null) {
+        if (!$stream instanceof \Psr\Http\Message\StreamInterface) {
             return null;
         }
 

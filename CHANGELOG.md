@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- Enh #35: Add PHP 8.6 support. The `php` constraint is widened to `8.3 - 8.6`; CI runs PHP 8.6 as a regular matrix entry, and the backward-compatibility job moves to PHP 8.5.
+- Dev dependencies: `vimeo/psalm` raised from `^6.16` to `^7.0`; the `-W` resolve also moved `rector/rector` (^2.4 allows 2.8.5), whose new rules rewrote literal arguments to named ones and dropped redundant recasts in `src/` and tests.
+- Mutation testing now counts uncovered code (`infection --with-uncovered`): overall MSI 88.3% against `minMsi` 87 (before: 79.7% on the first honest run; 28 signature-default mutants ignored via the template regex).
+
 ## 0.7.0 — 2026-10-29
 
 - `GroupFiles`: the files of one group (optionally with a metadata key) over

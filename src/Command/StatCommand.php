@@ -59,7 +59,7 @@ final class StatCommand extends Command
     {
         $log = [];
         $io = Json::style($input, $output, $log);
-        $scoped = $this->scopes !== null;
+        $scoped = $this->scopes instanceof \Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
 
         /** @var array<string, array{files: int, bytes: int}> $groups */
         $groups = [];
@@ -109,7 +109,7 @@ final class StatCommand extends Command
 
         if ($files === 0) {
             $io->success($scoped ? 'No files stored in the current scope.' : 'No files stored.');
-            self::maybeJson($input, $output, $log, [
+            $this->maybeJson($input, $output, $log, [
                 'scoped' => $scoped,
                 'groups' => new \stdClass(),
                 'total' => ['files' => 0, 'bytes' => 0],
@@ -140,7 +140,7 @@ final class StatCommand extends Command
             // The logical half only: the physical figures a scoped walk
             // cannot know are simply absent from the object, the same
             // withholding the text mode prints a note about.
-            self::maybeJson($input, $output, $log, [
+            $this->maybeJson($input, $output, $log, [
                 'scoped' => true,
                 'groups' => $groups,
                 'total' => ['files' => $files, 'bytes' => $bytes],
@@ -163,7 +163,7 @@ final class StatCommand extends Command
                 self::human($sharedBytes),
             ));
 
-        self::maybeJson($input, $output, $log, [
+        $this->maybeJson($input, $output, $log, [
             'scoped' => $scoped,
             'groups' => $groups,
             'total' => ['files' => $files, 'bytes' => $bytes],
@@ -179,7 +179,7 @@ final class StatCommand extends Command
      * @param array<string, mixed> $report
      * @param array<int, string> $log
      */
-    private static function maybeJson(
+    private function maybeJson(
         InputInterface $input,
         OutputInterface $output,
         array $log,

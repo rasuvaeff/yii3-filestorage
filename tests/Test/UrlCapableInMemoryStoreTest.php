@@ -10,6 +10,7 @@ use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryOptions;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicy;
+use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\UrlCapableInMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Upload;
@@ -112,6 +113,26 @@ final class UrlCapableInMemoryStoreTest
 
         $file = $this->file($result->relativePath);
         Assert::same((string) ($store->stream($file) ?? ''), '12345');
+    }
+
+    /**
+     * Maintenance reaches the object too: `filestorage:gc` deletes through
+     * this wrapper, and the delete has to land in the store the wrapper wraps.
+     */
+    public function deleteObjectRemovesTheObjectFromTheInnerStore(): void
+    {
+        $inner = new InMemoryStore('memory', new Psr17Factory(), new StaticClock(new DateTimeImmutable('2026-01-01T00:00:00+00:00')));
+        $store = new UrlCapableInMemoryStore($inner);
+        $result = $store->write(
+            Upload::fromStream((new Psr17Factory())->createStream('doomed'), 'x.bin', new Psr17Factory()),
+            'docs',
+            new RandomPathGenerator(),
+        );
+
+        $store->deleteObject(new StoredObjectId($result->relativePath));
+
+        Assert::same($inner->paths(), [], 'the inner store is empty');
+        Assert::false($store->exists($this->file($result->relativePath)));
     }
 
     private function store(bool $publicUrls = true, bool $temporaryUrls = true): UrlCapableInMemoryStore

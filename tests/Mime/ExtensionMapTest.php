@@ -6,6 +6,7 @@ namespace Rasuvaeff\Yii3Filestorage\Tests\Mime;
 
 use InvalidArgumentException;
 use Rasuvaeff\Yii3Filestorage\Mime\ExtensionMap;
+use Symfony\Component\Mime\MimeTypes;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Data\DataProvider;
@@ -53,6 +54,30 @@ final class ExtensionMapTest
     public function mediaTypesAreMatchedCaseInsensitively(): void
     {
         Assert::same((new ExtensionMap())->extensionFor('IMAGE/PNG'), 'png');
+    }
+
+    /**
+     * A caller-supplied table replaces the built-in one entirely: an
+     * application with its own media-type registry must not silently fall
+     * back to the Symfony defaults for types the defaults do not know.
+     */
+    public function aCustomTableWinsOverTheBuiltInOne(): void
+    {
+        $map = new ExtensionMap([], new MimeTypes(['custom/vnd' => ['zzz']]));
+
+        Assert::same($map->extensionFor('custom/vnd'), 'zzz');
+    }
+
+    /**
+     * Overrides are keyed by lowercase media type and win outright: the
+     * lookup normalises the incoming type, so `IMAGE/PNG` hits the same
+     * override as `image/png` — and the override beats the table.
+     */
+    public function anOverrideIsHitWhateverTheCaseOfTheIncomingType(): void
+    {
+        $map = new ExtensionMap(['image/png' => 'img']);
+
+        Assert::same($map->extensionFor('IMAGE/PNG'), 'img');
     }
 
     public function anOverrideWinsOverTheBuiltInTable(): void
