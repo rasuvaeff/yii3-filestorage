@@ -65,6 +65,17 @@ final class UnflushableManifestStream
     }
 
     /**
+     * The scheme root accepts directory creation on every platform: Windows
+     * builds the parent with backslashes and its stat of a wrapper root is
+     * not guaranteed to round-trip, so `mkdir()` succeeding is what makes the
+     * parent check pass everywhere.
+     */
+    public function mkdir(): bool
+    {
+        return true;
+    }
+
+    /**
      * @return array<int|string, mixed>|false
      */
     public function url_stat($path): array|false

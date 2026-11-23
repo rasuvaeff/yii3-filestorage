@@ -568,7 +568,10 @@ final class FileSystemStoreTest
             $this->store->write($this->upload('x'), 'docs', $fixed, 'text/plain');
             Assert::true(actual: false, message: 'the write should have been refused');
         } catch (StoreException $e) {
-            Assert::same($e->getMessage(), 'Could not create "' . $this->root . '/docs/xx/yy/key" in store "upload"');
+            // The directory in the message carries the platform's own
+            // separators (the root is a realpath answer); the claim is about
+            // which directory, not which slashes.
+            Assert::same(str_replace('\\', '/', $e->getMessage()), 'Could not create "' . str_replace('\\', '/', $this->root) . '/docs/xx/yy/key" in store "upload"');
             Assert::same($e->getCode(), 0);
         }
     }
@@ -589,7 +592,7 @@ final class FileSystemStoreTest
             $this->store->writeDerivative($file, $thumb, $this->factory->createStream('rendition'));
             Assert::true(actual: false, message: 'the derivative should have been refused');
         } catch (StoreException $e) {
-            Assert::same($e->getMessage(), 'Could not create "' . $this->root . '/docs/xx/yy/key" in store "upload"');
+            Assert::same(str_replace('\\', '/', $e->getMessage()), 'Could not create "' . str_replace('\\', '/', $this->root) . '/docs/xx/yy/key" in store "upload"');
             Assert::same($e->getCode(), 0);
         }
     }
