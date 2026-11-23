@@ -97,10 +97,12 @@ final class ImportCommandTest
         Assert::string($tester->getDisplay())->contains('Imported 2 files');
         // Slashes stay unescaped in the manifest: it is a record a human may
         // have to read, and an escaped one still matches a second run — this
-        // pins the encoding flags, not just the parse.
+        // pins the encoding flags, not just the parse. The relative path with
+        // a separator is the pin (JSON must escape a backslash, so the
+        // absolute Windows paths in `source` are irrelevant here).
         $manifest = (string) file_get_contents($this->manifest);
-        Assert::true(str_contains($manifest, '"path":"a.txt"'), 'unescaped slashes in the manifest');
-        Assert::false(str_contains($manifest, '\\\\'));
+        Assert::true(str_contains($manifest, '"path":"a.txt"'), 'the plain entry is present');
+        Assert::true(str_contains($manifest, '"path":"nested/b.txt"'), 'unescaped slashes in the manifest');
     }
 
     /**
