@@ -101,7 +101,7 @@ final class VerifyCommand extends Command
 
         if ($missing === 0 && $mismatched === 0) {
             $io->success('Every row has its object.');
-            self::maybeJson($input, $output, $log, $deep, $limit, $checked, $last, $problems);
+            $this->maybeJson($input, $output, $log, $deep, $limit, $checked, $last, $problems);
 
             return Command::SUCCESS;
         }
@@ -112,7 +112,7 @@ final class VerifyCommand extends Command
             $missing === 1 ? '' : 's',
             $mismatched === 0 ? '' : sprintf(', %d with the wrong content', $mismatched),
         ));
-        self::maybeJson($input, $output, $log, $deep, $limit, $checked, $last, $problems);
+        $this->maybeJson($input, $output, $log, $deep, $limit, $checked, $last, $problems);
 
         return Command::FAILURE;
     }
@@ -121,7 +121,7 @@ final class VerifyCommand extends Command
      * @param array<int, string> $log
      * @param list<array{id: string, problem: string, relativePath: string}> $problems
      */
-    private static function maybeJson(
+    private function maybeJson(
         InputInterface $input,
         OutputInterface $output,
         array $log,
@@ -153,7 +153,7 @@ final class VerifyCommand extends Command
     private function inspect(File $file, bool $deep): ?string
     {
         $store = $this->storeFor($file->storeName);
-        if ($store === null) {
+        if (!$store instanceof \Rasuvaeff\Yii3Filestorage\Store\StoreInterface) {
             // The row names a store configuration does not have, so its object
             // is unreachable — which is exactly what "missing" means here.
             return 'missing';
@@ -168,7 +168,7 @@ final class VerifyCommand extends Command
         }
 
         $stream = $store->stream($file);
-        if ($stream === null) {
+        if (!$stream instanceof \Psr\Http\Message\StreamInterface) {
             // Existed a moment ago and does not now, or the read failed. Either
             // way the row cannot be served.
             return 'missing';

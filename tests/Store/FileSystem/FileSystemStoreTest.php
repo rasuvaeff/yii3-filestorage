@@ -467,6 +467,23 @@ final class FileSystemStoreTest
      * Two writers racing for one target: the second must be refused rather than
      * quietly overwriting the first after both staged under different names.
      */
+    /**
+     * Derivatives stage the same way originals do: a stale `.part` beside the
+     * derivative target is a concurrent writer, and the second write must
+     * refuse rather than race it.
+     */
+    public function aLeftoverStagingFileRefusesASecondDerivativeWrite(): void
+    {
+        $file = $this->write('original');
+        $thumb = new DerivativeDescriptor('thumb', 'webp', 'image/webp');
+        $object = $this->store->writeDerivative($file, $thumb, $this->factory->createStream('one'));
+
+        file_put_contents($this->root . '/' . $object->relativePath . '.part', 'a write in flight');
+
+        Expect::exception(StoreException::class)->withMessageContaining('staging file');
+        $this->store->writeDerivative($file, $thumb, $this->factory->createStream('two'));
+    }
+
     public function aLeftoverStagingFileRefusesASecondWriteToTheSameTarget(): void
     {
         $fixed = $this->fixedPathGenerator('docs/key/original.txt');
@@ -537,6 +554,241 @@ final class FileSystemStoreTest
     }
 
     /**
+     * A path component the generator produced is occupied by a file, so the
+     * key directory cannot be created. The failure names the directory, is a
+     * store error, and — being reported as one — carries no other code.
+     */
+    public function aKeyDirectoryBlockedByAFileIsAStoreErrorWithNoCode(): void
+    {
+        mkdir($this->root . '/docs/xx/yy', 0o775, recursive: true);
+        file_put_contents($this->root . '/docs/xx/yy/key', 'not a directory');
+        $fixed = $this->fixedPathGenerator('docs/xx/yy/key/original.txt');
+
+        try {
+            $this->store->write($this->upload('x'), 'docs', $fixed, 'text/plain');
+            Assert::true(actual: false, message: 'the write should have been refused');
+        } catch (StoreException $e) {
+            // The directory in the message carries the platform's own
+            // separators (the root is a realpath answer); the claim is about
+            // which directory, not which slashes.
+            $realised = str_replace('\\', '/', (string) realpath($this->root));
+            Assert::same(str_replace('\\', '/', $e->getMessage()), 'Could not create "' . $realised . '/docs/xx/yy/key" in store "upload"');
+            Assert::same($e->getCode(), 0);
+        }
+    }
+
+    /**
+     * The derivative write goes through the same ensureDirectory step, so the
+     * same blocked path fails the same way — with the directory named and no
+     * code on the exception.
+     */
+    public function aDerivativeDirectoryBlockedByAFileIsAStoreErrorWithNoCode(): void
+    {
+        mkdir($this->root . '/docs/xx/yy', 0o775, recursive: true);
+        file_put_contents($this->root . '/docs/xx/yy/key', 'not a directory');
+        $file = $this->file('docs/xx/yy/key/original.txt');
+        $thumb = new DerivativeDescriptor('thumb', 'webp', 'image/webp');
+
+        try {
+            $this->store->writeDerivative($file, $thumb, $this->factory->createStream('rendition'));
+            Assert::true(actual: false, message: 'the derivative should have been refused');
+        } catch (StoreException $e) {
+            $realised = str_replace('\\', '/', (string) realpath($this->root));
+            Assert::same(str_replace('\\', '/', $e->getMessage()), 'Could not create "' . $realised . '/docs/xx/yy/key" in store "upload"');
+            Assert::same($e->getCode(), 0);
+        }
+    }
+
+    /**
+     * The derivative target occupied by a directory: rename cannot replace it,
+     * so the staging file is removed and the failure names the derivative.
+     * `write()` refuses an existing target up front; the derivative path has
+     * no such guard, which is exactly why this branch exists.
+     */
+    public function aDerivativeTargetOccupiedByADirectoryIsAPublishFailure(): void
+    {
+        $file = $this->write('original');
+        $thumb = new DerivativeDescriptor('thumb', 'webp', 'image/webp');
+        mkdir($this->root . '/' . $file->directory() . '/thumb.webp', 0o775, recursive: true);
+
+        try {
+            $this->store->writeDerivative($file, $thumb, $this->factory->createStream('rendition'));
+            Assert::true(actual: false, message: 'the derivative should have been refused');
+        } catch (StoreException $e) {
+            Assert::same(
+                $e->getMessage(),
+                'Could not publish derivative "' . $file->directory() . '/thumb.webp" in store "upload"',
+            );
+            Assert::same($this->filesUnder($this->root, '.part'), [], 'the staging file was removed');
+        }
+    }
+
+    /**
+     * Deleting a *file* path rather than a key directory: the cleanup half of
+     * a broken write can leave a plain file where a directory was expected,
+     * and delete() removes it through the unlink branch, not removeDirectory.
+     */
+    public function deleteRemovesALeafObjectPathToo(): void
+    {
+        mkdir($this->root . '/docs/xx/yy', 0o775, recursive: true);
+        file_put_contents($this->root . '/docs/xx/yy/key', 'a plain file, not a directory');
+        $file = $this->file('docs/xx/yy/key/original.txt');
+
+        $this->store->delete($file);
+
+        Assert::false(file_exists($this->root . '/docs/xx/yy/key'));
+        Assert::false($this->store->exists($file));
+    }
+
+    /**
+     * The containment check is on the derivative write path too: a key
+     * directory replaced by a symlink would let a rendition be written outside
+     * the store root.
+     */
+    public function writingADerivativeThroughASymlinkedKeyDirectoryIsRefused(): void
+    {
+        $outside = sys_get_temp_dir() . '/fs-outside-deriv-' . bin2hex(random_bytes(6));
+        mkdir($outside);
+        mkdir($this->root . '/docs/xx/yy', 0o775, recursive: true);
+        if (!$this->createSymlink($outside, $this->root . '/docs/xx/yy/key')) {
+            FileHelper::removeDirectory($outside);
+
+            return;
+        }
+
+        $file = $this->file('docs/xx/yy/key/original.txt');
+        $thumb = new DerivativeDescriptor('thumb', 'webp', 'image/webp');
+
+        try {
+            $this->store->writeDerivative($file, $thumb, $this->factory->createStream('rendition'));
+            Assert::true(actual: false, message: 'the derivative should have been refused');
+        } catch (StoreException $e) {
+            Assert::string($e->getMessage())->contains('escapes the root of store "upload"');
+            Assert::same(self::filesUnder($outside), [], 'and nothing was written outside');
+        } finally {
+            FileHelper::removeDirectory($outside);
+        }
+    }
+
+    /**
+     * Each derivative stages under its own sibling name: a second rendition
+     * must not collide with the first one's staging file. Staging at a fixed
+     * name outside the target directory would make the second write fail.
+     */
+    public function twoDerivativesCanStageAtTheSameTime(): void
+    {
+        $file = $this->write('original');
+
+        $thumb = $this->store->writeDerivative(
+            $file,
+            new DerivativeDescriptor('thumb', 'webp', 'image/webp'),
+            $this->factory->createStream('rendition'),
+        );
+        $preview = $this->store->writeDerivative(
+            $file,
+            new DerivativeDescriptor('preview', 'webp', 'image/webp'),
+            $this->factory->createStream('bigger rendition'),
+        );
+
+        Assert::same($thumb->relativePath, $file->directory() . '/thumb.webp');
+        Assert::same($preview->relativePath, $file->directory() . '/preview.webp');
+        Assert::same(
+            $this->store->derivativeStream($file, new DerivativeDescriptor('preview', 'webp', 'image/webp'))
+                ?->getContents(),
+            'bigger rendition',
+        );
+    }
+
+    /**
+     * The reported size is the whole body, not the last chunk: a body several
+     * read-chunks long accumulates across the copy loop.
+     */
+    public function aMultiChunkWriteReportsTheWholeSize(): void
+    {
+        $body = str_repeat('a', 262_144) . 'tail';
+
+        $result = $this->store->write($this->upload($body), 'docs', new RandomPathGenerator(), 'text/plain');
+
+        Assert::same($result->size, 262_148);
+        Assert::same(file_get_contents($this->root . '/' . $result->relativePath), $body);
+    }
+
+    /**
+     * A symlink that sorts *before* real entries must not end the inventory
+     * walk: skipping it is per-entry, and breaking there would hide every
+     * object behind it from verify and gc.
+     */
+    public function theInventorySkipsASymlinkWithoutEndingTheWalk(): void
+    {
+        $outside = sys_get_temp_dir() . '/fs-outside-walk-' . bin2hex(random_bytes(6));
+        file_put_contents($outside, 'not an object');
+        mkdir($this->root . '/b', 0o775, recursive: true);
+        file_put_contents($this->root . '/b/x.txt', 'a real object');
+        if (!$this->createSymlink($outside, $this->root . '/a-link')) {
+            unlink($outside);
+
+            return;
+        }
+
+        try {
+            $paths = array_map(
+                static fn(StoredObjectId $id): string => $id->relativePath,
+                iterator_to_array($this->store->objects(), preserve_keys: false),
+            );
+
+            Assert::same($paths, ['b/x.txt'], 'the walk continued past the link');
+        } finally {
+            unlink($outside);
+        }
+    }
+
+    /**
+     * Containment is prefix-plus-separator, not prefix: a sibling directory
+     * whose name merely *extends* the root's name is a different tree, and a
+     * symlink into it must stay unreadable through the store.
+     */
+    public function aSiblingDirectoryWhoseNameExtendsTheRootIsOutside(): void
+    {
+        $sibling = $this->root . 'x';
+        mkdir($sibling, 0o775, recursive: true);
+        file_put_contents($sibling . '/secret.txt', 'not yours');
+        mkdir($this->root . '/docs', 0o775, recursive: true);
+        $linked = false;
+        if (@symlink($sibling . '/secret.txt', $this->root . '/docs/escape')) {
+            $linked = true;
+        }
+
+        try {
+            if (!$linked) {
+                Assert::same(\PHP_OS_FAMILY, 'Windows', 'symlink() unexpectedly failed');
+
+                return;
+            }
+
+            $file = $this->file('docs/escape');
+
+            Assert::false($this->store->exists($file));
+            Assert::null($this->store->stream($file));
+        } finally {
+            FileHelper::removeDirectory($sibling);
+        }
+    }
+
+    /**
+     * A negative range length is a caller bug: the window clamps to empty
+     * rather than growing a byte or throwing.
+     */
+    public function aNegativeRangeLengthYieldsAnEmptyWindow(): void
+    {
+        $file = $this->write('0123456789');
+
+        $stream = $this->store->streamRange($file, 0, -1);
+
+        Assert::instanceOf($stream, \Psr\Http\Message\StreamInterface::class);
+        Assert::same($stream?->getContents(), '');
+    }
+
+    /**
      * The message names the fix, because the alternative first-run experience
      * is a bare permission error from deep inside a helper.
      */
@@ -545,10 +797,15 @@ final class FileSystemStoreTest
         $blockingPath = $this->root . '/not-a-directory';
         file_put_contents($blockingPath, 'x');
 
-        Expect::exception(StoreException::class)
-            ->withMessageContaining('does not exist and could not be created. Create it and make it writable');
-
-        new FileSystemStore('upload', $blockingPath . '/deeper', $this->factory);
+        try {
+            new FileSystemStore('upload', $blockingPath . '/deeper', $this->factory);
+            Assert::true(actual: false, message: 'the root should have been refused');
+        } catch (StoreException $e) {
+            Assert::string($e->getMessage())->contains(
+                'does not exist and could not be created. Create it and make it writable',
+            );
+            Assert::same($e->getCode(), 0);
+        }
     }
 
     /**

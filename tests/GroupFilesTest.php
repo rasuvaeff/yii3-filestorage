@@ -48,6 +48,24 @@ final class GroupFilesTest
         Assert::same($ids, ['wanted']);
     }
 
+    /**
+     * A file missing the metadata key is skipped, not the end of the walk:
+     * the keyed files behind it still arrive.
+     */
+    public function aFileWithoutTheMetadataKeyDoesNotEndTheWalk(): void
+    {
+        $repository = new MemoryRepository();
+        $repository->save($this->file('a', 'avatars'));
+        $repository->save($this->file('b', 'avatars', metadata: ['w' => 100]));
+
+        $ids = [];
+        foreach ((new GroupFiles($repository, 'avatars', 'w'))() as $file) {
+            $ids[] = $file->id;
+        }
+
+        Assert::same($ids, ['b']);
+    }
+
     /** The metadata filter is presence, not value: "everything we know the size of". */
     public function theMetadataFilterChecksPresence(): void
     {

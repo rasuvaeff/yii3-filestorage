@@ -266,6 +266,18 @@ final class MemoryBlobLedgerTest
         Assert::same($record?->reservationCount, 0);
     }
 
+    /**
+     * The sweep's return value is how many blobs lost their last claim —
+     * two blobs expiring in one pass report two, not the last one's count.
+     */
+    public function theSweepCountsEveryBlobItExpired(): void
+    {
+        $this->reserve();
+        $this->reserveOther();
+
+        Assert::same($this->ledger->expireReservations($this->at('00:30'), $this->at('01:00')), 2);
+    }
+
     public function aLiveReservationSurvivesTheSweep(): void
     {
         $this->reserve();
@@ -301,7 +313,7 @@ final class MemoryBlobLedgerTest
         Assert::same($this->ledger->expireReservations($this->at('02:00'), $this->at('03:00')), 0);
 
         Assert::same($this->ledger->find($this->blob())?->deleteAfter?->format('H:i'), '01:00');
-        Assert::true($this->ledger->claimForDeletion($this->at('02:00'), $this->at('02:05')) !== null);
+        Assert::true($this->ledger->claimForDeletion($this->at('02:00'), $this->at('02:05')) instanceof \Rasuvaeff\Yii3Filestorage\Store\BlobLease);
     }
 
     public function nothingIsCollectableBeforeItsGracePeriodEnds(): void
@@ -321,6 +333,21 @@ final class MemoryBlobLedgerTest
         $this->ledger->release($this->reserveOther(), $this->at('01:00'));
 
         $lease = $this->ledger->claimForDeletion($this->at('01:30'), $this->at('01:35'));
+
+        Assert::same($lease?->blob->key(), $this->otherBlob()->key());
+    }
+
+    /**
+     * The skip guard for referenced rows has the same duty: a blob something
+     * still references sits *first* in the scan and must not end it, or one
+     * live file would hide every collectable blob behind it.
+     */
+    public function aReferencedBlobIsSkippedRatherThanEndingTheScan(): void
+    {
+        $this->ledger->commit($this->reserve(), $this->file('a'));
+        $this->ledger->release($this->reserveOther(), $this->at('01:00'));
+
+        $lease = $this->ledger->claimForDeletion($this->at('02:00'), $this->at('02:05'));
 
         Assert::same($lease?->blob->key(), $this->otherBlob()->key());
     }
@@ -346,7 +373,7 @@ final class MemoryBlobLedgerTest
 
         Assert::instanceOf($first, BlobLease::class);
         Assert::instanceOf($second, BlobLease::class);
-        \assert($first !== null && $second !== null);
+        \assert($first instanceof \Rasuvaeff\Yii3Filestorage\Store\BlobLease && $second instanceof \Rasuvaeff\Yii3Filestorage\Store\BlobLease);
         Assert::false($first->token->equals($second->token));
     }
 
@@ -425,6 +452,27 @@ final class MemoryBlobLedgerTest
 
         Assert::same($this->ledger->find($this->blob())?->state, BlobState::Deleting);
         Assert::true($this->ledger->completeDeletion($lease ?? $this->lease()));
+    }
+
+    /**
+     * A release reaching a blob under an active deletion lease changes
+     * nothing: the holder, or the expiry, decides — not a stale reservation
+     * object from before the claim. Re-scheduling it would hand the blob a
+     * grace period while a collector is already removing it.
+     */
+    public function releasingUnderAnActiveDeletionLeaseChangesNothing(): void
+    {
+        $reservation = $this->reserve();
+        $this->ledger->release($reservation, $this->at('01:00'));
+        $this->ledger->claimForDeletion($this->at('01:00'), $this->at('01:05'));
+
+        // The same reservation object, after the sweep removed it from the row.
+        $this->ledger->release($reservation, $this->at('09:00'));
+
+        $record = $this->ledger->find($this->blob());
+        Assert::same($record?->state, BlobState::Deleting);
+        Assert::same($record?->leaseExpiresAt?->format('H:i'), '01:05');
+        Assert::same($record?->deleteAfter?->format('H:i'), '01:00', 'the schedule the claim found is untouched');
     }
 
     public function recordsAndClearExposeTheWholeLedgerForAssertions(): void

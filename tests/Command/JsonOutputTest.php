@@ -83,6 +83,7 @@ final class JsonOutputTest
     {
         $decoded = $this->jsonOutput(new StatCommand($this->repository), ['--format' => 'json']);
 
+        Assert::false($decoded['scoped']);
         Assert::same($decoded['total'], ['files' => 0, 'bytes' => 0]);
         Assert::same($decoded['groups'], []);
         // The unscoped empty report keeps the physical keys at zero — a
@@ -92,27 +93,157 @@ final class JsonOutputTest
         Assert::same($decoded['sharedBytes'], 0);
     }
 
+    /**
+     * A healthy file produces no problem, and skipping it must not stop the
+     * verification: the rows behind it are still checked, in id order.
+     */
+    public function verifyChecksEveryRowAfterTheHealthyOnes(): void
+    {
+        $healthy = $this->storeFile('a', 'docs');
+        $this->repository->save(File::create(
+            id: $healthy->id,
+            storeName: $healthy->storeName,
+            groupName: $healthy->groupName,
+            relativePath: $healthy->relativePath,
+            originalName: $healthy->originalName,
+            size: $healthy->size,
+            createdAt: $healthy->createdAt,
+            contentHash: hash('sha256', 'hello'),
+        ));
+        $this->repository->save(File::create(
+            id: 'b',
+            storeName: 'memory',
+            groupName: 'docs',
+            relativePath: 'docs/ab/cd/ghost',
+            originalName: 'g.txt',
+            size: 5,
+            createdAt: new \DateTimeImmutable('2026-01-01T00:00:00+00:00'),
+            contentHash: hash('sha256', 'whatever it was'),
+        ));
+        $tampered = $this->storeFile('c', 'docs');
+        $this->store->corrupt($tampered->relativePath, 'tampered');
+        $this->repository->save(File::create(
+            id: 'c',
+            storeName: 'memory',
+            groupName: 'docs',
+            relativePath: $tampered->relativePath,
+            originalName: 'a.txt',
+            size: 5,
+            createdAt: new \DateTimeImmutable('2026-01-01T00:00:00+00:00'),
+            contentHash: hash('sha256', 'original'),
+        ));
+
+        $decoded = $this->jsonOutput(
+            new VerifyCommand(new StoreRegistry([$this->store]), $this->repository),
+            ['--format' => 'json', '--deep' => true],
+        );
+
+        Assert::same($decoded['checked'], 3);
+        Assert::same($decoded['missing'], 1);
+        Assert::same($decoded['corrupt'], 1);
+    }
+
+    /**
+     * Text mode is text: no JSON object may leak into the report a human
+     * reads.
+     */
+    public function verifyTextModeEmitsNoJson(): void
+    {
+        $this->storeFile('a', 'docs');
+
+        $tester = new CommandTester(new VerifyCommand(new StoreRegistry([$this->store]), $this->repository));
+        $tester->execute(['--deep' => true]);
+
+        Assert::false(str_contains($tester->getDisplay(), '"checked"'), 'no JSON object in text output');
+    }
+
+    /**
+     * The two problem kinds are counted separately: one of each must not
+     * collapse into a single bucket.
+     */
+    public function verifyJsonCountsMissingAndCorruptSeparately(): void
+    {
+        $this->repository->save($this->row('a', 'docs'));
+        $tampered = $this->storeFile('b', 'docs');
+        $this->store->corrupt($tampered->relativePath, 'tampered');
+        $this->repository->save(File::create(
+            id: 'b',
+            storeName: 'memory',
+            groupName: 'docs',
+            relativePath: $tampered->relativePath,
+            originalName: 'a.txt',
+            size: 5,
+            createdAt: new \DateTimeImmutable('2026-01-01T00:00:00+00:00'),
+            contentHash: hash('sha256', 'original'),
+        ));
+
+        $decoded = $this->jsonOutput(
+            new VerifyCommand(new StoreRegistry([$this->store]), $this->repository),
+            ['--format' => 'json', '--deep' => true],
+        );
+
+        Assert::same($decoded['missing'], 1);
+        Assert::same($decoded['corrupt'], 1);
+    }
+
     public function verifyCountsItsProblems(): void
     {
         $this->storeFile('a', 'docs');
         // A row whose object is gone.
         $this->repository->save($this->row('ghost', 'docs'));
+        // A row whose object is there but holds other bytes.
+        $tampered = $this->storeFile('tampered', 'docs');
+        $this->store->corrupt($tampered->relativePath, 'tampered');
+        $this->repository->save(File::create(
+            id: 'tampered',
+            storeName: 'memory',
+            groupName: 'docs',
+            relativePath: $tampered->relativePath,
+            originalName: 'a.txt',
+            size: 5,
+            createdAt: new \DateTimeImmutable('2026-01-01T00:00:00+00:00'),
+            contentHash: hash('sha256', 'original'),
+        ));
+
+        $decoded = $this->jsonOutput(
+            new VerifyCommand(new StoreRegistry([$this->store]), $this->repository),
+            ['--format' => 'json', '--deep' => true],
+            $raw,
+        );
+
+        Assert::same($decoded['checked'], 3);
+        Assert::same($decoded['missing'], 1);
+        Assert::same($decoded['corrupt'], 1);
+        Assert::same($decoded['problems'][0]['id'] ?? null, 'ghost');
+        Assert::same($decoded['problems'][0]['problem'] ?? null, 'missing');
+        Assert::same($decoded['problems'][0]['relativePath'] ?? null, 'docs/ab/cd/ghost');
+        // Unescaped slashes in the raw body — the encoding flags are part of
+        // the output's shape.
+        Assert::true(str_contains($raw, 'docs/ab/cd/ghost'));
+        Assert::false(str_contains($raw, '\\\\/'));
+    }
+
+    /**
+     * The success run emits the same schema with zeroed counters — a dashboard
+     * parses one shape, and a dropped key on the happy path is exactly the
+     * kind of drift nobody notices until a consumer breaks.
+     */
+    public function verifySuccessEmitsTheMachineObject(): void
+    {
+        $this->storeFile('a', 'docs');
 
         $decoded = $this->jsonOutput(
             new VerifyCommand(new StoreRegistry([$this->store]), $this->repository),
             ['--format' => 'json'],
-            $raw,
         );
 
-        Assert::same($decoded['checked'], 2);
-        Assert::same($decoded['missing'], 1);
+        Assert::same($decoded['deep'], expected: false);
+        Assert::same($decoded['limit'], 10_000);
+        Assert::same($decoded['checked'], 1);
+        Assert::same($decoded['lastId'], 'a');
+        Assert::same($decoded['missing'], 0);
         Assert::same($decoded['corrupt'], 0);
-        Assert::same($decoded['problems'][0]['id'] ?? null, 'ghost');
-        Assert::same($decoded['problems'][0]['problem'] ?? null, 'missing');
-        // Unescaped slashes in the raw body — the encoding flags are part of
-        // the output's shape.
-        Assert::true((bool) str_contains($raw, 'docs/ab/cd/ghost'));
-        Assert::false((bool) str_contains($raw, '\\\\/'));
+        Assert::same($decoded['problems'], []);
     }
 
     public function checkReportsItsShape(): void
@@ -180,7 +311,7 @@ final class JsonOutputTest
 
         Assert::false($decoded['applied']);
         Assert::string($decoded['error'] ?? null);
-        Assert::true((bool) str_contains((string) $decoded['error'], 'Refusing --orphans'));
+        Assert::true(str_contains((string) $decoded['error'], 'Refusing --orphans'));
         Assert::true(\is_array($decoded['log']));
     }
 
@@ -218,7 +349,7 @@ final class JsonOutputTest
         Assert::true((bool) preg_match('/\A\{.*\}\z/s', $raw), "stdout must be one JSON object, got: {$raw}");
 
         /** @var array<string, mixed> $decoded */
-        $decoded = json_decode($raw, true);
+        $decoded = json_decode($raw, associative: true);
 
         return $decoded;
     }

@@ -6,21 +6,26 @@ namespace Rasuvaeff\Yii3Filestorage\Tests\Command;
 
 use DateTimeImmutable;
 use Nyholm\Psr7\Factory\Psr17Factory;
+use Rasuvaeff\Understudy\Arg;
 use Rasuvaeff\Understudy\Understudy;
 use Rasuvaeff\Yii3Filestorage\Command\BackfillHashCommand;
 use Rasuvaeff\Yii3Filestorage\Command\GcCommand;
 use Rasuvaeff\Yii3Filestorage\Command\StatCommand;
 use Rasuvaeff\Yii3Filestorage\Command\VerifyCommand;
+use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
 use Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Store\BlobId;
+use Rasuvaeff\Yii3Filestorage\Store\BlobState;
+use Rasuvaeff\Yii3Filestorage\Store\MaintenanceStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
 use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryBlobLedger;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\StallingStream;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
@@ -202,6 +207,49 @@ final class OperationsCommandsTest
     }
 
     /**
+     * `--limit` is one budget for the whole pass, and with `--orphans` it is
+     * split between the two halves — 5 into 3 blobs + 2 orphans, not 5 + 5.
+     * Every number in the summary is pinned: a formula that gave either half
+     * the whole budget (or rounded the other way) moves one of them.
+     */
+    public function gcSplitsTheLimitBetweenBlobsAndOrphans(): void
+    {
+        $this->scheduledBlob('a', 'one');
+        $this->scheduledBlob('b', 'two');
+        $this->scheduledBlob('c', 'three');
+        $this->scheduledBlob('d', 'four');
+        $this->storeFile('e');
+        $this->storeFile('f', contents: 'six');
+        $this->storeFile('g', contents: 'seven');
+        $this->repository->clear();
+
+        $display = $this->run(
+            new GcCommand($this->registry(), $this->repository, $this->clock(), $this->ledger),
+            ['--orphans' => true, '--apply' => true, '--limit' => '5'],
+        )->getDisplay();
+
+        Assert::string($display)->contains('Collected 3 blobs and 2 orphaned objects.');
+    }
+
+    /**
+     * The claim loop is bounded by attempts, not successes — and the bound
+     * holds: `--limit=1` collects exactly one blob even with two waiting.
+     */
+    public function theBlobBudgetStopsTheClaimLoop(): void
+    {
+        $this->scheduledBlob('a', 'one');
+        $this->scheduledBlob('b', 'two');
+
+        $display = $this->run(
+            new GcCommand($this->registry(), $this->repository, $this->clock(), $this->ledger),
+            ['--apply' => true, '--limit' => '1'],
+        )->getDisplay();
+
+        Assert::string($display)->contains('Collected 1 blob.');
+        Assert::true($this->ledger->records() !== [], 'the second blob is still queued');
+    }
+
+    /**
      * A blob something still references must survive the pass — this is the
      * failure that would delete a live file.
      */
@@ -216,7 +264,7 @@ final class OperationsCommandsTest
             ['--apply' => true],
         );
 
-        Assert::true($this->ledger->find($blob) !== null);
+        Assert::true($this->ledger->find($blob) instanceof \Rasuvaeff\Yii3Filestorage\Store\BlobRecord);
         Assert::same($this->store->bytesAt($file->relativePath), 'hello');
     }
 
@@ -289,6 +337,218 @@ final class OperationsCommandsTest
         )->getDisplay();
 
         Assert::string($display)->contains('Collected 1 blob and 1 orphaned object.');
+    }
+
+    /**
+     * A ledger row can name a store that no longer implements
+     * `MaintenanceStoreInterface` — an adapter dropped from configuration while
+     * its rows live on. Its blobs cannot be collected, but the pass must say so
+     * once (not once per blob), put each one back in the queue with a fresh
+     * grace period, and still collect the stores that *are* walkable.
+     */
+    public function gcAbandonsBlobsWhoseStoreCannotDeleteThemAndCollectsTheRest(): void
+    {
+        $plain = $this->unwalkableStore('plain');
+        $first = BlobId::create('plain', 'plain-one/original.bin');
+        $second = BlobId::create('plain', 'plain-two/original.bin');
+        $this->ledger->reserve($first, hash('sha256', 'one'), 3, $this->at('00:10'));
+        $this->ledger->reserve($second, hash('sha256', 'two'), 3, $this->at('00:10'));
+        // Past their grace period already: the run's own sweep must not push
+        // their deletion past the clock it claims with.
+        $this->ledger->expireReservations($this->at('00:30'), $this->at('01:00'));
+        $collectable = $this->scheduledBlob('a', 'one');
+
+        $display = $this->flatten(
+            $this->run(
+                new GcCommand(new StoreRegistry([$this->store, $plain]), $this->repository, $this->clock(), $this->ledger),
+                ['--apply' => true],
+            )->getDisplay(),
+        );
+
+        Assert::string($display)->contains(
+            'Store "plain" cannot delete objects (' . MaintenanceStoreInterface::class
+            . ' is not implemented or is not configured), so its blobs cannot be collected.',
+        );
+        Assert::same(substr_count($display, 'cannot delete objects'), 1, 'warned once per store, not once per blob');
+        Assert::string($display)->contains('Collected 1 blob.', 'the walkable store was still collected');
+
+        foreach ([$first, $second] as $blob) {
+            $record = $this->ledger->find($blob);
+            Assert::same($record?->state, BlobState::PendingDelete, 'the blob went back to the queue');
+            Assert::same($record?->deleteAfter?->format('H:i'), '03:00', 'with a fresh grace period, not dropped');
+            Assert::null($record?->leaseExpiresAt, 'and it no longer holds the lease it was claimed with');
+        }
+        Assert::null($this->ledger->find($collectable), 'the collectable blob is gone');
+    }
+
+    /**
+     * A store that is briefly down must not lose the blob: the lease is
+     * abandoned with a delay, the failure is named with the blob's key, and the
+     * pass goes on to the blobs behind it instead of stopping at the first
+     * broken one.
+     */
+    public function gcRequeuesABlobWhoseStoreFailsToDeleteItAndKeepsGoing(): void
+    {
+        $doomed = $this->scheduledBlob('a', 'one');
+        $survivor = $this->scheduledBlob('b', 'two');
+        $broken = $this->sickStore('memory', $doomed->relativePath());
+
+        $display = $this->flatten(
+            $this->run(
+                new GcCommand(new StoreRegistry([$broken]), $this->repository, $this->clock(), $this->ledger),
+                ['--apply' => true],
+            )->getDisplay(),
+        );
+
+        Assert::string($display)->contains(
+            sprintf('Could not delete "%s": the object store is unreachable', $doomed->key()),
+        );
+        Assert::string($display)->contains('Collected 1 blob.', 'the blob behind the broken one was still collected');
+
+        $record = $this->ledger->find($doomed);
+        Assert::same($record?->state, BlobState::PendingDelete, 'the failed blob went back to the queue');
+        Assert::same($record?->deleteAfter?->format('H:i'), '03:00', 'with the grace period applied');
+        Assert::null($this->ledger->find($survivor));
+    }
+
+    /**
+     * One permission-denied object must not end the sweep, and the counts
+     * accumulated before it must survive: the failure is a warning line, and
+     * the report still says how many orphans were found.
+     */
+    /**
+     * Orphans are classified per directory: the first object may sit in a
+     * referenced directory, and skipping it must not stop the walk — the
+     * true orphan in the next directory still has to be swept.
+     */
+    public function aReferencedDirectoryDoesNotEndTheOrphanSweep(): void
+    {
+        $keeper = File::create(
+            id: 'keeper',
+            storeName: 'memory',
+            groupName: 'docs',
+            relativePath: 'r1/aa/ee/keeper/original.bin',
+            originalName: 'k.bin',
+            size: 5,
+            createdAt: $this->at('00:00'),
+        );
+        $this->repository->save($keeper);
+        $this->store->corrupt('r1/aa/ee/keeper/orphan.bin', 'in a referenced directory');
+        $this->store->corrupt('r2/orphan.bin', 'a true orphan');
+
+        $display = $this->flatten($this->run(
+            new GcCommand($this->registry(), $this->repository, $this->clock()),
+            ['--orphans' => true],
+        )->getDisplay());
+
+        Assert::string($display)->contains('r2/orphan.bin');
+        Assert::false(str_contains($display, 'r1/'), 'the referenced directory is skipped');
+    }
+
+    /**
+     * Bytes published under a reservation have no file row yet, but the
+     * ledger knows them: the sweep must skip them and keep walking, or the
+     * next commit would point at bytes that no longer exist.
+     */
+    public function aLedgerKnownObjectDoesNotEndTheOrphanSweep(): void
+    {
+        $reserved = BlobId::create('memory', 'k1/aa/ee/writer/original.bin');
+        $this->ledger->reserve($reserved, hash('sha256', 'one'), 3, $this->at('00:10'));
+        $this->store->corrupt($reserved->relativePath(), 'one');
+        $this->store->corrupt('k2/orphan.txt', 'a true orphan');
+
+        $display = $this->flatten($this->run(
+            new GcCommand($this->registry(), $this->repository, $this->clock(), $this->ledger),
+            ['--orphans' => true],
+        )->getDisplay());
+
+        Assert::string($display)->contains('k2/orphan.txt');
+        Assert::false(str_contains($display, 'k1/'), 'the reserved object is not an orphan');
+    }
+
+    /**
+     * A row that already carries a hash is skipped, not the end of the
+     * backfill: the unhashed rows behind it still get theirs.
+     */
+    public function aRowWithAHashDoesNotEndTheBackfill(): void
+    {
+        $this->storeFile('a', hash: $this->hash());
+        $this->storeFile('b');
+
+        $this->run(new BackfillHashCommand($this->registry(), $this->repository), ['--apply' => true]);
+
+        Assert::same($this->repository->find('b')?->contentHash, $this->hash());
+    }
+
+    /**
+     * An unreadable row is reported and counted, not the end of the run: the
+     * hashable rows behind it are still hashed.
+     */
+    public function anUnreadableRowDoesNotEndTheBackfill(): void
+    {
+        $this->repository->save(File::create(
+            id: 'ghost',
+            storeName: 'memory',
+            groupName: 'docs',
+            relativePath: 'gone/aa/ee/ghost/original.bin',
+            originalName: 'g.bin',
+            size: 5,
+            createdAt: $this->at('00:00'),
+        ));
+        $this->storeFile('b');
+
+        $display = $this->flatten($this->run(
+            new BackfillHashCommand($this->registry(), $this->repository),
+            ['--apply' => true],
+        )->getDisplay());
+
+        Assert::string($display)->contains('unreadable: ghost');
+        Assert::same($this->repository->find('b')?->contentHash, $this->hash());
+    }
+
+    public function theOrphanSweepWarnsAndKeepsCountingWhenADeleteFails(): void
+    {
+        $orphan = $this->storeFile('gone');
+        $this->repository->clear();
+
+        $display = $this->flatten(
+            $this->run(
+                new GcCommand(new StoreRegistry([$this->sickStore('memory', $orphan->relativePath)]), $this->repository, $this->clock()),
+                ['--orphans' => true, '--apply' => true],
+            )->getDisplay(),
+        );
+
+        Assert::string($display)->contains(
+            sprintf('Could not delete "%s": the object store is unreachable', $orphan->relativePath),
+        );
+        Assert::string($display)->contains('found 1 orphaned object.');
+    }
+
+    /**
+     * The full refusal is the whole point of the command's one dangerous flag:
+     * asserting only its first words would let the explanation — the part an
+     * operator has to act on — drift or disappear.
+     */
+    public function theScopedSweepRefusalExplainsItselfInFull(): void
+    {
+        $this->storeFile('a');
+
+        $display = $this->flatten($this->run(
+            new GcCommand($this->registry(), $this->repository, $this->clock(), scopes: $this->tenantScope()),
+            ['--orphans' => true, '--apply' => true],
+        )->getDisplay());
+
+        Assert::string($display)->contains(sprintf(
+            'Refusing --orphans: a %s is bound, so this installation is multi-tenant. The referenced-set comes '
+            . 'from the repository, which filters by the current tenant, while the object listing is physical and '
+            . 'filters by nothing — so the sweep would classify every other tenant\'s objects as orphans and '
+            . '--apply would delete them. There is no tenant to run it "as": no single tenant\'s rows can prove an '
+            . 'object unreferenced. Run the sweep from a maintenance entry point that leaves %s unbound, where the '
+            . 'repository sees every row. Blob collection is unaffected — drop --orphans and this command still '
+            . 'runs.',
+            FileScopeProviderInterface::class,
+            FileScopeProviderInterface::class,
+        ));
     }
 
     /**
@@ -632,6 +892,8 @@ final class OperationsCommandsTest
 
         Assert::same($tester->getStatusCode(), Command::SUCCESS);
         Assert::string($tester->getDisplay())->contains('Every row has its object');
+        // Text mode emits no machine object, not even after the success line.
+        Assert::true(json_decode(trim($tester->getDisplay())) === null, 'no JSON in text mode');
     }
 
     public function verifyFailsOnARowWithoutBytes(): void
@@ -791,6 +1053,52 @@ final class OperationsCommandsTest
         Assert::string($tester->getDisplay())->contains('missing: b');
     }
 
+    /**
+     * The row can pass `exists()` and still fail the read that follows — the
+     * object vanished, or the read errored, between the two calls. That is
+     * exactly what "missing" means, and the deep check must say so rather than
+     * carry on hashing nothing.
+     */
+    public function deepVerifyReportsARowWhoseReadFailsAfterExists(): void
+    {
+        $file = $this->storeFile('a', hash: $this->hash());
+        $store = Understudy::for(\Rasuvaeff\Yii3Filestorage\Store\StoreInterface::class);
+        Understudy::forwarding($store, $this->store);
+        when(static fn(): ?\Psr\Http\Message\StreamInterface => $store->stream(Arg::any()))->returns(null);
+
+        $tester = $this->run(
+            new VerifyCommand(new StoreRegistry([$store]), $this->repository),
+            ['--deep' => true],
+        );
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string($tester->getDisplay())->contains(sprintf('missing: a (%s)', $file->relativePath));
+    }
+
+    /**
+     * An empty chunk before EOF is a stalled read, not the end of the data —
+     * but the deep hash loop treats it as one and hashes what it got. The
+     * recorded hash was of the whole body, so the row reports as corrupt; what
+     * matters is that the loop *stopped* instead of spinning on the stall.
+     */
+    public function deepVerifyStopsHashingAtAStalledRead(): void
+    {
+        $file = $this->storeFile('a', hash: $this->hash());
+        $store = Understudy::for(\Rasuvaeff\Yii3Filestorage\Store\StoreInterface::class);
+        Understudy::forwarding($store, $this->store);
+        when(static fn(): ?\Psr\Http\Message\StreamInterface => $store->stream(Arg::any()))
+            ->returns(StallingStream::midStream('hello'));
+
+        $tester = $this->run(
+            new VerifyCommand(new StoreRegistry([$store]), $this->repository),
+            ['--deep' => true],
+        );
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string($tester->getDisplay())->contains(sprintf('corrupt: a (%s)', $file->relativePath));
+        Assert::string($tester->getDisplay())->contains('0 rows without an object, 1 with the wrong content.');
+    }
+
     // ---- backfill-hash --------------------------------------------------
 
     public function backfillWritesNothingWithoutApply(): void
@@ -807,9 +1115,49 @@ final class OperationsCommandsTest
     {
         $this->storeFile('a');
 
-        $this->run(new BackfillHashCommand($this->registry(), $this->repository), ['--apply' => true]);
+        $tester = $this->run(new BackfillHashCommand($this->registry(), $this->repository), ['--apply' => true]);
 
         Assert::same($this->repository->find('a')?->contentHash, $this->hash());
+        // A clean run says nothing about unreadable rows — "0 rows could not
+        // be read" is noise an operator learns to skip past.
+        Assert::string($tester->getDisplay())->notContains('could not be read');
+    }
+
+    /**
+     * The page budget shrinks as the cursor advances: 700 rows with a limit of
+     * 600 must hash exactly 600. A budget that grew with what was already seen
+     * (limit + seen) would page 500 + 500 and hash all 700.
+     */
+    public function backfillHashesExactlyTheLimitAcrossPages(): void
+    {
+        for ($i = 0; $i < 700; ++$i) {
+            $this->storeFile("r{$i}", contents: (string) $i);
+        }
+
+        $display = $this->run(
+            new BackfillHashCommand($this->registry(), $this->repository),
+            ['--apply' => true, '--limit' => '600'],
+        )->getDisplay();
+
+        Assert::string($display)->contains('Hashed 600 of 600 rows.');
+    }
+
+    /**
+     * The same shrinking budget on verify: 700 rows, a limit of 600 — exactly
+     * 600 checked, however many pages it takes.
+     */
+    public function verifyChecksExactlyTheLimitAcrossPages(): void
+    {
+        for ($i = 0; $i < 700; ++$i) {
+            $this->row("r{$i}", 'common', 5);
+        }
+
+        $display = $this->run(
+            new VerifyCommand($this->registry(), $this->repository),
+            ['--limit' => '600'],
+        )->getDisplay();
+
+        Assert::string($display)->contains('Checked 600 rows.');
     }
 
     /**
@@ -835,6 +1183,29 @@ final class OperationsCommandsTest
 
         Assert::string($tester->getDisplay())->contains('unreadable: a');
         Assert::null($this->repository->find('a')?->contentHash);
+    }
+
+    /**
+     * A stalled read ends the hash loop with whatever was read — here, nothing.
+     * The digest of the empty string is stored honestly; a run over a stalled
+     * object produces a row `filestorage:verify --deep` will flag, not a
+     * silently-spun loop or a half-body digest.
+     */
+    public function backfillStoresTheHashOfWhatItReadWhenTheStreamStalls(): void
+    {
+        $this->storeFile('a');
+        $store = Understudy::for(\Rasuvaeff\Yii3Filestorage\Store\StoreInterface::class);
+        Understudy::forwarding($store, $this->store);
+        when(static fn(): ?\Psr\Http\Message\StreamInterface => $store->stream(Arg::any()))
+            ->returns(StallingStream::midStream('hello'));
+
+        $tester = $this->run(
+            new BackfillHashCommand(new StoreRegistry([$store]), $this->repository),
+            ['--apply' => true],
+        );
+
+        Assert::same($this->repository->find('a')?->contentHash, hash('sha256', ''));
+        Assert::string($tester->getDisplay())->contains('Hashed 1 of 1 row.');
     }
 
 
@@ -1091,7 +1462,7 @@ final class OperationsCommandsTest
         $this->row('b', 'documents', 200);
         $this->row('c', 'documents', 300);
 
-        $display = $this->normalise($this->run(new StatCommand($this->repository))->getDisplay());
+        $display = $this->flatten($this->run(new StatCommand($this->repository))->getDisplay());
 
         Assert::string($display)->contains('avatars 1 100 B');
         Assert::string($display)->contains('documents 2 500 B');
@@ -1111,6 +1482,39 @@ final class OperationsCommandsTest
             storeName: 'archive',
             groupName: 'common',
             relativePath: 'a/original.bin',
+            originalName: 'a.txt',
+            size: 5,
+            createdAt: $this->at('00:00'),
+        ));
+
+        $display = $this->run(new StatCommand($this->repository))->getDisplay();
+
+        Assert::string($display)->contains('Distinct objects: 2');
+        Assert::string($display)->contains('No rows share an object.');
+    }
+
+    /**
+     * The store and the path are joined by a separator in the identity key,
+     * and the separator is load-bearing: store `a` holding `bc/x` and store
+     * `ab` holding `c/x` are two objects, while a key built without the
+     * separator collides into one "shared" object that does not exist.
+     */
+    public function statDistinguishesStoreNameFromPathAtTheBoundary(): void
+    {
+        $this->repository->save(File::create(
+            id: 'a',
+            storeName: 'a',
+            groupName: 'common',
+            relativePath: 'bc/original.bin',
+            originalName: 'a.txt',
+            size: 5,
+            createdAt: $this->at('00:00'),
+        ));
+        $this->repository->save(File::create(
+            id: 'b',
+            storeName: 'ab',
+            groupName: 'common',
+            relativePath: 'c/original.bin',
             originalName: 'a.txt',
             size: 5,
             createdAt: $this->at('00:00'),
@@ -1172,8 +1576,10 @@ final class OperationsCommandsTest
         // and this note is the only place the reader is told where to get the
         // withheld figures. Whitespace and the note gutter are squeezed out
         // because SymfonyStyle wraps the block.
-        Assert::string((string) preg_replace('/[\s!]+/u', ' ', $display))
-            ->contains('less sharing than there is. For the physical figures, run this');
+        Assert::string($this->flatten($display))->contains(
+            'less sharing than there is. For the physical figures, run this from a maintenance entry point '
+            . 'that leaves ' . FileScopeProviderInterface::class . ' unbound, where the repository sees every row.',
+        );
     }
 
     /**
@@ -1186,7 +1592,7 @@ final class OperationsCommandsTest
         $this->row('a', 'avatars', 100);
         $this->row('b', 'documents', 200);
 
-        $display = $this->normalise(
+        $display = $this->flatten(
             $this->run(new StatCommand($this->repository, $this->tenantScope()))->getDisplay(),
         );
 
@@ -1222,12 +1628,13 @@ final class OperationsCommandsTest
     }
 
     /**
-     * Squeezes the box-drawing padding out of a rendered table so a row can be
-     * asserted as one string.
+     * Squeezes the box-drawing padding, the wrapping and the block gutter of a
+     * rendered report out, so a row or a whole sentence can be asserted as one
+     * string.
      */
-    private function normalise(string $display): string
+    private function flatten(string $display): string
     {
-        return trim((string) preg_replace('/[ \t]+/', ' ', $display));
+        return trim((string) preg_replace('/[\s!]+/u', ' ', $display));
     }
 
     /**
@@ -1355,6 +1762,25 @@ final class OperationsCommandsTest
     {
         $store = Understudy::for(StoreInterface::class);
         when(static fn(): string => $store->name())->returns($name);
+
+        return $store;
+    }
+
+    /**
+     * A maintenance-capable store whose delete fails for exactly one object —
+     * what a permission problem or a partial outage looks like from the
+     * outside. Everything else is answered by the real in-memory store.
+     */
+    private function sickStore(string $name, string $failingPath): MaintenanceStoreInterface
+    {
+        $store = Understudy::for(MaintenanceStoreInterface::class);
+        Understudy::forwarding($store, $this->store);
+        when(static fn(): string => $store->name())->returns($name);
+        when(static fn() => $store->deleteObject(Arg::satisfies(
+            static fn(mixed $object): bool => $object instanceof StoredObjectId
+                && $object->relativePath === $failingPath,
+            'the failing object',
+        )))->throws(new StoreException('the object store is unreachable'));
 
         return $store;
     }

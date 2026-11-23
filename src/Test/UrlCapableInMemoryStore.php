@@ -28,12 +28,12 @@ use Rasuvaeff\Yii3Filestorage\Upload;
  *
  * @api
  */
-final class UrlCapableInMemoryStore implements MaintenanceStoreInterface, StoreUrlProviderInterface
+final readonly class UrlCapableInMemoryStore implements MaintenanceStoreInterface, StoreUrlProviderInterface
 {
     public function __construct(
-        private readonly InMemoryStore $inner,
-        private readonly bool $publicUrls = true,
-        private readonly bool $temporaryUrls = true,
+        private InMemoryStore $inner,
+        private bool $publicUrls = true,
+        private bool $temporaryUrls = true,
     ) {}
 
     #[Override]

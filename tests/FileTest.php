@@ -106,6 +106,36 @@ final class FileTest
         Assert::same(File::fromArray($file->toArray())->toArray(), $file->toArray());
     }
 
+    /**
+     * Every key of the array shape, with its exact value and with the optional
+     * fields *populated*: a flipped key or a dropped one must break this test
+     * rather than surface as a lost column in a database import.
+     */
+    public function toArrayExposesEveryKeyWithItsExactValue(): void
+    {
+        Assert::same(self::file(
+            externalId: 'bucket/object',
+            mimeType: 'image/png',
+            description: 'A picture',
+            contentHash: str_repeat('a', 64),
+            metadata: ['width' => 100],
+        )->toArray(), [
+            'id' => 'file-1',
+            'storeName' => 'upload',
+            'externalId' => 'bucket/object',
+            'groupName' => 'common',
+            'relativePath' => 'common/aa/bb/key/original.bin',
+            'originalName' => 'thing.bin',
+            'mimeType' => 'image/png',
+            'size' => 10,
+            'description' => 'A picture',
+            'contentHash' => str_repeat('a', 64),
+            'metadata' => ['width' => 100],
+            'createdAt' => '2026-08-06T12:00:00.000000+00:00',
+            'updatedAt' => '2026-08-06T12:00:00.000000+00:00',
+        ]);
+    }
+
     public function directoryIsTheParentOfTheStoredObject(): void
     {
         $file = self::file(relativePath: 'avatars/aa/bb/0123456789abcdef/original.png');

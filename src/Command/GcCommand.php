@@ -93,7 +93,7 @@ final class GcCommand extends Command
         }
 
         $orphansRequested = (bool) $input->getOption('orphans');
-        if ($orphansRequested && $this->scopes !== null) {
+        if ($orphansRequested && $this->scopes instanceof \Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface) {
             $io->error($this->scopedSweepRefusal());
             if (Json::enabled($input)) {
                 Json::emit($output, [
@@ -147,7 +147,7 @@ final class GcCommand extends Command
      */
     private function collectBlobs(SymfonyStyle $io, bool $apply, int $limit): ?int
     {
-        if ($this->ledger === null) {
+        if (!$this->ledger instanceof \Rasuvaeff\Yii3Filestorage\Store\BlobLedgerInterface) {
             $io->text('No blob ledger is bound, so there are no shared blobs to collect.');
 
             return null;
@@ -185,7 +185,7 @@ final class GcCommand extends Command
         while ($attempts < $limit) {
             $attempts++;
             $lease = $this->ledger->claimForDeletion($this->clock->now(), $this->clock->now()->add($this->leaseTtl));
-            if ($lease === null) {
+            if (!$lease instanceof \Rasuvaeff\Yii3Filestorage\Store\BlobLease) {
                 break;
             }
 
@@ -375,12 +375,12 @@ final class GcCommand extends Command
      */
     private function ledgerKnows(string $storeName, string $relativePath): bool
     {
-        if ($this->ledger === null) {
+        if (!$this->ledger instanceof \Rasuvaeff\Yii3Filestorage\Store\BlobLedgerInterface) {
             return false;
         }
 
         try {
-            return $this->ledger->find(BlobId::create($storeName, $relativePath)) !== null;
+            return $this->ledger->find(BlobId::create($storeName, $relativePath)) instanceof \Rasuvaeff\Yii3Filestorage\Store\BlobRecord;
         } catch (\InvalidArgumentException) {
             // Not a content-addressed path at all, so the ledger could never
             // own it.

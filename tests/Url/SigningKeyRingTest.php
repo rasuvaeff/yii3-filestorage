@@ -75,13 +75,25 @@ final class SigningKeyRingTest
      * The key id travels inside a dot-separated envelope, so an id containing a
      * separator would let one token be re-split into a different one.
      */
+    /**
+     * The whole message, with the offending id and the pattern it violated:
+     * the pattern is the fix, and a message that lost either half of the
+     * concatenation would still contain the tail.
+     */
     #[DataProvider('invalidKeyIdProvider')]
     public function aKeyIdThatCouldBreakTheEnvelopeIsRejected(string $keyId): void
     {
-        Expect::exception(InvalidConfigException::class)
-            ->withMessageContaining('letters, digits, "_" and "-" only');
-
-        new SigningKeyRing($keyId, [$keyId => str_repeat('a', 32)]);
+        try {
+            new SigningKeyRing($keyId, [$keyId => str_repeat('a', 32)]);
+            Assert::true(actual: false, message: 'the key id should have been rejected');
+        } catch (InvalidConfigException $e) {
+            Assert::same(
+                $e->getMessage(),
+                "Invalid signing key id \"{$keyId}\". Key ids match "
+                . '/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}\z/'
+                . ' — letters, digits, "_" and "-" only',
+            );
+        }
     }
 
     /**

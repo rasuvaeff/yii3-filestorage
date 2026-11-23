@@ -31,7 +31,7 @@
 
 ## Требования
 
-- PHP 8.3+
+- PHP 8.3 – 8.6
 - `ext-fileinfo`
 - `psr/clock` ^1.0
 - `psr/http-message` ^2.0, `psr/http-factory` ^1.0 (плюс реализация PSR-17 в

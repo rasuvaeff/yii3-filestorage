@@ -273,14 +273,14 @@ final class UploadPolicyTest
 
         try {
             (new UploadPolicy(maxBytes: 4))->assertAcceptable($upload, 'text/plain');
-            Assert::true(false, 'a policy violation was expected');
+            Assert::true(actual: false, message: 'a policy violation was expected');
         } catch (PolicyViolationException $e) {
             Assert::instanceOf($e, UploadSizeException::class);
         }
 
         try {
             (new UploadPolicy(allowedMimeTypes: ['image/png']))->assertAcceptable($upload, 'text/plain');
-            Assert::true(false, 'a policy violation was expected');
+            Assert::true(actual: false, message: 'a policy violation was expected');
         } catch (PolicyViolationException $e) {
             Assert::instanceOf($e, UnsupportedMediaTypeException::class);
         }
@@ -289,6 +289,65 @@ final class UploadPolicyTest
     private function upload(string $body): Upload
     {
         return Upload::fromStream($this->factory->createStream($body), 'thing.bin', $this->factory);
+    }
+
+    /**
+     * The rejection must name what was actually detected: a report of
+     * "<unrecognised>" for a type the detector did recognise would send the
+     * operator hunting for a detection bug that does not exist.
+     */
+    public function aMismatchNamesTheDetectedType(): void
+    {
+        $policy = new UploadPolicy(['image/png']);
+
+        Expect::exception(UnsupportedMediaTypeException::class)->withMessageContaining(
+            'Media type image/jpeg is not accepted here. Allowed: image/png',
+        );
+        $policy->assertAcceptable($this->upload('jpeg'), 'image/jpeg');
+    }
+
+    /**
+     * "requires dimensions" is about images it can measure; a plain text
+     * upload has no dimensions to require and must sail through.
+     */
+    #[ExpectNoAssertions]
+    public function aNonRasterUploadNeedsNoDimensionsEvenWhenTheyAreRequired(): void
+    {
+        $policy = new UploadPolicy(maxPixels: 0, requireImageDimensions: true);
+        $policy->assertAcceptable($this->upload('plain text'), 'text/plain');
+    }
+
+    /**
+     * Bytes that carry a raster signature but no parsable image are still
+     * storable when the group does not insist on dimensions: the check is
+     * skipped, not treated as a violation.
+     */
+    #[ExpectNoAssertions]
+    public function aCorruptRasterIsAcceptedWhenDimensionsAreNotRequired(): void
+    {
+        $policy = new UploadPolicy(maxPixels: 1000, requireImageDimensions: false);
+        $policy->assertAcceptable($this->upload('raster bytes nothing can parse'), 'image/png');
+    }
+
+    /**
+     * maxPixels 0 means "no pixel cap" — an image of any size is fine, even
+     * when the group still insists the dimensions be measurable.
+     */
+    #[ExpectNoAssertions]
+    public function aZeroPixelCapImposesNoLimitEvenWithDimensionsRequired(): void
+    {
+        $policy = new UploadPolicy(maxPixels: 0, requireImageDimensions: true);
+        $policy->assertAcceptable($this->upload($this->png(500, 400)), 'image/png');
+    }
+
+    /** A picture of exactly the pixel cap fits; one pixel more does not. */
+    public function thePixelCapIsInclusive(): void
+    {
+        $atCap = new UploadPolicy(maxPixels: 1, requireImageDimensions: true);
+        $atCap->assertAcceptable($this->upload($this->png(1, 1)), 'image/png');
+
+        Expect::exception(PolicyViolationException::class)->withMessageContaining('over the 1 pixel limit');
+        (new UploadPolicy(maxPixels: 1, requireImageDimensions: true))->assertAcceptable($this->upload($this->png(2, 1)), 'image/png');
     }
 
     /**

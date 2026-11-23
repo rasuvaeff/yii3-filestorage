@@ -93,7 +93,6 @@ final readonly class DeliveryPolicyRegistry
      */
     private static function boolOption(array $policy, string $key, bool $default, string $group): bool
     {
-        /** @var mixed $value */
         $value = $policy[$key] ?? $default;
         if (!\is_bool($value)) {
             throw new InvalidArgumentException("{$key} for group \"{$group}\" must be a boolean");

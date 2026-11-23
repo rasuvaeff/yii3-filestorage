@@ -18,6 +18,7 @@ use Rasuvaeff\Yii3Filestorage\Store\RangeReadableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
 use Rasuvaeff\Yii3Filestorage\Store\StoreUrlProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\StallingStream;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Testo\Assert;
 use Testo\Codecov\Covers;
@@ -126,6 +127,25 @@ final class InMemoryStoreTest
         }
     }
 
+    /**
+     * An empty chunk before EOF is a stalled read, not the end of the upload:
+     * storing the bytes read so far would store a truncated object as a
+     * complete one. The write fails, and nothing at all is left behind.
+     */
+    public function aStalledReadMidStreamIsAnErrorRatherThanATruncation(): void
+    {
+        $upload = Upload::fromStream(StallingStream::midStream('hello'), 'thing.txt', $this->factory);
+
+        try {
+            $this->store->write($upload, 'docs', new RandomPathGenerator(), 'text/plain');
+            Assert::true(actual: false, message: 'the stalled write should have been refused');
+        } catch (StoreException $e) {
+            Assert::string($e->getMessage())->contains('before EOF');
+            Assert::same($this->store->paths(), [], 'nothing was stored');
+            Assert::same($this->store->writeCount(), 0);
+        }
+    }
+
     public function deleteRemovesTheWholeDirectoryIncludingSiblings(): void
     {
         $file = $this->write('original');
@@ -134,6 +154,55 @@ final class InMemoryStoreTest
         $this->store->delete($file);
 
         Assert::same($this->store->paths(), []);
+    }
+
+    /**
+     * The prefix is the directory *with its separator*: a sibling key
+     * directory whose name merely extends another's (`key` vs `key-extra`)
+     * is a different object tree, and deleting one must not swallow the
+     * other's bytes.
+     */
+    public function deleteDoesNotSwallowASiblingDirectoryWhoseNameExtendsItsOwn(): void
+    {
+        $file = $this->write('original');
+        $neighbour = $file->directory() . '-extra/original.txt';
+        $this->store->corrupt($neighbour, 'other bytes');
+
+        $this->store->delete($file);
+
+        Assert::null($this->store->bytesAt($file->relativePath), 'the deleted object is gone');
+        Assert::same($this->store->bytesAt($neighbour), 'other bytes', 'the neighbour survived');
+    }
+
+    /**
+     * A body larger than one read-chunk accumulates across the loop: a
+     * per-chunk overwrite would store only the last piece under the right path.
+     */
+    public function aMultiChunkBodyIsStoredWhole(): void
+    {
+        $body = str_repeat('a', 262_144) . 'tail';
+        $result = $this->store->write($this->upload($body), 'docs', new RandomPathGenerator(), 'text/plain');
+
+        Assert::same($result->size, 262_148);
+        Assert::same($this->store->bytesAt($result->relativePath), $body);
+    }
+
+    /**
+     * The cap is exclusive: a body exactly at the limit is stored, and only
+     * crossing it refuses.
+     */
+    public function aBodyExactlyAtTheByteCapIsStored(): void
+    {
+        $result = $this->store->write(
+            $this->upload('1234567890'),
+            'docs',
+            new RandomPathGenerator(),
+            'text/plain',
+            maxBytes: 10,
+        );
+
+        Assert::same($result->size, 10);
+        Assert::same($this->store->writeCount(), 1);
     }
 
     public function theInventoryPagesAndResumes(): void

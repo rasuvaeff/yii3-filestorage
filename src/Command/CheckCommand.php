@@ -121,7 +121,7 @@ final class CheckCommand extends Command
         }
 
         $io->section('Tenancy');
-        if ($this->scopes === null) {
+        if (!$this->scopes instanceof \Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface) {
             $io->writeln('Single-scope: no FileScopeProviderInterface is bound, so no tenant predicate is applied.');
         } else {
             $io->writeln(sprintf(
@@ -130,7 +130,7 @@ final class CheckCommand extends Command
                 $this->scopes->currentScopeId() ?? '(none)',
             ));
 
-            if ($this->scopedFiles === null) {
+            if (!$this->scopedFiles instanceof \Rasuvaeff\Yii3Filestorage\Repository\ScopedFileResolverInterface) {
                 // The failure this exists to pre-empt is not a wrong answer, it
                 // is a container error on the first signed download: `-web`
                 // requires the resolver outright. A diagnostic here names the
@@ -189,13 +189,13 @@ final class CheckCommand extends Command
         }
 
         if ($errors !== []) {
-            self::maybeJson($input, $output, $log, false, $errors, $warnings, $storeRows, $groupRows);
+            $this->maybeJson($input, $output, $log, ok: false, errors: $errors, warnings: $warnings, storeRows: $storeRows, groupRows: $groupRows);
 
             return Command::FAILURE;
         }
 
         $io->success('File storage configuration looks sound.');
-        self::maybeJson($input, $output, $log, true, $errors, $warnings, $storeRows, $groupRows);
+        $this->maybeJson($input, $output, $log, ok: true, errors: $errors, warnings: $warnings, storeRows: $storeRows, groupRows: $groupRows);
 
         return Command::SUCCESS;
     }
@@ -207,7 +207,7 @@ final class CheckCommand extends Command
      * @param list<array{name: string, class: string, capabilities: list<string>, default: bool}> $storeRows
      * @param list<array{group: string, accepts: list<string>, maxBytes: int, maxPixels: int, directPublicUrl: bool}> $groupRows
      */
-    private static function maybeJson(
+    private function maybeJson(
         InputInterface $input,
         OutputInterface $output,
         array $log,

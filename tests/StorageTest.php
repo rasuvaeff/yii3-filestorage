@@ -33,6 +33,7 @@ use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
 use Rasuvaeff\Yii3Filestorage\Store\StoreUrlProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\StallingStream;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Rasuvaeff\Yii3Filestorage\Url\ProxyUrlGeneratorInterface;
 use RuntimeException;
@@ -222,10 +223,12 @@ final class StorageTest
             $storage->remove($file->id);
             Assert::true(actual: false, message: 'remove() should have reported the failure');
         } catch (RemoveException $e) {
-            Assert::true(
-                str_contains($e->getMessage(), 'from store "memory"; it is now an orphan'),
-                'the message spans both halves of its concatenation',
+            Assert::same(
+                $e->getMessage(),
+                "Removed metadata for \"{$file->id}\" but could not delete \"{$file->relativePath}\" "
+                . 'from store "memory"; it is now an orphan for filestorage:gc',
             );
+            Assert::same($e->getCode(), 0);
             Assert::null($this->repository->find($file->id), 'the row is gone');
             Assert::same($this->store->bytesAt($file->relativePath), 'x', 'the object is not');
         }
@@ -245,6 +248,8 @@ final class StorageTest
             $storage->add($this->upload('doomed'));
             Assert::true(actual: false, message: 'add() should have failed');
         } catch (AddException $e) {
+            Assert::string($e->getMessage())->contains('Failed to persist metadata');
+            Assert::same($e->getCode(), 0);
             Assert::same($e->getPrevious()?->getMessage(), 'database is down');
             Assert::same($this->store->paths(), [], 'the object was compensated away');
         }
@@ -334,6 +339,57 @@ final class StorageTest
     public function contentHashIsNullUntilHashingIsEnabled(): void
     {
         Assert::null($this->storage()->add($this->upload('hello'))->contentHash);
+    }
+
+    /**
+     * An empty chunk before EOF is a stalled read, not the end of the object:
+     * handing back the bytes read so far would silently truncate whatever is
+     * being served. The read fails loudly instead.
+     */
+    public function contentRefusesAStreamThatStallsMidRead(): void
+    {
+        $storage = $this->storage(store: $this->stallingStore());
+        $file = $storage->add($this->upload('hello'));
+
+        Expect::exception(StoreException::class)
+            ->withMessageContaining("Could not read file \"{$file->id}\" before EOF");
+
+        $storage->content($file);
+    }
+
+    /**
+     * The same stall during the optional integrity hash: failing loudly beats
+     * storing a digest computed over part of the body — the file is not stored
+     * at all, so the caller retries instead of keeping a hash that lies. The
+     * stall rides on the upload's own stream, which is what the hash loop
+     * reads; MIME detection rewinds it, so the loop still meets the stall.
+     */
+    public function hashingRefusesAStreamThatStallsMidRead(): void
+    {
+        $storage = $this->storage(integrityHashMaxBytes: 1_000);
+        $upload = Upload::fromStream(StallingStream::midStream('hello'), 'thing.txt', $this->factory);
+
+        Expect::exception(StoreException::class)
+            ->withMessageContaining('Could not hash upload: the stream returned no bytes before EOF');
+
+        $storage->add($upload);
+    }
+
+    /**
+     * A store that serves every object through a stream whose first read
+     * stalls — the harness for the two tests above. Writes are answered by the
+     * real in-memory store.
+     */
+    private function stallingStore(): StoreInterface
+    {
+        $store = Understudy::for(StoreInterface::class);
+        Understudy::forwarding($store, $this->store);
+        when(fn(): ?\Psr\Http\Message\StreamInterface => $store->stream(Arg::any()))
+            ->answers(fn(Invocation $call): \Rasuvaeff\Yii3Filestorage\Tests\Support\StallingStream => StallingStream::midStream(
+                $this->store->bytesAt($call->args[0]->relativePath) ?? '',
+            ));
+
+        return $store;
     }
 
     public function contentHashIsComputedWhenEnabled(): void
