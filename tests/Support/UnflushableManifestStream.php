@@ -73,7 +73,12 @@ final class UnflushableManifestStream
         // mkdir(); anything else does not exist, so there is no manifest to
         // skip by. The stat array is the full 26-entry shape PHP expects —
         // index/key "mode" 040755 is what makes is_dir() answer true.
-        if ($path === 'fs-unflushable://') {
+        // dirname() builds the parent with the platform separator, so on
+        // Windows the root arrives as `fs-unflushable:\` — accept every
+        // spelling of the scheme root, and nothing else.
+        $root = substr($path, 0, strlen('fs-unflushable://'));
+        $rest = substr($path, strlen('fs-unflushable://'));
+        if ($root === 'fs-unflushable://' && str_replace('\\', '/', $rest) === '') {
             return [
                 0, 0, 0o040755, 1, 0, 0, 0, 0, 0, 0, 0, 4096, 0,
                 'dev' => 0,
