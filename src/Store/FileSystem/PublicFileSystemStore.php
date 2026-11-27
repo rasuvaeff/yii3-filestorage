@@ -19,6 +19,7 @@ use Rasuvaeff\Yii3Filestorage\Store\DerivativeUrlProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectLayoutInterface;
 use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectSet;
 use Rasuvaeff\Yii3Filestorage\Store\MaintenanceStoreInterface;
+use Rasuvaeff\Yii3Filestorage\Store\PubliclyReadableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\QuarantinedObject;
 use Rasuvaeff\Yii3Filestorage\Store\RangeReadableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
@@ -51,6 +52,7 @@ final readonly class PublicFileSystemStore implements
     ContentAddressableStoreInterface,
     DerivativeUrlProviderInterface,
     MaintenanceStoreInterface,
+    PubliclyReadableStoreInterface,
     RangeReadableStoreInterface,
     StoreUrlProviderInterface
 {
@@ -88,6 +90,15 @@ final readonly class PublicFileSystemStore implements
     public function webRoot(): ?string
     {
         return $this->webRoot;
+    }
+
+    /**
+     * Always: the web server serves the root.
+     */
+    #[Override]
+    public function isPubliclyReadable(): bool
+    {
+        return true;
     }
 
     #[Override]

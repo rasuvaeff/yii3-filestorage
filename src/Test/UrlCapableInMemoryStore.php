@@ -13,6 +13,7 @@ use Rasuvaeff\Yii3Filestorage\Policy\DeliveryOptions;
 use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectLayoutInterface;
 use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectSet;
 use Rasuvaeff\Yii3Filestorage\Store\MaintenanceStoreInterface;
+use Rasuvaeff\Yii3Filestorage\Store\PubliclyReadableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\QuarantinedObject;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
 use Rasuvaeff\Yii3Filestorage\Store\StoreResult;
@@ -31,13 +32,29 @@ use Rasuvaeff\Yii3Filestorage\Upload;
  *
  * @api
  */
-final readonly class UrlCapableInMemoryStore implements MaintenanceStoreInterface, StoreUrlProviderInterface
+final readonly class UrlCapableInMemoryStore implements
+    MaintenanceStoreInterface,
+    PubliclyReadableStoreInterface,
+    StoreUrlProviderInterface
 {
+    /**
+     * @param bool $publiclyReadable Models a public bucket: whether
+     *        `filestorage:check` should treat every object as readable by
+     *        anyone. Independent of `$publicUrls` — a private bucket builds
+     *        object URLs too.
+     */
     public function __construct(
         private InMemoryStore $inner,
         private bool $publicUrls = true,
         private bool $temporaryUrls = true,
+        private bool $publiclyReadable = false,
     ) {}
+
+    #[Override]
+    public function isPubliclyReadable(): bool
+    {
+        return $this->publiclyReadable;
+    }
 
     #[Override]
     public function publicUrl(File $file): ?string

@@ -831,4 +831,99 @@ final class CheckCommandTest
 
         return $tester;
     }
+
+    // ---- follow-ups: public-store marker, tenant in the key -------------------
+
+    /**
+     * A store other than `PublicFileSystemStore` — a public bucket — says it
+     * serves every object without credentials, and the active-content rule
+     * applies to it the same way.
+     */
+    public function aStoreThatSaysItIsPubliclyReadableIsTreatedAsPublic(): void
+    {
+        $store = new UrlCapableInMemoryStore(new InMemoryStore('bucket', $this->factory), publiclyReadable: true);
+        $tester = $this->run(store: $store);
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string($this->flatten($tester->getDisplay()))->contains(
+            'Group "*" accepts any media type, and store "bucket" serves every object it holds at a public URL',
+        );
+    }
+
+    public function aPubliclyReadableStoreIsSoundWithInertAllowLists(): void
+    {
+        $store = new UrlCapableInMemoryStore(new InMemoryStore('bucket', $this->factory), publiclyReadable: true);
+        $tester = $this->run(
+            store: $store,
+            policies: new PolicyRegistry(['*' => new UploadPolicy(allowedMimeTypes: ['image/png'])]),
+            json: true,
+        );
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        Assert::string($tester->getDisplay())->contains('"public"');
+    }
+
+    public function aStoreThatIsNotPubliclyReadableHasNoPublicCapability(): void
+    {
+        $store = new UrlCapableInMemoryStore(new InMemoryStore('bucket', $this->factory), publiclyReadable: false);
+        $tester = $this->run(store: $store, json: true);
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        Assert::false(str_contains($tester->getDisplay(), '"public"'));
+    }
+
+    /**
+     * `ownedPrefixes` and `webRoot` are `PublicFileSystemStore` constructor
+     * arguments; a public bucket has neither and is not warned about them.
+     */
+    public function theFilesystemWarningsStayWithTheFilesystemStore(): void
+    {
+        $store = new UrlCapableInMemoryStore(new InMemoryStore('bucket', $this->factory), publiclyReadable: true);
+        $display = $this->flatten($this->run(store: $store)->getDisplay());
+
+        Assert::false(str_contains($display, 'ownedPrefixes'));
+        Assert::false(str_contains($display, 'webRoot'));
+    }
+
+    /**
+     * Under a bound scope provider, a generator that drops the scope from the
+     * key pools every tenant's bytes under the tenant dedup scopes. Core cannot
+     * see the dedup scope (`-db`'s `DedupScope::Global` shares on purpose), so
+     * this is a warning; `-db` refuses the pair at boot under the other scopes.
+     */
+    public function aContentKeyGeneratorThatIgnoresTheTenantIsAWarningInTenantMode(): void
+    {
+        $tester = $this->run(
+            store: new FileSystemStore('upload', $this->root, $this->factory, layout: new FlatSiblingLayout()),
+            scopes: $this->tenantScope(),
+            scopedFiles: Understudy::for(ScopedFileResolverInterface::class),
+            contentKeys: new FlatSha256KeyGenerator(prefix: 'blobs'),
+        );
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        $display = $this->flatten($tester->getDisplay());
+        Assert::string($display)->contains(FlatSha256KeyGenerator::class . ' ignores the tenant');
+        Assert::string($display)->contains('only with the "global" deduplication scope');
+    }
+
+    public function aTenantlessGeneratorWithoutAScopeProviderIsNotMentioned(): void
+    {
+        $tester = $this->run(
+            store: new FileSystemStore('upload', $this->root, $this->factory, layout: new FlatSiblingLayout()),
+            contentKeys: new FlatSha256KeyGenerator(prefix: 'blobs'),
+        );
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        Assert::false(str_contains($tester->getDisplay(), 'ignores the tenant'));
+    }
+
+    public function theDefaultGeneratorKeepsTheTenant(): void
+    {
+        $tester = $this->run(
+            scopes: $this->tenantScope(),
+            scopedFiles: Understudy::for(ScopedFileResolverInterface::class),
+        );
+
+        Assert::false(str_contains($tester->getDisplay(), 'ignores the tenant'));
+    }
 }

@@ -23,6 +23,7 @@ use Rasuvaeff\Yii3Filestorage\Store\DerivativeAwareStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\FileSystem\PublicFileSystemStore;
 use Rasuvaeff\Yii3Filestorage\Store\Layout\LayoutCompatibility;
 use Rasuvaeff\Yii3Filestorage\Store\MaintenanceStoreInterface;
+use Rasuvaeff\Yii3Filestorage\Store\PubliclyReadableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\RangeReadableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
@@ -212,6 +213,17 @@ final class CheckCommand extends Command
                 );
             }
 
+            // A warning, not an error: `-db`'s global deduplication scope
+            // shares across tenants on purpose, and that scope is not visible
+            // from here. `-db` refuses the pair itself under the other scopes.
+            $tenantProblem = LayoutCompatibility::tenantProblem($this->contentKeys ?? new Sha256KeyGenerator());
+            if ($tenantProblem !== null) {
+                $warnings[] = "{$tenantProblem}. A FileScopeProviderInterface is bound, so this is right only with "
+                    . 'the "global" deduplication scope; rasuvaeff/yii3-filestorage-db refuses the generator under '
+                    . 'the "tenant" and "tenant-group" scopes when it is built. Use a generator that keeps the scope '
+                    . 'in the key.';
+            }
+
             $warnings[] = 'Tenancy is on, so `filestorage:gc --orphans` refuses and `filestorage:stat` withholds its '
                 . 'physical figures: both compare tenant-filtered rows against unfiltered objects. Run them from a '
                 . 'maintenance entry point that leaves the scope provider unbound.';
@@ -369,23 +381,27 @@ final class CheckCommand extends Command
     /**
      * The first registered store that serves every object it holds publicly.
      *
-     * Only `PublicFileSystemStore` is known to: it lives under a web root by
-     * definition. `StoreUrlProviderInterface::publicUrl()` answering is not
-     * evidence — a Flysystem S3 adapter builds an object URL for a private
-     * bucket too, and that URL answers 403. A public bucket behind such a store
-     * is the operator's knowledge, not something this command can see.
+     * Only the store can say so ({@see PubliclyReadableStoreInterface}):
+     * `StoreUrlProviderInterface::publicUrl()` answering is not evidence — a
+     * Flysystem S3 adapter builds an object URL for a private bucket too, and
+     * that URL answers 403.
      *
      * @return non-empty-string|null
      */
     private function firstPublicStore(): ?string
     {
         foreach ($this->stores->names() as $name) {
-            if ($this->stores->get($name) instanceof PublicFileSystemStore) {
+            if ($this->isPublic($this->stores->get($name))) {
                 return $name;
             }
         }
 
         return null;
+    }
+
+    private function isPublic(StoreInterface $store): bool
+    {
+        return $store instanceof PubliclyReadableStoreInterface && $store->isPubliclyReadable();
     }
 
     /**
@@ -428,6 +444,9 @@ final class CheckCommand extends Command
         }
         if ($store instanceof DerivativeAwareStoreInterface) {
             $capabilities[] = 'derivatives';
+        }
+        if ($this->isPublic($store)) {
+            $capabilities[] = 'public';
         }
 
         return $capabilities;

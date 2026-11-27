@@ -265,4 +265,66 @@ final class LayoutCompatibilityTest
             }
         };
     }
+
+    // ---- tenant in the key (follow-up to -db wave 2) ---------------------------
+
+    #[DataProvider('tenantKeepingGeneratorProvider')]
+    public function aGeneratorThatKeepsTheScopeHasNoTenantProblem(ContentAddressedKeyGeneratorInterface $keys): void
+    {
+        Assert::null(LayoutCompatibility::tenantProblem($keys));
+        LayoutCompatibility::assertTenantKept($keys);
+    }
+
+    public static function tenantKeepingGeneratorProvider(): iterable
+    {
+        yield 'directory keys' => [new Sha256KeyGenerator()];
+        yield 'flat keys without a prefix' => [new FlatSha256KeyGenerator()];
+    }
+
+    public function aPrefixedFlatGeneratorIgnoresTheTenant(): void
+    {
+        $problem = (string) LayoutCompatibility::tenantProblem(new FlatSha256KeyGenerator(prefix: 'blobs'));
+
+        Assert::string($problem)->contains(FlatSha256KeyGenerator::class . ' ignores the tenant');
+        Assert::string($problem)->contains('"tenant-a" and "tenant-b" both get "blobs/ab/cd/abcd');
+    }
+
+    /**
+     * `-db` probes with its own scope keys (`sha/<tenant>/<group>`), so the
+     * scopes are parameters and appear in the message.
+     */
+    public function theProbeScopesAreTheCallers(): void
+    {
+        $problem = (string) LayoutCompatibility::tenantProblem(
+            new FlatSha256KeyGenerator(prefix: 'blobs'),
+            'sha/aaaa/avatars',
+            'sha/bbbb/avatars',
+        );
+
+        Assert::string($problem)->contains('"sha/aaaa/avatars" and "sha/bbbb/avatars" both get');
+        Assert::null(LayoutCompatibility::tenantProblem(new Sha256KeyGenerator(), 'sha/aaaa/avatars', 'sha/bbbb/avatars'));
+    }
+
+    public function aGeneratorRefusingTheProbeScopeIsAProblem(): void
+    {
+        $problem = (string) LayoutCompatibility::tenantProblem(new Sha256KeyGenerator(), 'tenant a', 'tenant-b');
+
+        Assert::string($problem)->contains(Sha256KeyGenerator::class . ' refused a probe scope');
+        Assert::string($problem)->contains('Invalid content-addressed scope "tenant a"');
+    }
+
+    public function theSameScopeTwiceProvesNothingAndIsRefused(): void
+    {
+        Expect::exception(\InvalidArgumentException::class)
+            ->withMessage('The two probe scopes must differ');
+
+        LayoutCompatibility::tenantProblem(new Sha256KeyGenerator(), 'tenant-a', 'tenant-a');
+    }
+
+    public function assertingATenantlessGeneratorThrows(): void
+    {
+        Expect::exception(InvalidConfigException::class);
+
+        LayoutCompatibility::assertTenantKept(new FlatSha256KeyGenerator(prefix: 'blobs'));
+    }
 }

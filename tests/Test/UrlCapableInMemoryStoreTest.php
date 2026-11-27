@@ -11,6 +11,7 @@ use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryOptions;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicy;
 use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectSet;
+use Rasuvaeff\Yii3Filestorage\Store\PubliclyReadableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\QuarantinedObject;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
@@ -162,12 +163,16 @@ final class UrlCapableInMemoryStoreTest
         Assert::same(iterator_to_array($store->quarantined(), preserve_keys: false), []);
     }
 
-    private function store(bool $publicUrls = true, bool $temporaryUrls = true): UrlCapableInMemoryStore
-    {
+    private function store(
+        bool $publicUrls = true,
+        bool $temporaryUrls = true,
+        bool $publiclyReadable = false,
+    ): UrlCapableInMemoryStore {
         return new UrlCapableInMemoryStore(
             new InMemoryStore('memory', new Psr17Factory(), new StaticClock(new DateTimeImmutable('2026-01-01T00:00:00+00:00'))),
             publicUrls: $publicUrls,
             temporaryUrls: $temporaryUrls,
+            publiclyReadable: $publiclyReadable,
         );
     }
 
@@ -187,5 +192,16 @@ final class UrlCapableInMemoryStoreTest
             size: 0,
             createdAt: new DateTimeImmutable('2026-08-06T12:00:00.000000+00:00'),
         );
+    }
+
+    /**
+     * Answering `publicUrl()` is not being public — a private bucket builds
+     * object URLs too — so readability is a separate toggle, off by default.
+     */
+    public function isPubliclyReadableOnlyWhenToldSo(): void
+    {
+        Assert::instanceOf($this->store(), PubliclyReadableStoreInterface::class);
+        Assert::false($this->store()->isPubliclyReadable());
+        Assert::true($this->store(publiclyReadable: true)->isPubliclyReadable());
     }
 }

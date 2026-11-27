@@ -33,6 +33,11 @@ use Rasuvaeff\Yii3Filestorage\Upload;
  * one's derivative goes. A pair passes when deleting a key removes that key
  * and its derivative, and nothing of the other.
  *
+ * {@see self::tenantProblem()} is a different question about the same
+ * generator: whether it keeps the scope in the key at all. A generator that
+ * drops it (`FlatSha256KeyGenerator` with a prefix) gives two tenants'
+ * identical bytes one key, so deduplication would share them across tenants.
+ *
  * Call the `assert*()` form where a store and a generator are combined — a
  * factory, a DI definition, a command — so the mistake surfaces at boot
  * rather than as missing bytes. `filestorage:check` reports the same problems.
@@ -44,6 +49,7 @@ final class LayoutCompatibility
     private const string PROBE_SCOPE = 'probe';
     private const string PROBE_EXTENSION = 'jpg';
     private const string PROBE_MEDIA_TYPE = 'image/jpeg';
+    private const string PROBE_DIGEST = 'abcd0000000000000000000000000000000000000000000000000000000000ef';
 
     private function __construct() {}
 
@@ -104,6 +110,68 @@ final class LayoutCompatibility
         StreamFactoryInterface $streams,
     ): void {
         self::raise(self::pathsProblem($paths, $store->layout(), $streams), $store);
+    }
+
+    /**
+     * Whether the generator keeps the scope in the key: it generates one
+     * digest under two scopes and compares the keys.
+     *
+     * Only the caller knows whether sharing across scopes is intended — `-db`
+     * shares on purpose under its global deduplication scope — so this is a
+     * probe, not a verdict. Pass the scope strings the caller really uses
+     * (`-db`: `DedupScope::keyFor()` for two tenants); the defaults suit a
+     * caller that has none.
+     *
+     * @param non-empty-string $firstScope
+     * @param non-empty-string $secondScope Must differ from `$firstScope`.
+     *
+     * @throws InvalidArgumentException When the two scopes are equal.
+     *
+     * @return non-empty-string|null Why the generator does not keep the two
+     *         scopes apart, or null when it does.
+     */
+    public static function tenantProblem(
+        ContentAddressedKeyGeneratorInterface $keys,
+        string $firstScope = 'tenant-a',
+        string $secondScope = 'tenant-b',
+    ): ?string {
+        if ($firstScope === $secondScope) {
+            throw new InvalidArgumentException('The two probe scopes must differ');
+        }
+
+        $source = 'Content-addressed key generator ' . $keys::class;
+
+        try {
+            $first = $keys->generate($firstScope, self::PROBE_DIGEST, self::PROBE_EXTENSION);
+            $second = $keys->generate($secondScope, self::PROBE_DIGEST, self::PROBE_EXTENSION);
+        } catch (InvalidArgumentException $e) {
+            return "{$source} refused a probe scope: {$e->getMessage()}";
+        }
+
+        if ($first !== $second) {
+            return null;
+        }
+
+        return "{$source} ignores the tenant: identical bytes under the scopes \"{$firstScope}\" and "
+            . "\"{$secondScope}\" both get \"{$first}\", so deduplication would share them across tenants";
+    }
+
+    /**
+     * @param non-empty-string $firstScope
+     * @param non-empty-string $secondScope
+     *
+     * @throws InvalidConfigException When the generator does not keep the scopes apart.
+     * @throws InvalidArgumentException When the two scopes are equal.
+     */
+    public static function assertTenantKept(
+        ContentAddressedKeyGeneratorInterface $keys,
+        string $firstScope = 'tenant-a',
+        string $secondScope = 'tenant-b',
+    ): void {
+        $problem = self::tenantProblem($keys, $firstScope, $secondScope);
+        if ($problem !== null) {
+            throw new InvalidConfigException($problem);
+        }
     }
 
     /**

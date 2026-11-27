@@ -16,6 +16,7 @@ use Rasuvaeff\Yii3Filestorage\Store\FileSystem\FileSystemStore;
 use Rasuvaeff\Yii3Filestorage\Store\FileSystem\PublicFileSystemStore;
 use Rasuvaeff\Yii3Filestorage\Store\Layout\FlatSiblingLayout;
 use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectSet;
+use Rasuvaeff\Yii3Filestorage\Store\PubliclyReadableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\QuarantinedObject;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObject;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
@@ -291,5 +292,15 @@ final class PublicFileSystemStoreTest
             size: 0,
             createdAt: new DateTimeImmutable('2026-08-06T12:00:00.000000+00:00'),
         );
+    }
+
+    /**
+     * The web server serves the root: every object is readable without
+     * credentials, and `filestorage:check` learns that from the store itself.
+     */
+    public function saysItIsPubliclyReadable(): void
+    {
+        Assert::instanceOf($this->store, PubliclyReadableStoreInterface::class);
+        Assert::true($this->store->isPubliclyReadable());
     }
 }
