@@ -91,7 +91,7 @@ final class ImportCommand extends Command
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $io = new SymfonyStyle($input, $output);
-        $apply = $input->getOption('apply') === true;
+        $apply = (bool) ($input->getOptions()['apply'] ?? false);
         $limit = max(1, (int) $input->getOption('limit'));
         $group = $this->stringOption($input, 'group');
         $store = $this->stringOption($input, 'store');

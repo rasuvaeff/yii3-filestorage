@@ -29,6 +29,7 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
 use Testo\Assert;
 use Testo\Codecov\Covers;
+use Testo\Data\DataProvider;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
@@ -888,6 +889,22 @@ final class ImportCommandTest
             $files[0]->metadata['importSourcePath'],
             str_replace('\\', '/', $root) . '/nested/a.txt',
         );
+    }
+
+    #[DataProvider('truthyFlagProvider')]
+    public function readsATruthyApplyAsSet(int|string $flag): void
+    {
+        $this->file('a.txt', 'one');
+
+        $this->run(['--apply' => $flag]);
+
+        Assert::same($this->repository->count(), 1);
+    }
+
+    public static function truthyFlagProvider(): iterable
+    {
+        yield 'integer one' => [1];
+        yield 'string one' => ['1'];
     }
 
     private function file(string $relative, string $contents): void
