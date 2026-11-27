@@ -4,7 +4,7 @@ DI-native file storage for Yii3. One facade over a swappable physical store and
 a swappable metadata repository. PSR-7 streaming, authoritative MIME detection,
 per-group accept and delivery policies. Namespace `Rasuvaeff\Yii3Filestorage\`.
 
-Status `0.x`: the API may still change. The path layout and token format are frozen.
+Status `0.x`: the API may still change. The default path layout and token format are frozen.
 
 ## Install
 
@@ -23,10 +23,13 @@ Core does NOT bind `StoreInterface` or `RepositoryInterface`. Install a backend
 2. **Never build a path from user input.** Paths come from a
    `PathGeneratorInterface`; `StoredObjectId` rejects `..`, NUL, backslashes and
    absolute paths. `File::$originalName` is metadata and never enters a path.
-3. **Layout is frozen: `<…>/<key>/original.<ext>`, a directory per file.**
-   `StoreInterface::delete()` removes the directory, so derivatives cannot leak.
+3. **The default layout is frozen: `<…>/<key>/original.<ext>`, a directory per
+   file** (`Store\Layout\DirectoryLayout`). `StoreInterface::delete()` removes
+   what `layout()->deletion()` names — the directory — so derivatives cannot leak.
    The extension comes from the detected media type via `symfony/mime`; unknown
-   becomes `original.bin`.
+   becomes `original.bin`. `Store\Layout\FlatSiblingLayout` (`<dir>/<base>.<ext>`,
+   derivatives `<base>-<name>.<ext>`) is an opt-in chosen once per store, before
+   it holds data; never switch a store's layout.
 4. **Token format is frozen:** `v1.<key-id>.<expires>.<b64url payload>.<b64url hmac>`.
    Payload is canonical JSON `{fileId, variant, scopeId}`, all covered by the HMAC.
 5. **`urlFor()` is the method application code calls.** `url()` and
@@ -120,7 +123,8 @@ call `moveTo()` yourself, it invalidates the stream.
 interface StoreInterface {
     public function name(): string;
     public function write(Upload $u, string $groupName, PathGeneratorInterface $g, ?string $mediaType = null, int $maxBytes = 0): StoreResult;
-    public function delete(File $file): void;   // deletes the DIRECTORY
+    public function layout(): ObjectLayoutInterface;   // DirectoryLayout unless configured
+    public function delete(File $file): void;   // deletes layout()->deletion(): the DIRECTORY by default
     public function exists(File $file): bool;
     public function size(File $file): ?int;
     public function lastModified(File $file): ?DateTimeImmutable;
@@ -135,7 +139,7 @@ Optional capabilities, all extending `StoreInterface`:
 | `StoreUrlProviderInterface` | `publicUrl()`, `temporaryUrl(File, DateTimeImmutable, DeliveryOptions)` — both nullable |
 | `RangeReadableStoreInterface` | `streamRange(File, int $offset, int $length)` |
 | `ContentAddressableStoreInterface` | `putIfAbsent(Upload, StoredObjectId, int $maxBytes = 0)` — atomic, immutable |
-| `MaintenanceStoreInterface` | `objects(?string $afterPath, int $limit)`, `deleteObject(StoredObjectId)` |
+| `MaintenanceStoreInterface` | `objects(?string $afterPath, int $limit): iterable<StoredObject>`, `deleteObject(StoredObjectId)`, `quarantine(ObjectSet, DateTimeImmutable $now): ?QuarantinedObject`, `restore(QuarantinedObject)` (put-if-absent per object), `purge(QuarantinedObject)`, `quarantined(?string $afterToken, int $limit)`, `quarantineProblem(): ?string` |
 | `DerivativeAwareStoreInterface` | `hasDerivative()`, `derivativeStream()`, `writeDerivative()` |
 
 A service contract, not a store capability: `Store\DerivativeResolverInterface` —
@@ -146,8 +150,10 @@ A service contract, not a store capability: `Store\DerivativeResolverInterface` 
 `FilestorageException` from it is a generation failure and should surface.
 | `DerivativeUrlProviderInterface` | `publicDerivativeUrl()`, `temporaryDerivativeUrl()` |
 
-Implementations: `Store\FileSystem\FileSystemStore` (derivatives, maintenance,
-range), `Store\FileSystem\PublicFileSystemStore` (the above plus public URLs;
+Implementations: `Store\FileSystem\FileSystemStore(name, rootPath, streamFactory,
+directoryMode = 0o775, ?string $quarantinePath = null, ?ObjectLayoutInterface $layout = null)`
+(derivatives, maintenance, range; the quarantine must be outside the root, on
+the same filesystem — without one `gc` cannot delete there), `Store\FileSystem\PublicFileSystemStore` (the above plus public URLs;
 `temporaryUrl()` is always null — a web server has no signature to check),
 `Test\InMemoryStore (base + maintenance only; Test\UrlCapableInMemoryStore adds StoreUrlProviderInterface with publicUrls/temporaryUrls toggles)` (base + maintenance only, deliberately no URL/range).
 
@@ -156,7 +162,22 @@ Built by core from the one `StoreInterface` a backend binds.
 
 `StoreResult(string $relativePath, int $size, ?string $externalId = null, bool $created = true)`.
 
-`StoredObjectId(string $relativePath)` — validated path VO.
+`StoredObjectId(string $relativePath)` — validated path VO; `directory()` like `File::directory()`.
+`StoredObject(StoredObjectId $id, ?DateTimeImmutable $lastModified = null, ?int $size = null)` —
+one inventory entry; `$relativePath` mirrors `$id`. Null time = never an orphan.
+`QuarantinedObject(string $token, list<StoredObjectId> $objects)` — token
+`<10-digit unix time>-<16 hex>`, `$quarantinedAt` from it; `newToken(DateTimeImmutable)`.
+`Layout\ObjectSet::tree(StoredObjectId)` / `::siblings(?string $dir, string $base)` —
+what one deletion removes; `contains(string $path)`.
+
+```php
+interface ObjectLayoutInterface {
+    public function derivativePath(File $file, DerivativeDescriptor $d): string;
+    public function ownerOf(StoredObjectId $object): string;   // what a row is matched by in the orphan sweep
+    public function ownerOfFile(File $file): string;
+    public function deletion(StoredObjectId $object): ObjectSet;
+}
+```
 `BlobId::create(string $storeName, string $relativePath)` — physical identity for dedup.
 `DerivativeDescriptor(string $name, string $extension, string $mediaType)` — one named
 preset; `fileName()` gives `<name>.<extension>`. Named presets only: free-form dimensions
@@ -176,6 +197,8 @@ interface RepositoryInterface {
 interface MaintenanceRepositoryInterface extends RepositoryInterface {
     public function files(?string $afterId = null, int $limit = 1000): iterable;
     public function updateContentHash(string $id, string $contentHash): bool;
+    /** Paths of this store's rows whose File::directory() is one of $directories. */
+    public function referencedPaths(string $storeName, array $directories): array;
 }
 ```
 
@@ -241,7 +264,11 @@ interface PathGeneratorInterface {
 |---|---|
 | `RandomPathGenerator` | `<group>/<2 hex>/<2 hex>/<32 hex>/original.<ext>` |
 | `DatePathGenerator` | `<group>/<YYYY>/<MM>/<DD>/<uuidv7>/original.<ext>` |
-| `Sha256KeyGenerator` (`ContentAddressedKeyGeneratorInterface`) | `<scope>/<hash[0:2]>/<hash[2:4]>/<hash>/original` — no extension, dedup only |
+| `Sha256KeyGenerator` (`ContentAddressedKeyGeneratorInterface`) | `<scope>/<hash[0:2]>/<hash[2:4]>/<hash>/original` — no extension (the argument is ignored), dedup only |
+| `FlatSha256KeyGenerator` (`ContentAddressedKeyGeneratorInterface`) | `<scope>/<hash[0:2]>/<hash[2:4]>/<hash>.<ext>` — for `FlatSiblingLayout` |
+
+`ContentAddressedKeyGeneratorInterface::generate(string $scope, string $sha256, ?string $extension = null): string` —
+the extension comes from the detected media type.
 
 ### MIME
 
@@ -269,7 +296,7 @@ bind one explicitly, nothing auto-detects.
 ### Policies
 
 ```php
-new UploadPolicy(array $allowedMimeTypes = [], int $maxBytes = 0, int $maxPixels = 40_000_000, bool $requireImageDimensions = false);
+new UploadPolicy(array $allowedMimeTypes = [], int $maxBytes = 0, int $maxPixels = 40_000_000, bool $requireImageDimensions = false, ?ReferenceAuthority $referencesOwnedBy = null);
 $policy->assertAcceptable(Upload $upload, ?string $detectedMimeType): void;  // throws PolicyViolationException
 
 new PolicyRegistry(array $policies);       PolicyRegistry::fromArray(array $params);
@@ -278,7 +305,15 @@ new DeliveryPolicyRegistry(array $policies); DeliveryPolicyRegistry::fromArray(a
 DeliveryOptions::fromFile(File $file, DeliveryPolicy $policy): self;
 ```
 
-Key `'*'` is the fallback group in both registries.
+Key `'*'` is the fallback group in both registries. `fromArray()` reads
+`'referencesOwnedBy' => 'rows'|'application'` (default `rows`).
+
+References the application owns (`Reference\ReferenceAuthority::Application`):
+bind `Reference\ReferenceCheckerInterface::referenced(string $storeName,
+non-empty-list<StoredObjectId> $objects): list<StoredObjectId>` (by path,
+batched per page). `gc` then releases rows of such groups older than
+`--min-age` that the checker does not name, and asks again before quarantining a
+blob and in the orphan sweep.
 
 ### URLs
 
@@ -315,8 +350,9 @@ All implement `Exception\FilestorageException`:
 
 ### Test doubles (`src/Test/`, installed with the package)
 
-`InMemoryStore(string $name, StreamFactoryInterface $f, ?ClockInterface $clock = null)` —
-plus `bytesAt()`, `paths()`, `writeCount()`, `corrupt()`, `clear()`.
+`InMemoryStore(string $name, StreamFactoryInterface $f, ?ClockInterface $clock = null, ?ObjectLayoutInterface $layout = null)` —
+plus `bytesAt()`, `paths()`, `writeCount()`, `corrupt()` (stamps a new path), `touch()`, `isQuarantined()`, `clear()`.
+Its quarantine is a separate in-memory map, always available.
 `MemoryRepository()` — plus `count()`, `all()`, `clear()`.
 `MemoryBlobLedger(RepositoryInterface $repository)` — the full dedup state
 machine in an array, plus `records()`, `clear()`. It does not reproduce
@@ -330,7 +366,7 @@ No clock double ships here. Everything takes a PSR-20 clock; use
 | Class | Command | Does |
 |---|---|---|
 | `Command\CheckCommand` | `filestorage:check` | Wiring, per-store capabilities, tenancy, per-group rules. Non-zero on an unsafe delivery combination, or on a bound `FileScopeProviderInterface` with no `ScopedFileResolverInterface` |
-| `Command\StatCommand` | `filestorage:stat` | Counts and sizes by group, plus what sharing saved. Physical figures withheld under tenancy |
+| `Command\StatCommand` | `filestorage:stat` | Counts and sizes by group, plus what sharing saved. Physical figures withheld under tenancy. `--limit`/`--after`, JSON `nextCursor` |
 | `Command\VerifyCommand` | `filestorage:verify` | Rows whose object is missing. `--deep` re-reads and compares the hash. Non-zero on any finding |
 | `Command\BackfillHashCommand` | `filestorage:backfill-hash` | Fills `contentHash` on rows written before hashing was on |
 | `Command\GcCommand` | `filestorage:gc` | Collects unreferenced blobs; `--orphans` also sweeps objects no row points at |
@@ -341,24 +377,30 @@ Rules:
 
 1. `gc` and `backfill-hash` **report by default; `--apply` acts.** `verify` has
    no `--apply` — what to do about a missing object is not its decision.
-2. `verify` and `backfill-hash` page by id, take `--after` / `--limit`, and
-   print the last id they reached. Resume with `--after=<that id>`. `import`
-   resumes through its manifest; `gc` takes `--limit` as a budget for the pass.
+2. `verify`, `backfill-hash` and `stat` page by id, take `--after` / `--limit`,
+   and print where they stopped. Resume with `--after=<that id>`. `import`
+   resumes through its manifest; `gc` takes `--limit` as a budget for the pass,
+   and `gc --orphans --store=<name> --after=<path>` resumes a sweep (`--max-scan`
+   bounds objects examined; JSON `nextCursor: {store, after}`).
 3. They need `MaintenanceRepositoryInterface` (from `-db`). The commands are
    always registered; without it running one is a container error naming that
    interface.
 4. `gc` collects shared blobs only when a `BlobLedgerInterface` is bound; without
    one it still sweeps orphans. It is the only thing here that deletes bytes
-   another request might want, and does so under an expiring lease. The lease
-   guards the ledger row, not the unlink: a collector paused past it can delete
-   bytes a writer re-published meanwhile. `gc` skips the delete when less than
-   half of the lease is left — a narrower window, not a closed one (fixed in
-   0.9). Keep `leaseTtl` well above any worker pause.
+   another request might want, and does so under an expiring lease. **Every
+   deletion is two-phase:** quarantine → `completeDeletion()` → purge, or restore
+   (put-if-absent) when the ledger refuses, so a collector paused past its lease
+   cannot destroy bytes a writer re-published. Each run first sweeps the
+   quarantines: an entry the ledger still knows is restored (unless another
+   collector holds a live lease), anything else is purged after `--retention`
+   (default `P7D`). Committed blob deletions are purged at once.
 5. `gc --orphans` walks every configured store unless `--store=<name>` limits it,
-   and `--limit` is a budget for the whole pass, not per store. It has no
-   minimum object age and reads the referenced set once before the walk, so an
-   upload in flight can lose its bytes: **run `gc --orphans --apply` with
-   uploads stopped** (until 0.9).
+   and `--limit` is a budget for the whole pass, not per store. References are
+   looked up per page *after* listing it
+   (`MaintenanceRepositoryInterface::referencedPaths(storeName, directories)`),
+   and an object is a candidate only when older than `--min-age` (default `PT1H`)
+   from that moment; an object with no timestamp never is. Orphans go to the
+   quarantine for `--retention`.
 6. **`gc --orphans` refuses when a `FileScopeProviderInterface` is bound.** The
    referenced-set is tenant-filtered, the object listing is physical — the
    difference is other tenants' live files. Run the sweep with the provider

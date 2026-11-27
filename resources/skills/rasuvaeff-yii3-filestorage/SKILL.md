@@ -29,11 +29,15 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
    absolute paths, and local stores re-check containment with `realpath()` after
    resolving. `File::$originalName` is metadata — it must not enter a path.
 
-3. **Two things are frozen and cannot change.** The layout
-   `<…>/<key>/original.<ext>` (a directory per file, so `delete()` removes the
-   directory and derivatives cannot leak) and the token format
-   `v1.<key-id>.<expires>.<b64url payload>.<b64url hmac>`. `relativePath` is
-   persisted and tokens are already in browsers.
+3. **Two things are frozen and cannot change.** The default layout
+   `<…>/<key>/original.<ext>` (`DirectoryLayout`: a directory per file, so
+   `delete()` removes the directory and derivatives cannot leak) and the token
+   format `v1.<key-id>.<expires>.<b64url payload>.<b64url hmac>`. `relativePath`
+   is persisted and tokens are already in browsers. `FlatSiblingLayout`
+   (`<base>.<ext>` + `<base>-<name>.<ext>`, with `FlatSha256KeyGenerator`) is an
+   opt-in chosen once per store before it holds data — never switch a store's
+   layout, and derive derivative paths from `$store->layout()`, never from
+   `File::directory()`.
 
 4. **`urlFor()`, not `url()`.** `url()` is raw and ignores delivery policy;
    `temporaryUrl()` does pass the group's `DeliveryOptions` to the store, so a
@@ -77,11 +81,13 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
 10. **`gc --apply` is the only thing here that deletes shared bytes.** It takes
    an exclusive, expiring lease per blob and removes the ledger row only if the
    blob is still unreferenced in the statement that acts. Never delete a shared
-   object anywhere else, and never inside a request. The lease guards the
-   ledger row, not the unlink: a collector paused past its lease can delete
-   bytes a writer re-published meanwhile. `gc` skips the delete when less than
-   half of the lease is left — that narrows the window, it does not close it
-   (two-phase deletion in 0.9). Do not shorten `leaseTtl` below worker pauses.
+   object anywhere else, and never inside a request. Deletion is two-phase:
+   quarantine → `completeDeletion()` → purge, or restore (put-if-absent) when
+   the ledger refuses — so a collector paused past its lease cannot destroy
+   bytes a writer re-published. A store without a quarantine
+   (`FileSystemStore`'s `quarantinePath`) cannot be collected from;
+   `filestorage:check` warns. A store implementation must keep the quarantine
+   out of `objects()` and out of public reach.
 
 11. **No suppressions.** No `@psalm-suppress`, no baseline. Fix the root cause.
 
@@ -107,11 +113,17 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
   `MaintenanceRepositoryInterface`. All six are always registered; without one,
   running any of them is a container error naming that interface — loud, not
   silent.
-- `verify` and `backfill-hash` page by id and print the last one reached; resume
-  with `--after=<id>`. `import` resumes through its manifest. `gc --orphans`
-  walks every store unless `--store=` narrows it, and `--limit` is a budget for
-  the whole pass, not per store. It has no minimum object age, so until 0.9
-  `gc --orphans --apply` must run with uploads stopped — an upload in flight
-  during the walk loses its bytes.
+- `verify`, `backfill-hash` and `stat` page by id and print where they stopped;
+  resume with `--after=<id>`. `import` resumes through its manifest.
+  `gc --orphans` walks every store unless `--store=` narrows it, `--limit` is a
+  budget for the whole pass, `--max-scan` bounds objects examined, and
+  `--store=<name> --after=<path>` resumes (JSON `nextCursor`). An orphan must be
+  older than `--min-age` (default `PT1H`) measured from its page's reference
+  lookup; an object without a timestamp is never swept. Swept orphans stay in
+  the quarantine for `--retention` (default `P7D`).
+- Groups with `referencesOwnedBy: application` need a bound
+  `ReferenceCheckerInterface` (by path, batched): `gc` releases their rows that
+  are older than `--min-age` and no longer referenced, and re-asks before
+  deleting a blob.
 - `add()` is all-or-nothing per file. There is no `addMany()`, because an atomic
   batch is impossible over a filesystem or an object store.
