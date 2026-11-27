@@ -23,7 +23,8 @@ and `PublicFileSystemStore`; `Repository\RepositoryInterface` and
 `ContentAddressedKeyGeneratorInterface` with `Sha256KeyGenerator` and
 `FlatSha256KeyGenerator`; `Reference\ReferenceCheckerInterface` and
 `ReferenceAuthority`;
-`Mime\MimeTypeDetectorInterface` / `FinfoMimeTypeDetector` / `ExtensionMap`;
+`Mime\MimeTypeDetectorInterface` / `FinfoMimeTypeDetector` / `ExtensionMap` /
+`ActiveMediaTypes`;
 `Id\IdGeneratorInterface` with `Uuid7IdGenerator` (default),
 `SymfonyUidIdGenerator` and `RamseyUuidIdGenerator`; `Policy\UploadPolicy`,
 `PolicyRegistry`, `DeliveryPolicy`, `DeliveryPolicyRegistry`, `DeliveryOptions`;
@@ -34,7 +35,8 @@ and `PublicFileSystemStore`; `Repository\RepositoryInterface` and
 `Store\BlobLedgerInterface` with `BlobState`, `BlobToken`, `BlobReservation`,
 `BlobLease` and `BlobRecord`; `Repository\FileScopeProviderInterface` and
 `ScopedFileResolverInterface`;
-the `Exception\*` family behind the `FilestorageException` marker; and the
+the `Exception\*` family behind the `FilestorageException` marker, with
+`SizeLimitExceededException` marking every size refusal; and the
 `Test\InMemoryStore` / `Test\MemoryRepository` / `Test\MemoryBlobLedger` doubles.
 
 **No clock double ships here.** Everything takes a PSR-20 clock, and a Yii
@@ -172,6 +174,24 @@ asserting only one half lets the operands be swapped undetected.
 
 ## Invariants & gotchas
 
+- **The pixel guard fails closed, and JPEG is walked, not windowed.** Review
+  1.0 A1: APPn padding pushed the frame header past a 256 KiB prefix and the
+  "no dimensions found → skip" branch let a 60000×60000 JPEG through every
+  policy. `Policy\ImageDimensions` (`@internal`) follows JPEG segment lengths
+  with `seek()` — never a scan for `FFC0`, which finds the EXIF thumbnail's
+  frame header — and while `maxPixels > 0` a JPEG/PNG/GIF/WebP whose dimensions
+  cannot be established is refused. Every prefix read goes through
+  `Stream\StreamReader::readUpTo()`: PSR-7 allows a short `read()`, and one call
+  is a fragment (B1).
+- **One active-content list: `Mime\ActiveMediaTypes`.** `check`, `DeliveryOptions`
+  and `ExtensionMap` use it, and `-web`/`-flysystem` are meant to. Its scriptable
+  tier is what `check` refuses on public delivery; the plugin tier (PDF) is only
+  forced to download — a public PDF is a legitimate publication. Do not add a
+  second list anywhere in the family.
+- **`add()` validates every caller field before the write.** The row is built
+  with a placeholder path first, so bad metadata, a failing id generator or
+  clock write nothing (review 1.0 A2). Only the store's answer is validated
+  after `write()`, inside the compensating path, as an `AddException`.
 - **Byte caps are enforced during the copy.** `StoreInterface::write()` counts
   bytes as it writes and removes its partial output when the cap is crossed.
   Checking afterwards has already spent the disk, and the whole point is an

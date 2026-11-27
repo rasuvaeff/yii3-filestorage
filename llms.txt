@@ -39,7 +39,10 @@ Core does NOT bind `StoreInterface` or `RepositoryInterface`. Install a backend
    honour them — what neither consults is `allowDirectPublicUrl`, the gate
    `urlFor()` applies.
 6. **Direct public URLs are opt-in per group** and unsafe with active content
-   (HTML, SVG, XML). `filestorage:check` fails on that combination.
+   (`Mime\ActiveMediaTypes::SCRIPTABLE`: HTML, SVG, XML, XSLT, JS, feeds).
+   `filestorage:check` fails on that combination, and for every group when any
+   store hands out public URLs (it serves by path regardless of the flag).
+   Active types are stored as `.bin` and always delivered as `attachment`.
 7. **`add()` is all-or-nothing per file.** There is no `addMany()`.
 8. **Capabilities are `instanceof` checks, not nullable methods** — except
    `StoreUrlProviderInterface`, whose methods return null because URL support
@@ -62,7 +65,9 @@ public function content(File $file): ?string;                                   
 ```
 
 Implementation: `Storage` (`final readonly`). Throws `PolicyViolationException`
-before touching the store, `AddException` when metadata fails after the write,
+(and `InvalidArgumentException` for bad metadata/group/caller fields) before
+touching the store, `UploadSizeException` when the group cap is crossed
+mid-copy, `AddException` for anything failing after the write,
 `RemoveException` when the object survives its row, `ContentTooLargeException`
 from `content()`.
 
@@ -90,7 +95,8 @@ File::create(
 File::fromArray(array $row): self;      // exact round-trip with toArray()
 $file->toArray(): array;
 $file->withMetadata(array $metadata, DateTimeImmutable $updatedAt): self;
-$file->directory(): string;             // the parent directory holding derivatives
+$file->directory(): string;             // dirname of relativePath — shared under flat/dedup layouts; never a deletion set (use ObjectLayoutInterface)
+File::MAX_ORIGINAL_NAME_LENGTH;         // 255 characters; Upload truncates to it
 File::TIMESTAMP_FORMAT;                 // 'Y-m-d\TH:i:s.uP' — ATOM would drop microseconds
 ```
 
@@ -102,7 +108,7 @@ Public readonly properties: `id`, `storeName`, `externalId`, `groupName`,
 
 ```php
 Upload::fromUploadedFile(UploadedFileInterface $file, StreamFactoryInterface $f, int $maxSpoolBytes = 268435456): self;
-Upload::fromDataUrl(string $dataUrl, string $originalName, StreamFactoryInterface $f, ?string &$clientMediaTypeHint = null): Upload  // RFC 2397; strict base64, percent-decoded text
+Upload::fromDataUrl(string $dataUrl, string $originalName, StreamFactoryInterface $f, ?string &$clientMediaTypeHint = null, int $maxSpoolBytes = 268435456): Upload  // RFC 2397: parameters skipped, type/base64 case-insensitive, hint lower-cased; cap on decoded bytes
 Upload::fromStream(StreamInterface $s, string $originalName, StreamFactoryInterface $f, int $maxSpoolBytes = 268435456, ?string $clientMediaTypeHint = null): self;
 Upload::fromPath(string $path, StreamFactoryInterface $f, ?string $originalName = null, int $maxSpoolBytes = 268435456): self;
 
@@ -112,9 +118,12 @@ $upload->originalName;               // non-empty-string
 $upload->clientMediaTypeHint;        // diagnostics only — never authoritative
 ```
 
-`fromUploadedFile()` throws `UploadFailedException` unless `getError()` is
-`UPLOAD_ERR_OK`. A non-seekable stream is spooled to `php://temp` and throws
-`UploadTooLargeException` past the cap. Hand the `Upload` to `Storage`; do not
+`fromUploadedFile()` throws `UploadTooLargeException` for `UPLOAD_ERR_INI_SIZE` /
+`UPLOAD_ERR_FORM_SIZE` and `UploadFailedException` for any other non-OK code.
+A non-seekable stream is spooled to `php://temp` and throws
+`UploadTooLargeException` past the cap. `originalName` is normalised in every
+factory: control and bidi characters removed, invalid UTF-8 → U+FFFD, cut to
+255 characters keeping the extension; empty → `file`. Hand the `Upload` to `Storage`; do not
 call `moveTo()` yourself, it invalidates the stream.
 
 ### Stores
@@ -190,7 +199,7 @@ make the derivative set unbounded, so a signed URL could force unbounded CPU and
 ```php
 interface RepositoryInterface {
     public function find(string $id): ?File;    // null, not an exception
-    public function save(File $file): void;     // void: the id was assigned before the write
+    public function save(File $file): void;     // upsert by id (insert or replace); scope assigned once on insert
     public function delete(string $id): bool;
 }
 
@@ -276,7 +285,11 @@ the extension comes from the detected media type.
 interface MimeTypeDetectorInterface { public function detect(Upload $upload): ?string; }
 new FinfoMimeTypeDetector(int $sniffBytes = 4096);   // minimum 512
 new ExtensionMap(array $overrides = [], ?MimeTypesInterface $mimeTypes = null);
-$map->extensionFor(?string $mediaType): string;      // 'bin' when unknown
+$map->extensionFor(?string $mediaType): string;      // 'bin' when unknown, scriptable, or executable (ExtensionMap::INERT_EXTENSIONS); overrides win
+
+new ActiveMediaTypes(array $types = ActiveMediaTypes::DEFAULT);   // SCRIPTABLE + PLUGIN (pdf, flash)
+ActiveMediaTypes::withExtra(array $types): self;  ActiveMediaTypes::scriptable(): self;
+$active->contains(string $mediaType): bool;        // case- and parameter-insensitive
 ```
 
 `symfony/mime` supplies the media-type ⇒ extension table. It is *not* used for
@@ -298,11 +311,13 @@ bind one explicitly, nothing auto-detects.
 ```php
 new UploadPolicy(array $allowedMimeTypes = [], int $maxBytes = 0, int $maxPixels = 40_000_000, bool $requireImageDimensions = false, ?ReferenceAuthority $referencesOwnedBy = null);
 $policy->assertAcceptable(Upload $upload, ?string $detectedMimeType): void;  // throws PolicyViolationException
+// maxPixels: JPEG walked marker by marker to its frame header; JPEG/PNG/GIF/WebP with
+// undeterminable dimensions are refused while maxPixels > 0; other formats only with requireImageDimensions
 
 new PolicyRegistry(array $policies);       PolicyRegistry::fromArray(array $params);
 new DeliveryPolicy(bool $allowDirectPublicUrl = false, bool $forceDownload = true);
 new DeliveryPolicyRegistry(array $policies); DeliveryPolicyRegistry::fromArray(array $params);
-DeliveryOptions::fromFile(File $file, DeliveryPolicy $policy): self;
+DeliveryOptions::fromFile(File $file, DeliveryPolicy $policy): self;   // forceDownload is true for ActiveMediaTypes whatever the policy
 ```
 
 Key `'*'` is the fallback group in both registries. `fromArray()` reads
@@ -319,7 +334,7 @@ blob and in the orphan sweep.
 
 ```php
 interface UrlSignerInterface {
-    public function sign(SignedPayload $payload, DateTimeImmutable $expiresAt): string;
+    public function sign(SignedPayload $payload, DateTimeImmutable $expiresAt): string;  // InvalidArgumentException if expiry < 1970 or > 11 digits
     public function verify(string $token): ?SignedPayload;   // null for anything invalid
 }
 
@@ -346,6 +361,7 @@ read-only PSR-7 window for `206` responses, no buffering.
 All implement `Exception\FilestorageException`:
 `AddException`, `RemoveException`, `StoreException`, `ContentTooLargeException`,
 `UploadTooLargeException`, `UploadFailedException`, `PolicyViolationException` (size → `UploadSizeException`, media type → `UnsupportedMediaTypeException`, both subclasses),
+`SizeLimitExceededException` (interface; `UploadSizeException` + `UploadTooLargeException` — catch it for every "too large"),
 `InvalidConfigException`, `LedgerException`, `BlobBusyException`.
 
 ### Test doubles (`src/Test/`, installed with the package)

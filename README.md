@@ -197,8 +197,18 @@ $file = $storage->add(Upload::fromDataUrl(
     'logo.png',
     $streamFactory,
     $clientHint, // the URL's media type claim, by reference — a hint, not a fact
+    maxSpoolBytes: 5_242_880, // cap on the decoded payload; 0 = none
 ));
 ```
+
+`fromDataUrl()` accepts parameters (`;charset=utf-8`), any case of the type and
+of `;base64`; the hint comes back lower-cased.
+
+The client's filename is normalised once, in `Upload`: control characters and
+bidi controls (U+202E turns `invoice<U+202E>gpj.exe` into a visible `invoiceexe.jpg`)
+are removed, invalid UTF-8 becomes U+FFFD, and the name is cut to
+`File::MAX_ORIGINAL_NAME_LENGTH` (255) characters keeping its extension, so it
+fits a `VARCHAR(255)` everywhere. It stays metadata and never enters a path.
 
 `$file` is an immutable `File`: `id`, `storeName`, `groupName`, `relativePath`,
 `originalName`, `mimeType`, `size`, `description`, `contentHash`, `metadata`,
@@ -224,6 +234,10 @@ The timestamp argument is the point: `updatedAt` is part of the download
 validator, so a metadata change that left it untouched would serve stale
 caches. `description` travels the same way — build the new `File` via
 `File::fromArray()` with the field changed, then `save()` it.
+
+This relies on `RepositoryInterface::save()` being an **upsert** by `File::$id`
+— that is its contract. A repository of your own that only inserts breaks this
+recipe and every decorator that updates metadata.
 
 ### The files of one group
 
@@ -306,7 +320,33 @@ return [
 ```
 
 An upload that fails its policy throws `PolicyViolationException` **before the
-store is touched**, so nothing is written.
+store is touched**, so nothing is written. Catch it for every rejection, or the
+specific branches an HTTP layer maps to different statuses:
+
+```php
+use Rasuvaeff\Yii3Filestorage\Exception\PolicyViolationException;
+use Rasuvaeff\Yii3Filestorage\Exception\SizeLimitExceededException;
+use Rasuvaeff\Yii3Filestorage\Exception\UnsupportedMediaTypeException;
+
+try {
+    $file = $storage->add($upload, groupName: 'avatars');
+} catch (SizeLimitExceededException) {
+    // 413 — the group's maxBytes (known size or crossed mid-copy), the spool
+    // cap, a data URL over its cap, or PHP's upload_max_filesize.
+} catch (UnsupportedMediaTypeException $e) {
+    // 415
+} catch (PolicyViolationException $e) {
+    // 400/422 — pixel limit, unmeasurable image
+}
+```
+
+**Pixel limit.** `maxPixels` (40 M by default) is read from the image header;
+pixels are never decoded. A JPEG is walked marker by marker to its frame
+header, however much metadata (ICC, XMP, Photoshop) precedes it. A JPEG, PNG,
+GIF or WebP whose dimensions cannot be established is **refused** while
+`maxPixels > 0` — a hidden header is how a decompression bomb gets past a
+fixed window. Other raster formats the runtime may not parse (AVIF, HEIC) pass
+unmeasured unless `requireImageDimensions` is on.
 
 **References the application owns.** By default a `File` row *is* the
 reference: it lives until the application removes it
@@ -347,7 +387,7 @@ text in the meantime keeps its bytes.
 | `maxInlineBytes` | 8 MiB | Cap enforced by `content()` |
 | `integrityHashMaxBytes` | `0` | `0` leaves `contentHash` null; a positive value opts into a bounded SHA-256 |
 | `defaultUrlTtl` | `PT1H` | Expiry `urlFor()` uses when none is given |
-| `extensionOverrides` | `[]` | Media type ⇒ extension, over the `symfony/mime` table |
+| `extensionOverrides` | `[]` | Media type ⇒ extension, over the `symfony/mime` table. Active and executable types (HTML, SVG, XML, JS, scripts, executables) are stored as `.bin` unless overridden here |
 | `policies` | `['*' => …]` | Per-group accept rules and `referencesOwnedBy` |
 | `delivery` | `['*' => …]` | Per-group delivery rules |
 
@@ -359,8 +399,9 @@ object, or nothing.
 | What failed | What you get |
 |---|---|
 | Policy rejects the upload | `PolicyViolationException`; nothing written |
-| Byte cap crossed while copying | `UploadTooLargeException`; the partial object is removed |
-| Metadata save fails after the write | `AddException`; the object is deleted on a best-effort basis |
+| Invalid metadata, group name or other caller field | `InvalidArgumentException`; nothing written |
+| Group's `maxBytes` crossed while copying | `UploadSizeException` (a `PolicyViolationException` and a `SizeLimitExceededException`); the partial object is removed |
+| Anything failing after the write (metadata save, an unusable store answer) | `AddException`; the object is deleted on a best-effort basis |
 | Object delete fails after the row is gone | `RemoveException`; the object is an orphan for `filestorage:gc` |
 
 There is no `addMany()`. An atomic batch is impossible over a filesystem or an
@@ -549,16 +590,19 @@ Assert::same($store->bytesAt($file->relativePath), 'hello');
 |---|---|
 | Media type | Only `finfo` output is authoritative. The client-supplied type is kept for diagnostics and never reaches a policy, a path, or a response header |
 | Paths | Always generated, never taken from a request. `StoredObjectId` rejects `..`, NUL, backslashes and absolute paths; local stores re-check containment with `realpath()` after resolving, so a planted symlink cannot read outside the root |
-| Original filename | Metadata only. It never enters a path, and CR/LF/NUL are stripped before it reaches a header |
+| Original filename | Metadata only. It never enters a path; `Upload` removes control and bidi characters and cuts it to 255 characters |
 | Ingress size | A non-seekable upload is spooled with a finite cap; stores enforce the group's `maxBytes` *while copying* and remove partial output |
-| Decompression bombs | `maxPixels` is checked from the image header via `getimagesizefromstring()`. Pixels are never decoded |
-| Direct public URLs | Off by default. `filestorage:check` **fails** when a group combines them with a permissive or active-content allow-list |
+| Decompression bombs | `maxPixels` is checked from the image header; JPEG is walked marker by marker, so metadata padding cannot hide the frame header. A JPEG/PNG/GIF/WebP whose dimensions cannot be established is refused. Pixels are never decoded |
+| Active content | One list, `Mime\ActiveMediaTypes` (scriptable tier: HTML, XHTML, SVG, XML, XSLT, MathML, JavaScript, RSS/Atom; plugin tier: PDF, Flash). `DeliveryOptions` forces `attachment` for all of them, so a presigned URL never serves them inline; `ExtensionMap` stores them as `.bin` |
+| Direct public URLs | Off by default. `filestorage:check` **fails** when a group combines them with a permissive or scriptable allow-list — and when *any* registered store hands out public URLs, for every group, since such a store serves objects by path whatever `allowDirectPublicUrl` says |
 | Signed URLs | HMAC-SHA256 over version, key id, expiry and canonical payload; strict length and schema checks; `hash_equals()`; key-ring rotation; keys shorter than 32 bytes are a configuration error |
 | Deduplication | Ownership is a physical `BlobId`, never a hash count — a hash is content identity and says nothing about who owns the bytes |
 
 `finfo` recognising `image/svg+xml` says nothing about whether serving it inline
 is safe: an SVG served from your own origin is a stored-XSS primitive. Keep SVG
 out of any group that allows direct public URLs, and let `-web` force a download.
+An application that really serves public SVG through `<img>` opts back into the
+`.svg` extension explicitly: `'extensionOverrides' => ['image/svg+xml' => 'svg']`.
 
 Uploaded images keep their EXIF, which includes GPS coordinates on most phone
 photos. Nobody expects an avatar upload to publish their home address — strip or

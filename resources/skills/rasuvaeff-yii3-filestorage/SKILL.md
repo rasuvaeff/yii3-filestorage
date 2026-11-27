@@ -47,14 +47,31 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
    proxy route. Direct public URLs bypass every response header `-web` enforces.
 
 5. **Direct public delivery plus active content is a stored-XSS hole.** HTML,
-   SVG and XML served from your own origin execute as your site.
-   `filestorage:check` fails that combination — do not work around it. It also
+   SVG, XML, XSLT, JavaScript and feeds served from your own origin execute as
+   your site. `Mime\ActiveMediaTypes` is the family's one list (scriptable tier
+   + plugin tier: PDF, Flash) — never write a second one. `DeliveryOptions`
+   forces `attachment` for every active type, `ExtensionMap` stores them as
+   `.bin`, and `filestorage:check` fails a direct-public group accepting a
+   scriptable type, or any permissive/scriptable group when a registered store
+   hands out public URLs (it serves by path regardless of
+   `allowDirectPublicUrl`) — do not work around it. It also
    fails a bound `FileScopeProviderInterface` with no `ScopedFileResolverInterface`:
    a signed download would then resolve by id alone.
 
 6. **Byte caps are enforced while copying, not after.** An unknown-length body
    must be stopped mid-write and its partial output removed. A check after the
-   fact has already spent the disk.
+   fact has already spent the disk. A store crossing the group's cap throws
+   `UploadSizeException`; every size refusal implements
+   `SizeLimitExceededException` — catch that, not one concrete class.
+
+6a. **The pixel guard fails closed.** `maxPixels` walks a JPEG marker by marker
+   (seek by segment length, never scan for `FFC0` — the EXIF thumbnail has its
+   own frame header) and refuses a JPEG/PNG/GIF/WebP whose dimensions cannot be
+   established. Prefixes are read with a loop, never one `read()`.
+
+6b. **`add()` writes nothing it cannot keep.** Metadata, id and clock are
+   validated before `store->write()`; anything failing after it is an
+   `AddException`. A decorating `add()` must keep the same order.
 
 7. **Maintenance commands report before they act.** `filestorage:gc` and
    `filestorage:backfill-hash` are dry-run unless given `--apply`, and nothing

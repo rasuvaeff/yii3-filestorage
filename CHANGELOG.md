@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+Pre-1.0 fix wave from the 1.0 review (2026-11-27). Planned as 0.10.0; the family
+moves to `^0.10` together.
+
+- Fix (review A1 / summary A2): `maxPixels` could be bypassed by APPn padding — a 60000×60000 JPEG of 325 KB passed every policy because its frame header sat past the 256 KiB header window and "no dimensions found" meant "skip". A JPEG is now walked marker by marker to its frame header with `seek()`, and a JPEG, PNG, GIF or WebP whose dimensions cannot be established is **refused** while `maxPixels > 0` (other formats still only with `requireImageDimensions`). Legitimate JPEGs with large ICC/XMP blocks before the frame are now measured instead of refused under `requireImageDimensions`.
+- Fix (review A2 / summary A3): `Storage::add()` validated metadata, called the id generator and the clock *after* `store->write()` and outside its compensation — invalid metadata left an object with no row and surfaced as `InvalidArgumentException`. Everything the caller supplies is validated before the write; anything failing after it is an `AddException`.
+- Fix (B1): MIME sniffing and image-header reads loop until the window is full instead of trusting one `read()`; a short-reading stream no longer turns the pixel check off or misdetects the type.
+- Fix (B2): `Upload::fromDataUrl()` accepts RFC 2397 parameters (`;charset=utf-8`), upper-case types and `;Base64`; the hint is lower-cased. Malformed parameters are refused (`Malformed parameter "…"`).
+- Fix (C1): `fromDataUrl()`'s `maxSpoolBytes` is enforced on the decoded payload (`UploadTooLargeException`); it used to be ignored.
+- Fix (C2): `HmacUrlSigner::sign()` throws `InvalidArgumentException` for an expiry `verify()` could never accept (before 1970, more than 11 digits).
+- Fix (C4): `Storage` rejects negative `maxInlineBytes` / `integrityHashMaxBytes`; `File` rejects `NAN`/`INF` metadata values.
+- Fix (C7): `filestorage:import` no longer creates a local `scheme:` directory for a manifest at a stream wrapper's root.
+- Enh (B3): `Exception\SizeLimitExceededException` — one marker for every "too large": `UploadSizeException` and `UploadTooLargeException` implement it. `FileSystemStore` and `InMemoryStore` throw `UploadSizeException` (a `PolicyViolationException`) when a group's `maxBytes` is crossed mid-copy, and `Upload::fromUploadedFile()` throws `UploadTooLargeException` for `UPLOAD_ERR_INI_SIZE`/`UPLOAD_ERR_FORM_SIZE`. `StorageInterface::add()` lists every exception it throws.
+- Enh (B4): `Upload` normalises the client's filename: control and bidi characters removed, invalid UTF-8 replaced with U+FFFD, cut to `File::MAX_ORIGINAL_NAME_LENGTH` (255) characters keeping the extension.
+- Enh (A5 core, C5): `Mime\ActiveMediaTypes` — the family's one active-content list (scriptable tier + plugin tier), with the API of `-web`'s class. `DeliveryOptions` forces `attachment` for every active type whatever the policy says, so a presigned URL never serves SVG/HTML inline; `filestorage:check` uses the scriptable tier (adds JavaScript, XSLT, MathML, RSS/Atom; PDF stays allowed on public URLs).
+- Enh (B5): `filestorage:check` treats every group as directly reachable when any registered store hands out public URLs, and fails permissive or scriptable groups then. `ExtensionMap` stores scriptable types and types known by an executable extension (`ExtensionMap::INERT_EXTENSIONS`: html, svg, xml, js, pl, sh, php, exe, …) as `.bin`; `extensionOverrides` is the explicit way back. Only new files are affected.
+- Docs (B6, B7, C3): `File::directory()` is the dirname of the path, shared under flat and dedup layouts — never a deletion set. `RepositoryInterface::save()` is an upsert by id with the scope assigned once on insert. The integrity hash is a separate pass before the copy.
+
+**BC breaks:**
+
+- A JPEG/PNG/GIF/WebP whose dimensions cannot be read is refused while `maxPixels > 0` (it was accepted). Tests that upload fake image bytes under a default policy must use real headers or `maxPixels: 0`.
+- Stores throw `UploadSizeException` instead of `UploadTooLargeException` for the group cap; catch `SizeLimitExceededException`. Third-party stores should switch too.
+- `UPLOAD_ERR_INI_SIZE`/`UPLOAD_ERR_FORM_SIZE` raise `UploadTooLargeException` instead of `UploadFailedException`.
+- New uploads of HTML, SVG, XML, JS, scripts and executables get the `.bin` extension; `DeliveryOptions::$forceDownload` is true for active types.
+- `filestorage:check` fails a permissive or scriptable group when a public store is registered, even with `allowDirectPublicUrl: false`.
+- `Upload::$originalName` is normalised and may differ from the client's name.
+
 ## 0.9.0 — 2026-11-27
 
 Pre-1.0 minor with breaking interface changes: every store, repository and
