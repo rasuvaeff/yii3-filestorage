@@ -326,7 +326,10 @@ final class InMemoryStoreTest
         $entry = $this->store->quarantine($this->store->layout()->deletion(new StoredObjectId($file->relativePath)), $now);
 
         Assert::instanceOf($entry, QuarantinedObject::class);
-        Assert::same(\count($entry->objects), 2);
+        Assert::same(
+            array_map(static fn(StoredObjectId $o): string => $o->relativePath, $entry->objects),
+            [$file->relativePath, $file->directory() . '/thumb.webp'],
+        );
         Assert::same($entry->quarantinedAt->getTimestamp(), 1_764_237_600);
         Assert::same($this->store->paths(), ['docs/other/original.txt']);
         Assert::true($this->store->isQuarantined($file->relativePath));

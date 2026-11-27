@@ -549,6 +549,168 @@ final class GcSafetyTest
         Assert::same($checker->asked, []);
     }
 
+    // ---- details that decide outcomes ---------------------------------------
+
+    public function aYoungObjectARowOwnsIsNotCountedAsAYoungOrphan(): void
+    {
+        $this->repository->save($this->row('owned', 'docs/a/original.bin'));
+        $this->store->corrupt('docs/a/original.bin', 'owned');
+        $this->store->corrupt('docs/a/thumb.webp', 'young derivative');
+        $this->store->corrupt('docs/b/x.bin', 'young orphan');
+
+        $json = $this->json(['--orphans' => true]);
+
+        Assert::same($json['orphansTooNew'], 1);
+        Assert::same($json['orphansUndated'], 0);
+    }
+
+    public function nothingKeptMeansNoKeptLine(): void
+    {
+        $this->oldOrphans('docs/a/x.bin');
+
+        $display = $this->run(['--orphans' => true, '--apply' => true])->getDisplay();
+
+        Assert::false(str_contains($display, 'Kept '));
+        Assert::false(str_contains($display, 'Resume with'));
+    }
+
+    public function anUndatedObjectAloneIsReportedInTheKeptLine(): void
+    {
+        $this->store->corrupt('docs/a/undated.bin', 'undated');
+        $this->clock->advance(new DateInterval('P30D'));
+        $undated = new InterleavingStore($this->store);
+        $undated->withoutTimestamps();
+
+        $display = $this->run(['--orphans' => true], stores: new StoreRegistry([$undated]))->getDisplay();
+
+        Assert::string($this->flatten($display))->contains(
+            'Kept 0 unreferenced objects younger than --min-age and 1 with no timestamp.',
+        );
+    }
+
+    public function rowsOfTwoDirectoriesProtectTheirObjectsInOnePage(): void
+    {
+        $this->repository->save($this->row('a', 'docs/a/original.bin'));
+        $this->repository->save($this->row('b', 'docs/b/original.bin'));
+        $this->oldOrphans('docs/a/original.bin', 'docs/a/thumb.webp', 'docs/b/original.bin', 'docs/b/thumb.webp', 'docs/c/x.bin');
+
+        $this->run(['--orphans' => true, '--apply' => true]);
+
+        Assert::same($this->store->paths(), [
+            'docs/a/original.bin',
+            'docs/a/thumb.webp',
+            'docs/b/original.bin',
+            'docs/b/thumb.webp',
+        ]);
+    }
+
+    public function everyPathTheApplicationNamesIsKept(): void
+    {
+        $this->oldOrphans('docs/a.bin', 'docs/b.bin', 'docs/c.bin');
+
+        $this->run(['--orphans' => true, '--apply' => true], references: new ListReferenceChecker([
+            'memory:docs/a.bin',
+            'memory:docs/b.bin',
+        ]));
+
+        Assert::same($this->store->paths(), ['docs/a.bin', 'docs/b.bin']);
+    }
+
+    public function aRowExactlyTheMinimumAgeOldIsNotReleased(): void
+    {
+        $this->stored('edge', 'avatars', 'avatars/aa/edge/original.jpg');
+        $this->clock->advance(new DateInterval('PT1H'));
+
+        $json = $this->json(['--apply' => true], references: new ListReferenceChecker());
+
+        Assert::same($json['releasedRows'], 0);
+        Assert::instanceOf($this->repository->find('edge'), File::class);
+    }
+
+    public function aReferencedRowDoesNotStopTheReleaseOfTheRowsAfterIt(): void
+    {
+        $used = $this->stored('a-used', 'avatars', 'avatars/aa/used/original.jpg');
+        $this->stored('b-old', 'avatars', 'avatars/aa/old/original.jpg');
+        $this->clock->advance(new DateInterval('PT2H'));
+
+        $this->run(['--apply' => true], references: new ListReferenceChecker(['memory:' . $used->relativePath]));
+
+        Assert::instanceOf($this->repository->find('a-used'), File::class);
+        Assert::null($this->repository->find('b-old'));
+    }
+
+    public function anEntryKeptForAnotherCollectorDoesNotStopTheSweep(): void
+    {
+        [, $blob] = $this->scheduledBlob();
+        $this->crashAfterQuarantine($blob, leaseFor: new DateInterval('PT1H'));
+        $this->store->corrupt('docs/orphan.bin', 'orphan');
+        $this->clock->advance(new DateInterval('PT30M'));
+        $this->run(['--orphans' => true, '--apply' => true, '--min-age' => 'PT0S'], ledger: $this->ledger, withBlobs: false);
+
+        $json = $this->json(['--apply' => true, '--retention' => 'PT0S'], ledger: $this->ledger, withBlobs: false);
+
+        Assert::same($json['quarantine'], ['restored' => 0, 'purged' => 1, 'kept' => 1]);
+    }
+
+    public function aStoreThatCannotQuarantineDoesNotStopTheSweepOfTheNext(): void
+    {
+        $root = sys_get_temp_dir() . '/gc-bare-' . bin2hex(random_bytes(8));
+        $bare = new \Rasuvaeff\Yii3Filestorage\Store\FileSystem\FileSystemStore('bare', $root, $this->factory);
+        $this->store->corrupt('docs/orphan.bin', 'orphan');
+        $entry = $this->store->quarantine(ObjectSet::tree(new StoredObjectId('docs/orphan.bin')), $this->clock->now());
+        Assert::instanceOf($entry, QuarantinedObject::class);
+
+        try {
+            $display = $this->run(
+                ['--apply' => true, '--retention' => 'PT0S'],
+                stores: new StoreRegistry([$bare, $this->store]),
+            )->getDisplay();
+        } finally {
+            \Yiisoft\Files\FileHelper::removeDirectory($root);
+        }
+
+        Assert::string($this->flatten($display))->contains('Quarantine of store "bare" could not be swept');
+        Assert::false($this->store->isQuarantined('docs/orphan.bin'));
+    }
+
+    /**
+     * Under the flat layout a blob's entry holds its derivatives too, and they
+     * sort before the original (`-` before `.`): the ledger is asked about
+     * every object until one is a blob it knows.
+     */
+    public function aFlatBlobEntryIsRecognisedByItsOriginal(): void
+    {
+        $flat = new InMemoryStore('flat', $this->factory, $this->clock, new FlatSiblingLayout());
+        $hash = hash('sha256', 'flat bytes');
+        $file = $this->sharedRow('flat', 'docs', 'flat bytes', $flat, 'b/ab/cd/' . $hash . '.jpg');
+        $flat->corrupt('b/ab/cd/' . $hash . '-s.webp', 'thumb');
+        $this->ledger->releaseFile('flat', $this->clock->now());
+        $lease = $this->ledger->claimForDeletion($this->clock->now(), $this->clock->now()->add(new DateInterval('PT5M')));
+        Assert::instanceOf($lease, BlobLease::class);
+        $entry = $flat->quarantine($flat->layout()->deletion(new StoredObjectId($file->relativePath)), $this->clock->now());
+        Assert::same(\count($entry?->objects ?? []), 2);
+        $this->clock->advance(new DateInterval('PT10M'));
+
+        $this->run(['--apply' => true], ledger: $this->ledger, stores: new StoreRegistry([$flat]), withBlobs: false);
+
+        $paths = $flat->paths();
+        sort($paths);
+        Assert::same($paths, ['b/ab/cd/' . $hash . '-s.webp', $file->relativePath]);
+    }
+
+    public function aBlobKeptForTheApplicationDoesNotStopTheCollection(): void
+    {
+        [$kept] = $this->scheduledBlob('a', 'kept bytes');
+        [, $collected] = $this->scheduledBlob('b', 'collected bytes');
+
+        $this->run(['--apply' => true], ledger: $this->ledger, references: new ListReferenceChecker([
+            'memory:' . $kept->relativePath,
+        ]));
+
+        Assert::same($this->store->bytesAt($kept->relativePath), 'kept bytes');
+        Assert::null($this->ledger->find($collected));
+    }
+
     // ---- helpers ------------------------------------------------------------
 
     /**
@@ -654,14 +816,20 @@ final class GcSafetyTest
         );
     }
 
-    private function sharedRow(string $id, string $group): File
-    {
-        $path = 'cas/ab/cd/' . hash('sha256', 'shared bytes') . '/original';
-        $this->store->corrupt($path, 'shared bytes');
-        $blob = BlobId::create('memory', $path);
-        $file = $this->row($id, $path, group: $group);
+    private function sharedRow(
+        string $id,
+        string $group,
+        string $content = 'shared bytes',
+        ?InMemoryStore $store = null,
+        ?string $path = null,
+    ): File {
+        $store ??= $this->store;
+        $path ??= 'cas/ab/cd/' . hash('sha256', $content) . '/original';
+        $store->corrupt($path, $content);
+        $blob = BlobId::create($store->name(), $path);
+        $file = $this->row($id, $path, group: $group, store: $store->name());
         $this->ledger->commit(
-            $this->ledger->reserve($blob, hash('sha256', 'shared bytes'), 12, $this->clock->now()->add(new DateInterval('PT1H'))),
+            $this->ledger->reserve($blob, hash('sha256', $content), \strlen($content), $this->clock->now()->add(new DateInterval('PT1H'))),
             $file,
         );
 
@@ -671,10 +839,10 @@ final class GcSafetyTest
     /**
      * @return array{File, BlobId}
      */
-    private function scheduledBlob(): array
+    private function scheduledBlob(string $id = 'shared', string $content = 'shared bytes'): array
     {
-        $file = $this->sharedRow('shared', 'docs');
-        $this->ledger->releaseFile('shared', $this->clock->now());
+        $file = $this->sharedRow($id, 'docs', $content);
+        $this->ledger->releaseFile($id, $this->clock->now());
 
         return [$file, BlobId::create('memory', $file->relativePath)];
     }

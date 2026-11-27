@@ -86,7 +86,8 @@ final class FlatSiblingLayoutTest
     public function aNameThatDoesNotFitTheLayoutIsRefused(string $path): void
     {
         Expect::exception(InvalidArgumentException::class)->withMessageContaining(
-            "\"{$path}\" does not fit the flat sibling layout",
+            "\"{$path}\" does not fit the flat sibling layout: the name must be <base> or <base>.<ext>, "
+            . 'with a base of letters, digits and underscores',
         );
 
         (new FlatSiblingLayout())->deletion(new StoredObjectId($path));

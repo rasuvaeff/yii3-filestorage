@@ -312,6 +312,102 @@ final class FileSystemStoreQuarantineTest
         Assert::same($this->inventory($store), []);
     }
 
+    public function nestedDirectoriesTheQuarantineEmptiedAreRemovedAndNothingElse(): void
+    {
+        $this->place('docs/ab/key/original.jpg', 'original');
+        $this->place('docs/ab/key/sub/deeper/x.bin', 'nested');
+        mkdir($this->root . '/docs/ab/empty-neighbour', 0o775, recursive: true);
+        mkdir($this->root . '/elsewhere', 0o775, recursive: true);
+
+        $entry = $this->store->quarantine(ObjectSet::tree(new StoredObjectId('docs/ab/key')), $this->now);
+
+        Assert::same($this->paths($entry), ['docs/ab/key/original.jpg', 'docs/ab/key/sub/deeper/x.bin']);
+        Assert::false(file_exists($this->root . '/docs/ab/key'));
+        Assert::true(is_dir($this->root . '/docs/ab/empty-neighbour'));
+        Assert::true(is_dir($this->root . '/elsewhere'));
+    }
+
+    public function restoreSkipsAnObjectMissingFromTheEntryAndRestoresTheRest(): void
+    {
+        $this->place('docs/k/a.bin', 'a');
+        $this->place('docs/k/b.bin', 'b');
+        $entry = $this->store->quarantine(ObjectSet::tree(new StoredObjectId('docs/k')), $this->now);
+        Assert::instanceOf($entry, QuarantinedObject::class);
+        unlink($this->quarantine . '/' . $entry->token . '/docs/k/a.bin');
+
+        $this->store->restore($entry);
+
+        Assert::false(is_file($this->root . '/docs/k/a.bin'));
+        Assert::same(file_get_contents($this->root . '/docs/k/b.bin'), 'b');
+    }
+
+    public function purgeRemovesOnlyItsOwnEntry(): void
+    {
+        $this->place('docs/a.bin', 'a');
+        $this->place('docs/b.bin', 'b');
+        $first = $this->store->quarantine(ObjectSet::tree(new StoredObjectId('docs/a.bin')), $this->now);
+        $second = $this->store->quarantine(ObjectSet::tree(new StoredObjectId('docs/b.bin')), $this->now);
+        Assert::instanceOf($first, QuarantinedObject::class);
+        Assert::instanceOf($second, QuarantinedObject::class);
+
+        $this->store->purge($first);
+
+        Assert::same(
+            array_map(static fn(QuarantinedObject $e): string => $e->token, iterator_to_array($this->store->quarantined(), preserve_keys: false)),
+            [$second->token],
+        );
+    }
+
+    public function aSymlinkedSiblingIsNeitherDeletedNorQuarantined(): void
+    {
+        $store = new FileSystemStore(
+            'flat',
+            $this->root,
+            $this->factory,
+            quarantinePath: $this->quarantine,
+            layout: new FlatSiblingLayout(),
+        );
+        $this->place('b/abc.jpg', 'original');
+        $this->place('outside.txt', 'not a member');
+        if (!@symlink($this->root . '/outside.txt', $this->root . '/b/abc-link.webp')) {
+            Assert::same(\PHP_OS_FAMILY, 'Windows', 'symlink() unexpectedly failed');
+
+            return;
+        }
+
+        $entry = $store->quarantine($store->layout()->deletion(new StoredObjectId('b/abc.jpg')), $this->now);
+
+        Assert::same($this->paths($entry), ['b/abc.jpg']);
+        Assert::true(is_link($this->root . '/b/abc-link.webp'));
+    }
+
+    public function aQuarantineWhoseNameIsAPrefixOfTheRootIsNotAroundIt(): void
+    {
+        $store = new FileSystemStore('x', $this->root, $this->factory, quarantinePath: $this->base . '/ro');
+
+        Assert::null($store->quarantineProblem());
+    }
+
+    public function theMissingQuarantineMessageSaysWhatToConfigure(): void
+    {
+        $store = new FileSystemStore('bare', $this->base . '/bare', $this->factory);
+
+        Assert::same(
+            $store->quarantineProblem(),
+            'Store "bare" has no quarantine directory, so filestorage:gc cannot delete from it. '
+            . 'Pass quarantinePath: a directory outside the root and outside any web root, on the same filesystem',
+        );
+    }
+
+    public function anEmptyObjectIsListedWithSizeZero(): void
+    {
+        $this->place('docs/empty.bin', '');
+
+        $objects = iterator_to_array($this->store->objects(), preserve_keys: false);
+
+        Assert::same($objects[0]->size, 0);
+    }
+
     private function place(string $relativePath, string $bytes): void
     {
         $absolute = $this->root . '/' . $relativePath;

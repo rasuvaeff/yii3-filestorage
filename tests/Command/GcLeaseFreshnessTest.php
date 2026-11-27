@@ -66,6 +66,7 @@ final class GcLeaseFreshnessTest
         Assert::instanceOf($record, BlobRecord::class);
         Assert::same($record->state, BlobState::PendingDelete);
         Assert::string($display)->contains('less than half of its lease was left');
+        Assert::string($display)->contains('another collector may already have taken it over. It stays queued.');
         Assert::string($display)->contains('Collected 0 blobs.');
     }
 
