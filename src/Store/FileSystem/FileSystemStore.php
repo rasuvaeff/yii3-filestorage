@@ -16,8 +16,13 @@ use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeAwareStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeDescriptor;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeObject;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\DirectoryLayout;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectLayoutInterface;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectSet;
 use Rasuvaeff\Yii3Filestorage\Store\MaintenanceStoreInterface;
+use Rasuvaeff\Yii3Filestorage\Store\QuarantinedObject;
 use Rasuvaeff\Yii3Filestorage\Store\RangeReadableStoreInterface;
+use Rasuvaeff\Yii3Filestorage\Store\StoredObject;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
 use Rasuvaeff\Yii3Filestorage\Store\StoreResult;
 use Rasuvaeff\Yii3Filestorage\Stream\LimitedStream;
@@ -42,6 +47,13 @@ use Yiisoft\Files\FileHelper;
  * under the root afterwards. A symlink planted inside the tree therefore cannot
  * be used to read `/etc/passwd` through a store operation, even though the
  * relative path itself was already validated.
+ *
+ * Garbage collection deletes through a quarantine directory: objects are
+ * `rename()`d to `<quarantine>/<token>/<relative path>` and purged or restored
+ * once the decision is committed. The quarantine must be outside the root —
+ * so it is never listed, never served when the root is a web root — and on
+ * the same filesystem, or the move is a copy. Without one, garbage collection
+ * cannot delete from this store, and `filestorage:check` says so.
  *
  * @api
  */
@@ -74,16 +86,29 @@ final readonly class FileSystemStore implements
     /** @var non-empty-string Absolute, symlink-resolved. */
     private string $rootPath;
 
+    /** @var non-empty-string|null Absolute, symlink-resolved. */
+    private ?string $quarantinePath;
+
+    private ObjectLayoutInterface $layout;
+
     /**
      * @param string $rootPath Created when missing.
+     * @param string|null $quarantinePath Created when missing. Outside the root,
+     *        on the same filesystem. Null leaves the store without a quarantine,
+     *        which garbage collection refuses to delete from.
+     * @param ObjectLayoutInterface|null $layout Null is {@see DirectoryLayout},
+     *        the default. Chosen once for the lifetime of the data.
      *
      * @throws StoreException
+     * @throws InvalidArgumentException
      */
     public function __construct(
         string $name,
         string $rootPath,
         private StreamFactoryInterface $streamFactory,
         private int $directoryMode = 0o775,
+        ?string $quarantinePath = null,
+        ?ObjectLayoutInterface $layout = null,
     ) {
         if ($name === '' || preg_match(self::NAME_PATTERN, $name) !== 1) {
             throw new InvalidArgumentException("Invalid store name \"{$name}\"");
@@ -109,6 +134,14 @@ final readonly class FileSystemStore implements
 
         $this->name = $name;
         $this->rootPath = $resolved;
+        $this->layout = $layout ?? new DirectoryLayout();
+        $this->quarantinePath = $quarantinePath === null ? null : $this->resolveQuarantine($quarantinePath);
+    }
+
+    #[Override]
+    public function layout(): ObjectLayoutInterface
+    {
+        return $this->layout;
     }
 
     #[Override]
@@ -164,7 +197,16 @@ final readonly class FileSystemStore implements
     #[Override]
     public function delete(File $file): void
     {
-        $path = $this->resolve($file->directory());
+        $set = $this->layout->deletion(new StoredObjectId($file->relativePath));
+        if (!$set->isTree()) {
+            foreach ($this->members($set) as $member) {
+                $this->deleteObject(new StoredObjectId($member));
+            }
+
+            return;
+        }
+
+        $path = $this->resolve($set->path);
         if ($path === null) {
             return;
         }
@@ -177,7 +219,7 @@ final readonly class FileSystemStore implements
             }
         } catch (\Throwable $e) {
             throw new StoreException(
-                "Could not delete \"{$file->directory()}\" from store \"{$this->name}\"",
+                "Could not delete \"{$set->path}\" from store \"{$this->name}\"",
                 0,
                 $e,
             );
@@ -302,7 +344,15 @@ final readonly class FileSystemStore implements
                 continue;
             }
 
-            yield new StoredObjectId($relativePath);
+            $absolute = $this->rootPath . '/' . $relativePath;
+            $modified = @filemtime($absolute);
+            $size = @filesize($absolute);
+
+            yield new StoredObject(
+                id: new StoredObjectId($relativePath),
+                lastModified: $modified === false ? null : new DateTimeImmutable('@' . $modified),
+                size: $size === false ? null : max(0, $size),
+            );
 
             if (++$yielded >= $limit) {
                 return;
@@ -330,12 +380,287 @@ final readonly class FileSystemStore implements
         }
     }
 
+    #[Override]
+    public function quarantine(ObjectSet $objects, DateTimeImmutable $now): ?QuarantinedObject
+    {
+        $quarantine = $this->requireQuarantine();
+        $members = $this->members($objects);
+        if ($members === []) {
+            return null;
+        }
+
+        $token = QuarantinedObject::newToken($now);
+        $moved = [];
+
+        foreach ($members as $member) {
+            $source = $this->resolve($member);
+            if ($source === null || !is_file($source)) {
+                continue;
+            }
+
+            $target = $quarantine . '/' . $token . '/' . $member;
+
+            try {
+                FileHelper::ensureDirectory(\dirname($target), $this->directoryMode);
+            } catch (\Throwable $e) {
+                throw new StoreException("Could not quarantine \"{$member}\" in store \"{$this->name}\"", 0, $e);
+            }
+
+            if (!@rename($source, $target)) {
+                throw new StoreException("Could not quarantine \"{$member}\" in store \"{$this->name}\"");
+            }
+
+            $moved[] = new StoredObjectId($member);
+        }
+
+        if ($objects->isTree()) {
+            $this->removeEmptyDirectories($this->rootPath . '/' . $objects->path);
+        }
+
+        if ($moved === []) {
+            @rmdir($quarantine . '/' . $token);
+
+            return null;
+        }
+
+        return new QuarantinedObject($token, $moved);
+    }
+
+    #[Override]
+    public function restore(QuarantinedObject $entry): void
+    {
+        $base = $this->requireQuarantine() . '/' . $entry->token;
+
+        foreach ($entry->objects as $object) {
+            $held = $base . '/' . $object->relativePath;
+            if (!is_file($held)) {
+                continue;
+            }
+
+            $target = $this->rootPath . '/' . $object->relativePath;
+            $directory = \dirname($target);
+
+            try {
+                FileHelper::ensureDirectory($directory, $this->directoryMode);
+            } catch (\Throwable $e) {
+                throw new StoreException(
+                    "Could not restore \"{$object->relativePath}\" in store \"{$this->name}\"",
+                    0,
+                    $e,
+                );
+            }
+            $this->assertContained($directory);
+
+            // link() refuses an existing target where rename() would replace
+            // it: put-if-absent. A target that exists already is a writer's
+            // re-publication of the same content, and keeping it is correct.
+            if (!file_exists($target) && !@link($held, $target) && !file_exists($target) && !@rename($held, $target)) {
+                throw new StoreException(
+                    "Could not restore \"{$object->relativePath}\" in store \"{$this->name}\"",
+                );
+            }
+
+            @unlink($held);
+        }
+
+        $this->purge($entry);
+    }
+
+    #[Override]
+    public function purge(QuarantinedObject $entry): void
+    {
+        $base = $this->requireQuarantine() . '/' . $entry->token;
+        if (!is_dir($base)) {
+            return;
+        }
+
+        try {
+            FileHelper::removeDirectory($base);
+        } catch (\Throwable $e) {
+            throw new StoreException(
+                "Could not purge quarantine entry \"{$entry->token}\" of store \"{$this->name}\"",
+                0,
+                $e,
+            );
+        }
+    }
+
+    #[Override]
+    public function quarantined(?string $afterToken = null, int $limit = 1000): iterable
+    {
+        $quarantine = $this->requireQuarantine();
+        $tokens = @scandir($quarantine);
+        if ($tokens === false) {
+            return;
+        }
+
+        $yielded = 0;
+        foreach ($tokens as $token) {
+            if (!QuarantinedObject::isToken($token) || ($afterToken !== null && strcmp($token, $afterToken) <= 0)) {
+                continue;
+            }
+
+            $objects = [];
+            foreach ($this->walk($quarantine . '/' . $token, '') as $relativePath) {
+                $objects[] = new StoredObjectId($relativePath);
+            }
+            if ($objects === []) {
+                @rmdir($quarantine . '/' . $token);
+
+                continue;
+            }
+
+            yield new QuarantinedObject($token, $objects);
+
+            if (++$yielded >= $limit) {
+                return;
+            }
+        }
+    }
+
+    #[Override]
+    public function quarantineProblem(): ?string
+    {
+        if ($this->quarantinePath === null) {
+            return "Store \"{$this->name}\" has no quarantine directory, so filestorage:gc cannot delete from it. "
+                . 'Pass quarantinePath: a directory outside the root and outside any web root, on the same filesystem';
+        }
+
+        $root = @stat($this->rootPath);
+        $quarantine = @stat($this->quarantinePath);
+        if ($root === false || $quarantine === false) {
+            return "Store \"{$this->name}\": the root or the quarantine \"{$this->quarantinePath}\" cannot be read";
+        }
+        if ($root['dev'] !== $quarantine['dev']) {
+            return "Store \"{$this->name}\": the quarantine \"{$this->quarantinePath}\" is on a different filesystem "
+                . 'than the root, so moving an object into it is a copy rather than an atomic rename';
+        }
+
+        return null;
+    }
+
     /**
      * @return non-empty-string
      */
     private function derivativePath(File $file, DerivativeDescriptor $derivative): string
     {
-        return $file->directory() . '/' . $derivative->fileName();
+        return $this->layout->derivativePath($file, $derivative);
+    }
+
+    /**
+     * The objects of a set that exist, by relative path.
+     *
+     * @return list<non-empty-string>
+     */
+    private function members(ObjectSet $set): array
+    {
+        if ($set->isTree()) {
+            $absolute = $this->resolve($set->path);
+            if ($absolute === null) {
+                return [];
+            }
+
+            return is_dir($absolute) ? [...$this->walk($absolute, $set->path)] : [$set->path];
+        }
+
+        $directory = $set->directory();
+        $absolute = $directory === null ? $this->rootPath : $this->resolve($directory);
+        $entries = $absolute === null ? false : @scandir($absolute);
+        if ($entries === false) {
+            return [];
+        }
+
+        $members = [];
+        foreach ($entries as $entry) {
+            $relative = $directory === null ? $entry : $directory . '/' . $entry;
+            if (
+                $relative !== ''
+                && $set->contains($relative)
+                && !str_ends_with($entry, self::PARTIAL_SUFFIX)
+                && is_file($this->rootPath . '/' . $relative)
+                && !is_link($this->rootPath . '/' . $relative)
+            ) {
+                $members[] = $relative;
+            }
+        }
+
+        return $members;
+    }
+
+    /**
+     * Bottom-up removal of directories that the quarantine emptied, never
+     * of one that still holds something — a staging file of a writer
+     * re-publishing the same content included.
+     */
+    private function removeEmptyDirectories(string $absolute): void
+    {
+        $entries = is_dir($absolute) && !is_link($absolute) ? @scandir($absolute) : false;
+        if ($entries === false) {
+            return;
+        }
+
+        foreach ($entries as $entry) {
+            if ($entry !== '.' && $entry !== '..') {
+                $this->removeEmptyDirectories($absolute . '/' . $entry);
+            }
+        }
+
+        @rmdir($absolute);
+    }
+
+    /**
+     * @return non-empty-string
+     *
+     * @throws StoreException
+     */
+    private function requireQuarantine(): string
+    {
+        if ($this->quarantinePath === null) {
+            throw new StoreException(
+                "Store \"{$this->name}\" has no quarantine directory configured, so it cannot quarantine objects",
+            );
+        }
+
+        return $this->quarantinePath;
+    }
+
+    /**
+     * @return non-empty-string
+     *
+     * @throws StoreException
+     * @throws InvalidArgumentException
+     */
+    private function resolveQuarantine(string $quarantinePath): string
+    {
+        if (!is_dir($quarantinePath)) {
+            try {
+                FileHelper::ensureDirectory($quarantinePath, $this->directoryMode);
+            } catch (\Throwable $e) {
+                throw new StoreException(
+                    "Store \"{$this->name}\" quarantine \"{$quarantinePath}\" does not exist and could not be created",
+                    0,
+                    $e,
+                );
+            }
+        }
+
+        $resolved = realpath($quarantinePath);
+        if ($resolved === false || $resolved === '') {
+            throw new StoreException("Store \"{$this->name}\" quarantine \"{$quarantinePath}\" could not be resolved");
+        }
+
+        if (
+            $this->isContained($resolved)
+            || $this->rootPath === $resolved
+            || str_starts_with($this->rootPath, $resolved . \DIRECTORY_SEPARATOR)
+        ) {
+            throw new InvalidArgumentException(
+                "Store \"{$this->name}\" quarantine \"{$quarantinePath}\" must be outside the root, and the root "
+                . 'outside it: anything under the root is listed as an object and may be served',
+            );
+        }
+
+        return $resolved;
     }
 
     /**

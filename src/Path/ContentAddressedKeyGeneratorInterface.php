@@ -22,8 +22,11 @@ interface ContentAddressedKeyGeneratorInterface
      *        tenant and group by default, so one tenant cannot learn that
      *        another already stored a given file.
      * @param non-empty-string $sha256 Lowercase hex digest of the complete content.
+     * @param non-empty-string|null $extension From the *detected* media type
+     *        (`ExtensionMap`), never from the client. A generator whose keys
+     *        carry no extension ignores it.
      *
      * @return non-empty-string
      */
-    public function generate(string $scope, string $sha256): string;
+    public function generate(string $scope, string $sha256, ?string $extension = null): string;
 }

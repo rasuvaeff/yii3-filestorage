@@ -17,6 +17,7 @@ use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeDescriptor;
 use Rasuvaeff\Yii3Filestorage\Store\FileSystem\FileSystemStore;
+use Rasuvaeff\Yii3Filestorage\Store\StoredObject;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\ForwardOnlyStream;
 use Rasuvaeff\Yii3Filestorage\Upload;
@@ -302,7 +303,7 @@ final class FileSystemStoreTest
         file_put_contents($this->root . '/' . $first->directory() . '/leftover.abc123.part', 'junk');
 
         $paths = array_map(
-            static fn(StoredObjectId $id): string => $id->relativePath,
+            static fn(StoredObject $object): string => $object->relativePath,
             iterator_to_array($this->store->objects(), preserve_keys: false),
         );
 
@@ -363,7 +364,7 @@ final class FileSystemStoreTest
         file_put_contents($this->root . '/a-b.txt', 'z');
 
         $paths = array_map(
-            static fn(StoredObjectId $id): string => $id->relativePath,
+            static fn(StoredObject $object): string => $object->relativePath,
             iterator_to_array($this->store->objects(), preserve_keys: false),
         );
 
@@ -732,7 +733,7 @@ final class FileSystemStoreTest
 
         try {
             $paths = array_map(
-                static fn(StoredObjectId $id): string => $id->relativePath,
+                static fn(StoredObject $object): string => $object->relativePath,
                 iterator_to_array($this->store->objects(), preserve_keys: false),
             );
 

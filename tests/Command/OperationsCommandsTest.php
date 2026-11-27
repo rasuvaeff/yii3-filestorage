@@ -18,6 +18,7 @@ use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
 use Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Store\BlobId;
 use Rasuvaeff\Yii3Filestorage\Store\BlobState;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectSet;
 use Rasuvaeff\Yii3Filestorage\Store\MaintenanceStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
 use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
@@ -1815,7 +1816,7 @@ final class OperationsCommandsTest
     }
 
     /**
-     * A maintenance-capable store whose delete fails for exactly one object —
+     * A maintenance-capable store whose quarantine fails for exactly one object —
      * what a permission problem or a partial outage looks like from the
      * outside. Everything else is answered by the real in-memory store.
      */
@@ -1824,11 +1825,10 @@ final class OperationsCommandsTest
         $store = Understudy::for(MaintenanceStoreInterface::class);
         Understudy::forwarding($store, $this->store);
         when(static fn(): string => $store->name())->returns($name);
-        when(static fn() => $store->deleteObject(Arg::satisfies(
-            static fn(mixed $object): bool => $object instanceof StoredObjectId
-                && $object->relativePath === $failingPath,
+        when(static fn() => $store->quarantine(Arg::satisfies(
+            static fn(mixed $objects): bool => $objects instanceof ObjectSet && $objects->contains($failingPath),
             'the failing object',
-        )))->throws(new StoreException('the object store is unreachable'));
+        ), Arg::any()))->throws(new StoreException('the object store is unreachable'));
 
         return $store;
     }

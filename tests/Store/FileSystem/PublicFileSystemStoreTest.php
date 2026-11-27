@@ -14,6 +14,7 @@ use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicy;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeDescriptor;
 use Rasuvaeff\Yii3Filestorage\Store\FileSystem\FileSystemStore;
 use Rasuvaeff\Yii3Filestorage\Store\FileSystem\PublicFileSystemStore;
+use Rasuvaeff\Yii3Filestorage\Store\StoredObject;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Testo\Assert;
@@ -146,7 +147,7 @@ final class PublicFileSystemStoreTest
         Assert::same($this->store->derivativeStream($file, $thumb)?->getContents(), 'rendition');
 
         $paths = array_map(
-            static fn(StoredObjectId $id): string => $id->relativePath,
+            static fn(StoredObject $object): string => $object->relativePath,
             iterator_to_array($this->store->objects(), preserve_keys: false),
         );
         Assert::same(count($paths), 2, 'the original and its derivative');

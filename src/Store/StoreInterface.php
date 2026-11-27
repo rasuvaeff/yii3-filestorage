@@ -10,6 +10,7 @@ use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
 use Rasuvaeff\Yii3Filestorage\Exception\UploadTooLargeException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectLayoutInterface;
 use Rasuvaeff\Yii3Filestorage\Upload;
 
 /**
@@ -60,8 +61,16 @@ interface StoreInterface
     ): StoreResult;
 
     /**
-     * Deletes the file's directory — the object and every derivative stored
-     * beside it.
+     * Where this store puts derivatives and what {@see delete()} removes.
+     * Fixed for the lifetime of the store's data.
+     */
+    public function layout(): ObjectLayoutInterface;
+
+    /**
+     * Deletes everything {@see ObjectLayoutInterface::deletion()} names for
+     * the file — the object and every derivative stored with it. Under the
+     * default {@see \Rasuvaeff\Yii3Filestorage\Store\Layout\DirectoryLayout}
+     * that is the file's key directory.
      *
      * Deleting only the object would leak every preview generated for it,
      * indistinguishably from a live file, forever.

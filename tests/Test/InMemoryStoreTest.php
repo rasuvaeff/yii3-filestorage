@@ -15,6 +15,7 @@ use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
 use Rasuvaeff\Yii3Filestorage\Store\RangeReadableStoreInterface;
+use Rasuvaeff\Yii3Filestorage\Store\StoredObject;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
 use Rasuvaeff\Yii3Filestorage\Store\StoreUrlProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
@@ -214,13 +215,13 @@ final class InMemoryStoreTest
         sort($paths);
 
         $first = array_map(
-            static fn(StoredObjectId $id): string => $id->relativePath,
+            static fn(StoredObject $object): string => $object->relativePath,
             iterator_to_array($this->store->objects(limit: 2), preserve_keys: false),
         );
         Assert::same($first, array_slice($paths, 0, 2));
 
         $second = array_map(
-            static fn(StoredObjectId $id): string => $id->relativePath,
+            static fn(StoredObject $object): string => $object->relativePath,
             iterator_to_array($this->store->objects(afterPath: $first[1], limit: 10), preserve_keys: false),
         );
         Assert::same($second, array_slice($paths, 2));

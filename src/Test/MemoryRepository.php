@@ -74,6 +74,20 @@ final class MemoryRepository implements MaintenanceRepositoryInterface
     }
 
     #[Override]
+    public function referencedPaths(string $storeName, array $directories): array
+    {
+        $wanted = array_fill_keys($directories, value: true);
+        $paths = [];
+        foreach ($this->files as $file) {
+            if ($file->storeName === $storeName && isset($wanted[$file->directory()])) {
+                $paths[] = $file->relativePath;
+            }
+        }
+
+        return $paths;
+    }
+
+    #[Override]
     public function updateContentHash(string $id, string $contentHash): bool
     {
         $file = $this->files[$id] ?? null;

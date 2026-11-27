@@ -10,7 +10,10 @@ use Psr\Http\Message\StreamInterface;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryOptions;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectLayoutInterface;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectSet;
 use Rasuvaeff\Yii3Filestorage\Store\MaintenanceStoreInterface;
+use Rasuvaeff\Yii3Filestorage\Store\QuarantinedObject;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
 use Rasuvaeff\Yii3Filestorage\Store\StoreResult;
 use Rasuvaeff\Yii3Filestorage\Store\StoreUrlProviderInterface;
@@ -70,6 +73,12 @@ final readonly class UrlCapableInMemoryStore implements MaintenanceStoreInterfac
     }
 
     #[Override]
+    public function layout(): ObjectLayoutInterface
+    {
+        return $this->inner->layout();
+    }
+
+    #[Override]
     public function delete(File $file): void
     {
         $this->inner->delete($file);
@@ -109,5 +118,35 @@ final readonly class UrlCapableInMemoryStore implements MaintenanceStoreInterfac
     public function deleteObject(StoredObjectId $object): void
     {
         $this->inner->deleteObject($object);
+    }
+
+    #[Override]
+    public function quarantine(ObjectSet $objects, DateTimeImmutable $now): ?QuarantinedObject
+    {
+        return $this->inner->quarantine($objects, $now);
+    }
+
+    #[Override]
+    public function restore(QuarantinedObject $entry): void
+    {
+        $this->inner->restore($entry);
+    }
+
+    #[Override]
+    public function purge(QuarantinedObject $entry): void
+    {
+        $this->inner->purge($entry);
+    }
+
+    #[Override]
+    public function quarantined(?string $afterToken = null, int $limit = 1000): iterable
+    {
+        return $this->inner->quarantined($afterToken, $limit);
+    }
+
+    #[Override]
+    public function quarantineProblem(): ?string
+    {
+        return $this->inner->quarantineProblem();
     }
 }

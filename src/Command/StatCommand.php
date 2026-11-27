@@ -10,6 +10,7 @@ use Rasuvaeff\Yii3Filestorage\Repository\MaintenanceRepositoryInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 
 /**
@@ -29,7 +30,10 @@ use Symfony\Component\Console\Output\OutputInterface;
  * same object. So under tenancy the physical half is withheld rather than
  * estimated — see {@see self::scopedPhysicalNote()}.
  *
- * A full scan, so it is a command rather than a dashboard endpoint.
+ * A full scan, so it is a command rather than a dashboard endpoint. On a large
+ * installation `--limit` bounds one run and `--after` resumes after the id the
+ * previous one printed as `nextCursor`; each run then reports its own window,
+ * and "distinct objects" counts within that window only.
  *
  * @api
  */
@@ -51,6 +55,10 @@ final class StatCommand extends Command
     #[Override]
     protected function configure(): void
     {
+        $this
+            ->addOption('after', null, InputOption::VALUE_REQUIRED, 'Resume after this file id')
+            ->addOption('limit', null, InputOption::VALUE_REQUIRED, 'Stop after this many rows (0: no limit)', '0');
+
         Json::configure($this);
     }
 
@@ -67,11 +75,21 @@ final class StatCommand extends Command
         $bytes = 0;
         $paths = [];
         $sharedBytes = 0;
-        $after = null;
+        $options = $input->getOptions();
+        $after = isset($options['after']) && \is_string($options['after']) && $options['after'] !== '' ? $options['after'] : null;
+        $limit = max(0, (int) $input->getOption('limit'));
+        $nextCursor = null;
 
-        while (($page = iterator_to_array($this->repository->files($after, 500), preserve_keys: false)) !== []) {
+        while (
+            ($limit === 0 || $files < $limit)
+            && ($page = iterator_to_array(
+                $this->repository->files($after, $limit === 0 ? 500 : max(1, min(500, $limit - $files))),
+                preserve_keys: false,
+            )) !== []
+        ) {
             foreach ($page as $file) {
                 $after = $file->id;
+                $nextCursor = $limit > 0 && $files + 1 >= $limit ? $file->id : null;
                 $files++;
                 $bytes += $file->size;
 
@@ -108,6 +126,7 @@ final class StatCommand extends Command
                 'scoped' => $scoped,
                 'groups' => new \stdClass(),
                 'total' => ['files' => 0, 'bytes' => 0],
+                'nextCursor' => null,
             ] + ($scoped ? [] : [
                 'distinctObjects' => 0,
                 'sharedRows' => 0,
@@ -131,6 +150,10 @@ final class StatCommand extends Command
             ],
         );
 
+        if ($nextCursor !== null) {
+            $io->text(sprintf('Stopped at --limit. Resume with --after=%s', $nextCursor));
+        }
+
         if ($scoped) {
             // The logical half only: the physical figures a scoped walk
             // cannot know are simply absent from the object, the same
@@ -139,6 +162,7 @@ final class StatCommand extends Command
                 'scoped' => true,
                 'groups' => $groups,
                 'total' => ['files' => $files, 'bytes' => $bytes],
+                'nextCursor' => $nextCursor,
             ]);
 
             return Command::SUCCESS;
@@ -165,6 +189,7 @@ final class StatCommand extends Command
             'distinctObjects' => \count($paths),
             'sharedRows' => $files - \count($paths),
             'sharedBytes' => $sharedBytes,
+            'nextCursor' => $nextCursor,
         ]);
 
         return Command::SUCCESS;

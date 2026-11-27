@@ -61,7 +61,7 @@ final class GcRaceTest
         // real mtimes, and an age check against a clock in the past would make
         // every object look new and pass these tests for the wrong reason.
         $this->clock = new MovableClock(new DateTimeImmutable());
-        $this->disk = new FileSystemStore('cas', $this->root, $this->factory);
+        $this->disk = new FileSystemStore('cas', $this->root . '/store', $this->factory, quarantinePath: $this->root . '/quarantine');
         $this->store = new InterleavingStore($this->disk);
         $this->repository = new MemoryRepository();
     }
@@ -93,11 +93,11 @@ final class GcRaceTest
         $ledger->releaseFile($first->id, $this->clock->now());
 
         $republished = null;
-        $this->store->onFirstDeleteObject(function () use ($ledger, $blob, $hash, $content, &$republished): void {
+        $this->store->onFirstQuarantine(function () use ($ledger, $blob, $hash, $content, &$republished): void {
             // Collector 1 is paused here, holding a lease that is about to expire.
             $this->clock->advance(new DateInterval('PT10M'));
             $this->gc($ledger, $this->repository, ['--apply' => true]);
-            Assert::false(is_file($this->root . '/' . $blob->relativePath()), 'collector 2 should have deleted the blob');
+            Assert::false(is_file($this->root . '/store/' . $blob->relativePath()), 'collector 2 should have deleted the blob');
 
             $republished = $this->publishAndCommit($ledger, $blob, $hash, $content, 'file-2');
         });
@@ -163,7 +163,7 @@ final class GcRaceTest
         $reservation = $ledger->reserve($blob, $hash, \strlen($content), $this->clock->now()->add(new DateInterval('PT1H')));
 
         // What putIfAbsent() does when the key is absent.
-        $absolute = $this->root . '/' . $blob->relativePath();
+        $absolute = $this->root . '/store/' . $blob->relativePath();
         FileHelper::ensureDirectory(\dirname($absolute));
         file_put_contents($absolute, $content);
 

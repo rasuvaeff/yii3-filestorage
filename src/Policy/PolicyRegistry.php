@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Filestorage\Policy;
 
 use InvalidArgumentException;
+use Rasuvaeff\Yii3Filestorage\Reference\ReferenceAuthority;
 
 /**
  * Resolves the {@see UploadPolicy} of a group, falling back to the wildcard.
@@ -28,6 +29,7 @@ final readonly class PolicyRegistry
         'maxBytes',
         'maxPixels',
         'requireImageDimensions',
+        'referencesOwnedBy',
     ];
 
     /** @var array<non-empty-string, UploadPolicy> */
@@ -120,7 +122,36 @@ final readonly class PolicyRegistry
             maxBytes: self::intOption($policy, 'maxBytes', $defaults->maxBytes, $group),
             maxPixels: self::intOption($policy, 'maxPixels', $defaults->maxPixels, $group),
             requireImageDimensions: self::boolOption($policy, 'requireImageDimensions', default: false, group: $group),
+            referencesOwnedBy: self::authorityOption($policy, $group),
         );
+    }
+
+    /**
+     * A wrong value fails here rather than falling back to `rows`: a group the
+     * operator meant to hand to the application would otherwise silently keep
+     * every row forever.
+     *
+     * @param array<array-key, mixed> $policy
+     * @param non-empty-string $group
+     */
+    private static function authorityOption(array $policy, string $group): ReferenceAuthority
+    {
+        if (!isset($policy['referencesOwnedBy'])) {
+            return ReferenceAuthority::Rows;
+        }
+
+        $authority = \is_string($policy['referencesOwnedBy'])
+            ? ReferenceAuthority::tryFrom($policy['referencesOwnedBy'])
+            : null;
+        if ($authority === null) {
+            throw new InvalidArgumentException(sprintf(
+                'referencesOwnedBy for group "%s" must be one of: %s',
+                $group,
+                implode(', ', array_map(static fn(ReferenceAuthority $a): string => $a->value, ReferenceAuthority::cases())),
+            ));
+        }
+
+        return $authority;
     }
 
     /**

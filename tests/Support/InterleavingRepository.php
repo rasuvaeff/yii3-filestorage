@@ -37,7 +37,7 @@ final class InterleavingRepository implements MaintenanceRepositoryInterface
     {
         $hook = $this->beforeSave;
         $this->beforeSave = null;
-        if ($hook !== null) {
+        if ($hook instanceof \Closure) {
             $hook($file);
         }
 
@@ -54,6 +54,12 @@ final class InterleavingRepository implements MaintenanceRepositoryInterface
     public function files(?string $afterId = null, int $limit = 1000): iterable
     {
         return $this->repository->files($afterId, $limit);
+    }
+
+    #[Override]
+    public function referencedPaths(string $storeName, array $directories): array
+    {
+        return $this->repository->referencedPaths($storeName, $directories);
     }
 
     #[Override]

@@ -14,7 +14,10 @@ use Rasuvaeff\Yii3Filestorage\Policy\DeliveryOptions;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeDescriptor;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeObject;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeUrlProviderInterface;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectLayoutInterface;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectSet;
 use Rasuvaeff\Yii3Filestorage\Store\MaintenanceStoreInterface;
+use Rasuvaeff\Yii3Filestorage\Store\QuarantinedObject;
 use Rasuvaeff\Yii3Filestorage\Store\RangeReadableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
 use Rasuvaeff\Yii3Filestorage\Store\StoreResult;
@@ -83,7 +86,7 @@ final readonly class PublicFileSystemStore implements
     #[Override]
     public function publicDerivativeUrl(File $file, DerivativeDescriptor $derivative): string
     {
-        return $this->baseUrl . '/' . $this->encodePath($file->directory() . '/' . $derivative->fileName());
+        return $this->baseUrl . '/' . $this->encodePath($this->store->layout()->derivativePath($file, $derivative));
     }
 
     /**
@@ -113,6 +116,12 @@ final readonly class PublicFileSystemStore implements
         int $maxBytes = 0,
     ): StoreResult {
         return $this->store->write($upload, $groupName, $pathGenerator, $mediaType, $maxBytes);
+    }
+
+    #[Override]
+    public function layout(): ObjectLayoutInterface
+    {
+        return $this->store->layout();
     }
 
     #[Override]
@@ -185,10 +194,45 @@ final readonly class PublicFileSystemStore implements
         $this->store->deleteObject($object);
     }
 
+    #[Override]
+    public function quarantine(ObjectSet $objects, DateTimeImmutable $now): ?QuarantinedObject
+    {
+        return $this->store->quarantine($objects, $now);
+    }
+
+    #[Override]
+    public function restore(QuarantinedObject $entry): void
+    {
+        $this->store->restore($entry);
+    }
+
+    #[Override]
+    public function purge(QuarantinedObject $entry): void
+    {
+        $this->store->purge($entry);
+    }
+
+    #[Override]
+    public function quarantined(?string $afterToken = null, int $limit = 1000): iterable
+    {
+        return $this->store->quarantined($afterToken, $limit);
+    }
+
+    /**
+     * The inner store already refuses a quarantine under its root, which is
+     * this store's web root: a deleted public file must not stay downloadable
+     * for the whole retention.
+     */
+    #[Override]
+    public function quarantineProblem(): ?string
+    {
+        return $this->store->quarantineProblem();
+    }
+
     /**
      * @param non-empty-string $relativePath Every path reaching here is
      *        validated non-empty: `File::requireRelativePath()` for uploads,
-     *        a `directory() . '/' . fileName()` concat for derivatives.
+     *        the layout's derivative path for derivatives.
      */
     private function encodePath(string $relativePath): string
     {
