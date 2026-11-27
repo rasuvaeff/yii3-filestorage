@@ -14,7 +14,12 @@ use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
 use Rasuvaeff\Yii3Filestorage\Exception\UploadTooLargeException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\DirectoryLayout;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectLayoutInterface;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectSet;
 use Rasuvaeff\Yii3Filestorage\Store\MaintenanceStoreInterface;
+use Rasuvaeff\Yii3Filestorage\Store\QuarantinedObject;
+use Rasuvaeff\Yii3Filestorage\Store\StoredObject;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
 use Rasuvaeff\Yii3Filestorage\Store\StoreResult;
 use Rasuvaeff\Yii3Filestorage\Upload;
@@ -29,6 +34,9 @@ use Rasuvaeff\Yii3Filestorage\Upload;
  * to be wrong. Model "unsupported" by using this store; model "supported" by
  * wrapping it in a double of your own.
  *
+ * The quarantine is a separate map, never listed by {@see self::objects()},
+ * and always available — a double with nothing to configure.
+ *
  * @api
  */
 final class InMemoryStore implements MaintenanceStoreInterface
@@ -41,27 +49,41 @@ final class InMemoryStore implements MaintenanceStoreInterface
     /** @var array<non-empty-string, DateTimeImmutable> */
     private array $timestamps = [];
 
+    /** @var array<non-empty-string, array<non-empty-string, array{string, DateTimeImmutable}>> Token => path => held. */
+    private array $quarantine = [];
+
     /** @var int<0, max> */
     private int $writes = 0;
 
     /** @var non-empty-string */
     private readonly string $name;
 
+    private readonly ObjectLayoutInterface $layout;
+
     /**
      * @param ClockInterface|null $clock Pin object timestamps. Any PSR-20 clock
      *        works — `Yiisoft\Test\Support\Clock\StaticClock` is the obvious
      *        one in a Yii application. Without it the system clock is used.
+     * @param ObjectLayoutInterface|null $layout Null is {@see DirectoryLayout}.
      */
     public function __construct(
         string $name,
         private readonly StreamFactoryInterface $streamFactory,
         private readonly ?ClockInterface $clock = null,
+        ?ObjectLayoutInterface $layout = null,
     ) {
         if ($name === '' || preg_match(self::NAME_PATTERN, $name) !== 1) {
             throw new InvalidArgumentException("Invalid store name \"{$name}\"");
         }
 
         $this->name = $name;
+        $this->layout = $layout ?? new DirectoryLayout();
+    }
+
+    #[Override]
+    public function layout(): ObjectLayoutInterface
+    {
+        return $this->layout;
     }
 
     #[Override]
@@ -117,9 +139,9 @@ final class InMemoryStore implements MaintenanceStoreInterface
     #[Override]
     public function delete(File $file): void
     {
-        $prefix = $file->directory() . '/';
+        $set = $this->layout->deletion(new StoredObjectId($file->relativePath));
         foreach (array_keys($this->objects) as $path) {
-            if ($path === $file->directory() || str_starts_with($path, $prefix)) {
+            if ($set->contains($path)) {
                 unset($this->objects[$path], $this->timestamps[$path]);
             }
         }
@@ -165,7 +187,11 @@ final class InMemoryStore implements MaintenanceStoreInterface
                 continue;
             }
 
-            yield new StoredObjectId($path);
+            yield new StoredObject(
+                id: new StoredObjectId($path),
+                lastModified: $this->timestamps[$path] ?? null,
+                size: \strlen($this->objects[$path]),
+            );
 
             if (++$yielded >= $limit) {
                 return;
@@ -177,6 +203,72 @@ final class InMemoryStore implements MaintenanceStoreInterface
     public function deleteObject(StoredObjectId $object): void
     {
         unset($this->objects[$object->relativePath], $this->timestamps[$object->relativePath]);
+    }
+
+    #[Override]
+    public function quarantine(ObjectSet $objects, DateTimeImmutable $now): ?QuarantinedObject
+    {
+        $held = [];
+        foreach ($this->objects as $path => $bytes) {
+            if ($objects->contains($path)) {
+                $held[$path] = [$bytes, $this->timestamps[$path] ?? $now];
+                unset($this->objects[$path], $this->timestamps[$path]);
+            }
+        }
+
+        if ($held === []) {
+            return null;
+        }
+
+        $token = QuarantinedObject::newToken($now);
+        $this->quarantine[$token] = $held;
+
+        return $this->entry($token);
+    }
+
+    #[Override]
+    public function restore(QuarantinedObject $entry): void
+    {
+        foreach ($this->quarantine[$entry->token] ?? [] as $path => [$bytes, $timestamp]) {
+            if (!isset($this->objects[$path])) {
+                $this->objects[$path] = $bytes;
+                $this->timestamps[$path] = $timestamp;
+            }
+        }
+
+        unset($this->quarantine[$entry->token]);
+    }
+
+    #[Override]
+    public function purge(QuarantinedObject $entry): void
+    {
+        unset($this->quarantine[$entry->token]);
+    }
+
+    #[Override]
+    public function quarantined(?string $afterToken = null, int $limit = 1000): iterable
+    {
+        $tokens = array_keys($this->quarantine);
+        sort($tokens, SORT_STRING);
+
+        $yielded = 0;
+        foreach ($tokens as $token) {
+            if ($afterToken !== null && strcmp($token, $afterToken) <= 0) {
+                continue;
+            }
+
+            yield $this->entry($token);
+
+            if (++$yielded >= $limit) {
+                return;
+            }
+        }
+    }
+
+    #[Override]
+    public function quarantineProblem(): ?string
+    {
+        return null;
     }
 
     /**
@@ -207,21 +299,66 @@ final class InMemoryStore implements MaintenanceStoreInterface
     }
 
     /**
-     * Simulates an object disappearing behind the package's back, which is what
-     * `verify` and the `content()` cap exist to cope with.
+     * Simulates an object changing behind the package's back, which is what
+     * `verify` and the `content()` cap exist to cope with — or, at a new path,
+     * an object appearing there. A new object is stamped like a write; an
+     * existing one keeps its timestamp.
      *
      * @param non-empty-string $relativePath
      */
     public function corrupt(string $relativePath, string $bytes): void
     {
         $this->objects[$relativePath] = $bytes;
+        $this->timestamps[$relativePath] ??= $this->clock?->now() ?? new DateTimeImmutable();
+    }
+
+    /**
+     * Back-dates an object, so a test can make it older than a sweep's
+     * minimum age without moving the clock every other object reads.
+     *
+     * @param non-empty-string $relativePath
+     */
+    public function touch(string $relativePath, DateTimeImmutable $lastModified): void
+    {
+        if (isset($this->objects[$relativePath])) {
+            $this->timestamps[$relativePath] = $lastModified;
+        }
+    }
+
+    /**
+     * @param non-empty-string $relativePath
+     */
+    public function isQuarantined(string $relativePath): bool
+    {
+        foreach ($this->quarantine as $held) {
+            if (isset($held[$relativePath])) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function clear(): void
     {
         $this->objects = [];
         $this->timestamps = [];
+        $this->quarantine = [];
         $this->writes = 0;
+    }
+
+    /**
+     * @param non-empty-string $token
+     */
+    private function entry(string $token): QuarantinedObject
+    {
+        return new QuarantinedObject(
+            $token,
+            array_map(
+                static fn(string $path): StoredObjectId => new StoredObjectId($path),
+                array_map(strval(...), array_keys($this->quarantine[$token] ?? [])),
+            ),
+        );
     }
 
     private const int CHUNK = 262_144;

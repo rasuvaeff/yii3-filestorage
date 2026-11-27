@@ -106,6 +106,13 @@ final class CheckCommand extends Command
                 $store::class,
                 implode(', ', $this->capabilities($store)) ?: 'base only',
             ];
+
+            // A warning, not an error: uploads and reads work without a usable
+            // quarantine, only filestorage:gc cannot delete from the store.
+            $quarantineProblem = $store instanceof MaintenanceStoreInterface ? $store->quarantineProblem() : null;
+            if ($quarantineProblem !== null) {
+                $warnings[] = $quarantineProblem;
+            }
         }
         $io->table(['Name', 'Class', 'Capabilities'], $rows);
 

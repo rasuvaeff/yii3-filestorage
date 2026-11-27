@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.9.0 — 2026-11-27
+
+Pre-1.0 minor with breaking interface changes: every store, repository and
+content-addressed key generator implemented outside this package must be
+updated, and the family moves to `^0.9` together.
+
+- Fix #45: `filestorage:gc --orphans` no longer deletes the bytes of an upload between publication and its row being saved, nor of a file committed while the walk was elsewhere. References are looked up per listing page *after* the page is listed, and an object is a candidate only when it is older than `--min-age` (default `PT1H`) measured from that lookup; an object whose store reports no timestamp is never swept. Running `--orphans --apply` with uploads stopped is no longer required.
+- Fix #43 (remaining window after 0.8.4): `gc` deletes in two phases — quarantine, `completeDeletion()`, then purge; when the ledger refuses (a collector paused past its lease), the bytes are restored with put-if-absent semantics and a writer's re-publication is kept. Each run first sweeps the quarantines: an entry the ledger still knows is restored unless another collector holds a live lease (crash recovery); anything else is purged after `--retention` (default `P7D`). Committed blob deletions are purged at once.
+- Enh #46: `gc --orphans --store=<name> --after=<path>` resumes a sweep, `--max-scan=N` bounds the objects examined, and an early stop prints `nextCursor` (JSON `nextCursor: {store, after}`). `stat` takes `--limit` / `--after` and reports `nextCursor`.
+- Enh #47: references the application owns. `Reference\ReferenceCheckerInterface` (by path, batched), `Reference\ReferenceAuthority`, `UploadPolicy::$referencesOwnedBy` (`PolicyRegistry::fromArray()` key `referencesOwnedBy`: `rows` | `application`). `gc` releases rows of application-owned groups older than `--min-age` that the checker no longer names — a shared blob through the ledger, a unique object into the quarantine — and asks again before quarantining a blob and in the orphan sweep. `GcCommand` takes `references`, `policies` and `retention`; core DI passes the policy registry and an optional bound checker.
+- Enh #48: object layout strategy. `Store\Layout\ObjectLayoutInterface`, `DirectoryLayout` (the default, bit for bit the previous behaviour) and opt-in `FlatSiblingLayout` (`<base>.<ext>`, derivatives `<base>-<name>.<ext>`), `ObjectSet`; `Path\FlatSha256KeyGenerator` (`<scope>/ab/cd/<sha>.<ext>`). The frozen rule "path layout" becomes "`DirectoryLayout` is the frozen default; `FlatSiblingLayout` is an opt-in layout".
+- `filestorage:check` warns when a maintenance store has no usable quarantine (none configured, or on another filesystem than the root).
+- `gc --format=json` adds `releasedRows`, `orphansTooNew`, `orphansUndated`, `nextCursor` and `quarantine: {restored, purged, kept}`; text output adds the kept-young/undated count and the resume hint.
+
+**BC breaks** (implementers; callers of the facade are unaffected):
+
+- `Store\StoreInterface`: new `layout(): ObjectLayoutInterface`; `delete(File)` removes what `layout()->deletion()` names (unchanged for `DirectoryLayout`).
+- `Store\MaintenanceStoreInterface::objects()` yields `Store\StoredObject` (`id`, `lastModified`, `size`, plus `relativePath` mirroring the id) instead of `StoredObjectId`. Code that only read `->relativePath` keeps working; code that compared or passed the items as `StoredObjectId` must use `->id`.
+- `Store\MaintenanceStoreInterface`: new `quarantine(ObjectSet, DateTimeImmutable): ?QuarantinedObject`, `restore(QuarantinedObject)`, `purge(QuarantinedObject)`, `quarantined(?string, int): iterable<QuarantinedObject>`, `quarantineProblem(): ?string`. The quarantine must be hidden from `objects()` and not publicly readable.
+- `Repository\MaintenanceRepositoryInterface`: new `referencedPaths(string $storeName, array $directories): list<string>` — paths of the store's rows whose `File::directory()` is one of the given directories.
+- `Path\ContentAddressedKeyGeneratorInterface::generate()` takes `?string $extension = null`; `Sha256KeyGenerator` ignores it, so existing keys do not move.
+- `FileSystemStore` takes `?string $quarantinePath = null` and `?ObjectLayoutInterface $layout = null`. **Without a quarantine `gc` no longer deletes from a store** — configure one outside the root (and outside any web root), on the same filesystem. A quarantine inside or around the root is rejected.
+- `filestorage:gc` behaviour: orphans younger than `--min-age` (1 hour) are kept; swept orphans and released files stay in the quarantine for `--retention` (7 days) instead of being unlinked; under `DirectoryLayout` a collected blob's whole key directory (its derivatives included) goes with it, instead of the derivatives waiting for the orphan sweep; `--after` without `--orphans --store` is an error.
+- `Test\InMemoryStore::corrupt()` stamps a newly placed object with the clock (an existing one keeps its timestamp); new `touch()` and `isQuarantined()`; constructor takes `?ObjectLayoutInterface $layout = null`.
+
 ## 0.8.4 — 2026-11-27
 
 - Fix: `filestorage:gc` skips a blob's physical delete when less than half of its lease is left, and returns the blob to the queue. A collector paused past its lease could delete bytes a writer had re-published meanwhile; this narrows that window to a pause between the check and the unlink, it does not close it (#43).

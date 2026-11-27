@@ -17,7 +17,8 @@ return [
         'defaultUrlTtl' => 'PT1H',
         'extensionOverrides' => [],
         // Group name => ['allowedMimeTypes' => [...], 'maxBytes' => int,
-        //                'maxPixels' => int, 'requireImageDimensions' => bool].
+        //                'maxPixels' => int, 'requireImageDimensions' => bool,
+        //                'referencesOwnedBy' => 'rows' | 'application'].
         // '*' is the fallback applied to every group without its own entry.
         'policies' => [
             '*' => ['maxBytes' => 20_971_520],

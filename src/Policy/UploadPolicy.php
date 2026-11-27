@@ -8,6 +8,7 @@ use InvalidArgumentException;
 use Rasuvaeff\Yii3Filestorage\Exception\PolicyViolationException;
 use Rasuvaeff\Yii3Filestorage\Exception\UnsupportedMediaTypeException;
 use Rasuvaeff\Yii3Filestorage\Exception\UploadSizeException;
+use Rasuvaeff\Yii3Filestorage\Reference\ReferenceAuthority;
 use Rasuvaeff\Yii3Filestorage\Upload;
 
 /**
@@ -37,6 +38,8 @@ final readonly class UploadPolicy
     /** @var list<non-empty-string> */
     public array $allowedMimeTypes;
 
+    public ReferenceAuthority $referencesOwnedBy;
+
     /**
      * @param list<string> $allowedMimeTypes Empty list accepts anything.
      *        Matching is against the *detected* type, so a null detection fails a
@@ -52,12 +55,16 @@ final readonly class UploadPolicy
      *        cannot parse (AVIF, HEIC on older builds) would otherwise be
      *        rejected wholesale; turn it on for a group that must be safe to
      *        hand to an image processor.
+     * @param ReferenceAuthority|null $referencesOwnedBy Who decides the group's
+     *        files are still in use. Null is {@see ReferenceAuthority::Rows}:
+     *        a row lives until the application removes it.
      */
     public function __construct(
         array $allowedMimeTypes = [],
         public int $maxBytes = 0,
         public int $maxPixels = 40_000_000,
         public bool $requireImageDimensions = false,
+        ?ReferenceAuthority $referencesOwnedBy = null,
     ) {
         if ($maxBytes < 0) {
             throw new InvalidArgumentException('maxBytes must not be negative');
@@ -75,6 +82,7 @@ final readonly class UploadPolicy
         }
 
         $this->allowedMimeTypes = $validated;
+        $this->referencesOwnedBy = $referencesOwnedBy ?? ReferenceAuthority::Rows;
     }
 
     /**

@@ -14,11 +14,15 @@ capabilities `StoreUrlProviderInterface`, `RangeReadableStoreInterface`,
 `ContentAddressableStoreInterface`, `MaintenanceStoreInterface`,
 `DerivativeAwareStoreInterface`, `DerivativeUrlProviderInterface`;
 `Store\StoreRegistry`, `StoreResult`, `StoredObjectId`, `BlobId`,
-`DerivativeDescriptor`, `DerivativeObject`; `Store\FileSystem\FileSystemStore`
+`DerivativeDescriptor`, `DerivativeObject`, `StoredObject`, `QuarantinedObject`;
+`Store\Layout\ObjectLayoutInterface` with `DirectoryLayout` (default) and
+`FlatSiblingLayout`, and `ObjectSet`; `Store\FileSystem\FileSystemStore`
 and `PublicFileSystemStore`; `Repository\RepositoryInterface` and
 `MaintenanceRepositoryInterface`; `Path\PathGeneratorInterface` with
 `RandomPathGenerator` / `DatePathGenerator`, and
-`ContentAddressedKeyGeneratorInterface` with `Sha256KeyGenerator`;
+`ContentAddressedKeyGeneratorInterface` with `Sha256KeyGenerator` and
+`FlatSha256KeyGenerator`; `Reference\ReferenceCheckerInterface` and
+`ReferenceAuthority`;
 `Mime\MimeTypeDetectorInterface` / `FinfoMimeTypeDetector` / `ExtensionMap`;
 `Id\IdGeneratorInterface` with `Uuid7IdGenerator` (default),
 `SymfonyUidIdGenerator` and `RamseyUuidIdGenerator`; `Policy\UploadPolicy`,
@@ -102,13 +106,23 @@ Two things are already handed out to the world and cannot change without
 breaking existing data or existing URLs. Treat a change to either as a
 whole-family major, not a refactor.
 
-**Path layout `<…>/<key>/original.<ext>` — a directory per stored file.**
-`File::$relativePath` is persisted, so changing the layout means moving every
-object and rewriting every row. The directory is what makes derivatives work
-with no schema change (`<key>/thumb.webp` is a sibling) and why
-`StoreInterface::delete()` removes the *directory* — deleting only the object
-would leak every preview, indistinguishably from live files. The `<ext>` comes
-from the detected media type through `ExtensionMap`; unknown is `original.bin`.
+**DirectoryLayout is the frozen default; FlatSiblingLayout is an opt-in
+layout.** (Relaxed from "the path layout is frozen" by the owner on 2026-11-27,
+GC safety design §7/§10.) The default `<…>/<key>/original.<ext>` — a directory
+per stored file — cannot change: `File::$relativePath` is persisted, so changing
+it means moving every object and rewriting every row. The directory is what
+makes derivatives work with no schema change (`<key>/thumb.webp` is a sibling)
+and why `StoreInterface::delete()` removes the *directory* — deleting only the
+object would leak every preview, indistinguishably from live files. The `<ext>`
+comes from the detected media type through `ExtensionMap`; unknown is
+`original.bin`. `DirectoryLayout` must stay bit for bit what it was before it
+became a strategy — `tests/Store/DirectoryLayoutRegressionTest` was written
+against the 0.8.4 code and must never be edited to follow a change.
+`FlatSiblingLayout` (`<base>.<ext>`, derivatives `<base>-<name>.<ext>`, `delete()`
+removes the original and every `<base>-*`) is chosen once per store, before it
+holds data; it refuses a file whose name is not `<base>[.<ext>]` with a base of
+`[A-Za-z0-9_]`, because a dash or dot in the base would make `foo-bar.jpg` a
+derivative of `foo.jpg`.
 
 **Token format `v1.<key-id>.<expires>.<b64url payload>.<b64url hmac>`.**
 Version, key id, expiry and payload are all covered by the HMAC. The payload is
@@ -198,16 +212,31 @@ asserting only one half lets the operands be swapped undetected.
   the token (`SignedPayload::$scopeId`) and `ScopedFileResolverInterface` matches
   it as a second predicate. Disabling the filter is a cross-tenant read of every
   file whose id leaks.
-- **Two known `gc` limits until 0.9 (review 2026-11-27, #2/#3).** The blob
-  lease guards the ledger row, not the unlink: a collector paused past its lease
-  can delete bytes a writer re-published meanwhile, and `completeDeletion()`
-  refusing the stale token comes too late. `collectBlobs()` skips the delete
-  when less than half of `leaseTtl` is left (`GcLeaseFreshnessTest`); that
-  narrows the window to a pause between the check and the unlink, it does not
-  close it — 0.9's two-phase deletion does. The orphan sweep has no minimum
-  object age and reads the referenced set once before walking, so the
-  documented operating rule is `gc --orphans --apply` with uploads stopped.
-  Do not describe either as fixed in docs until 0.9 lands.
+- **`gc` never unlinks; it quarantines, commits, then purges or restores.**
+  Review 2026-11-27 #2: the blob lease guards the ledger row, not the unlink, so
+  a collector paused past its lease used to delete bytes a writer re-published
+  meanwhile. Now the bytes move into the store's quarantine *before*
+  `completeDeletion()`, and a refused commit restores them with put-if-absent
+  semantics (`link()`, never `rename()` over a target — `rename()` overwrites).
+  Keys are content hashes, so a restored copy and a re-published one are the
+  same bytes; no generation is needed in the key. Proven by
+  `GcRaceTest::stalledCollectorDoesNotDeleteBytesRepublishedAfterItsLeaseExpired`.
+  The half-lease freshness check from 0.8.4 stays as an optimisation; correctness
+  no longer depends on it. The run-start quarantine sweep restores an entry the
+  ledger still knows unless its lease is live — that is the crash recovery.
+- **The orphan sweep checks references after listing, per page, against a
+  minimum age.** Review #3: a snapshot of every row read before the walk lost
+  uploads between publication and `save()`, and files committed after the
+  snapshot. An object is a candidate only when `lastModified < checkedAt −
+  minAge`, where `checkedAt` is taken *after* the page is listed; an object with
+  no timestamp never is. `GcRaceTest` holds both races and a positive control
+  that an old orphan *is* swept — keep the control, or a sweep that does nothing
+  passes the race tests.
+- **The quarantine is outside the store root.** `FileSystemStore` refuses one
+  inside (or around) the root: under the root it would be listed as objects and,
+  for a public store, served — a deleted public file would stay downloadable for
+  the whole retention. Same filesystem is a `check` warning, not an error:
+  across devices `rename()` copies.
 - **`gc --orphans` refuses when a `FileScopeProviderInterface` is bound, and
   that refusal is load-bearing.** The referenced-set comes from the repository,
   which filters by the current tenant; the object listing is physical and

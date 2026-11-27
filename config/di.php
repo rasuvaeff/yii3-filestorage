@@ -10,6 +10,7 @@ use Rasuvaeff\Yii3Filestorage\Command\GcCommand;
 use Rasuvaeff\Yii3Filestorage\Command\ImportCommand;
 use Rasuvaeff\Yii3Filestorage\Command\StatCommand;
 use Rasuvaeff\Yii3Filestorage\Command\VerifyCommand;
+use Rasuvaeff\Yii3Filestorage\Reference\ReferenceCheckerInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\MaintenanceRepositoryInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\ScopedFileResolverInterface;
@@ -141,18 +142,26 @@ return [
     // the referenced-set it builds is tenant-filtered while the object listing
     // it compares against is physical, so under tenancy the difference is other
     // tenants' live files.
+    //
+    // The reference checker is the application's: bound only by an
+    // application whose groups hand references to it (`referencesOwnedBy`).
+    // The policy registry tells `gc` which groups those are.
     GcCommand::class => static fn (
         StoreRegistry $stores,
         MaintenanceRepositoryInterface $repository,
         ClockInterface $clock,
+        PolicyRegistry $policies,
         ?BlobLedgerInterface $ledger = null,
         ?FileScopeProviderInterface $scopes = null,
+        ?ReferenceCheckerInterface $references = null,
     ): GcCommand => new GcCommand(
         stores: $stores,
         repository: $repository,
         clock: $clock,
         ledger: $ledger,
         scopes: $scopes,
+        references: $references,
+        policies: $policies,
     ),
 
     VerifyCommand::class => static fn (

@@ -10,6 +10,8 @@ use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryOptions;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicy;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectSet;
+use Rasuvaeff\Yii3Filestorage\Store\QuarantinedObject;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\UrlCapableInMemoryStore;
@@ -133,6 +135,31 @@ final class UrlCapableInMemoryStoreTest
 
         Assert::same($inner->paths(), [], 'the inner store is empty');
         Assert::false($store->exists($this->file($result->relativePath)));
+    }
+
+    public function theQuarantineAndLayoutAreTheInnerStores(): void
+    {
+        $inner = new InMemoryStore('memory', new Psr17Factory(), new StaticClock(new DateTimeImmutable('2026-01-01T00:00:00+00:00')));
+        $store = new UrlCapableInMemoryStore($inner);
+        $inner->corrupt('docs/a.bin', 'a');
+        $inner->corrupt('docs/b.bin', 'b');
+
+        Assert::same($store->layout(), $inner->layout());
+        Assert::null($store->quarantineProblem());
+
+        $first = $store->quarantine(ObjectSet::tree(new StoredObjectId('docs/a.bin')), new DateTimeImmutable('@1764237600'));
+        $second = $store->quarantine(ObjectSet::tree(new StoredObjectId('docs/b.bin')), new DateTimeImmutable('@1764237601'));
+        Assert::instanceOf($first, QuarantinedObject::class);
+        Assert::instanceOf($second, QuarantinedObject::class);
+        Assert::true($inner->isQuarantined('docs/a.bin'));
+        Assert::same(\count(iterator_to_array($store->quarantined(), preserve_keys: false)), 2);
+        Assert::same(\count(iterator_to_array($store->quarantined($first->token, 1), preserve_keys: false)), 1);
+
+        $store->restore($first);
+        $store->purge($second);
+
+        Assert::same($inner->paths(), ['docs/a.bin']);
+        Assert::same(iterator_to_array($store->quarantined(), preserve_keys: false), []);
     }
 
     private function store(bool $publicUrls = true, bool $temporaryUrls = true): UrlCapableInMemoryStore

@@ -14,7 +14,8 @@ use Override;
  * a MIME database is updated and the same bytes start being called something
  * else. It has no fallback either — the dedup coordinator calls it only once a
  * complete hash exists, and a file too large to hash takes the ordinary unique
- * path instead.
+ * path instead. The extension argument is therefore ignored, and the key for
+ * given bytes is the same as before it existed.
  *
  * @api
  */
@@ -24,7 +25,7 @@ final readonly class Sha256KeyGenerator implements ContentAddressedKeyGeneratorI
     private const string SHA256_PATTERN = '/^[a-f0-9]{64}\z/';
 
     #[Override]
-    public function generate(string $scope, string $sha256): string
+    public function generate(string $scope, string $sha256, ?string $extension = null): string
     {
         if (preg_match(self::SCOPE_PATTERN, $scope) !== 1) {
             throw new InvalidArgumentException("Invalid content-addressed scope \"{$scope}\"");

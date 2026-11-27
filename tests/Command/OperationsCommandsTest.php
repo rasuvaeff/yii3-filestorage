@@ -18,6 +18,7 @@ use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
 use Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Store\BlobId;
 use Rasuvaeff\Yii3Filestorage\Store\BlobState;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectSet;
 use Rasuvaeff\Yii3Filestorage\Store\MaintenanceStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
 use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
@@ -1362,6 +1363,51 @@ final class OperationsCommandsTest
         Assert::string($tester->getDisplay())->contains('No files stored');
     }
 
+    public function statStopsAtItsLimitAndPrintsWhereToResume(): void
+    {
+        $this->storeFile('a');
+        $this->storeFile('b');
+        $this->storeFile('c');
+
+        $first = $this->run(new StatCommand($this->repository), ['--limit' => '2', '--format' => 'json']);
+        $decoded = json_decode($first->getDisplay(), associative: true, flags: \JSON_THROW_ON_ERROR);
+        Assert::same($decoded['total']['files'], 2);
+        Assert::same($decoded['nextCursor'], 'b');
+
+        $text = $this->run(new StatCommand($this->repository), ['--limit' => '2']);
+        Assert::string($text->getDisplay())->contains('Stopped at --limit. Resume with --after=b');
+
+        $rest = $this->run(new StatCommand($this->repository), ['--after' => 'b', '--format' => 'json']);
+        $decoded = json_decode($rest->getDisplay(), associative: true, flags: \JSON_THROW_ON_ERROR);
+        Assert::same($decoded['total']['files'], 1);
+        Assert::null($decoded['nextCursor']);
+    }
+
+    public function statHasNoCursorWhenTheLimitIsNotReached(): void
+    {
+        $this->storeFile('a');
+
+        $tester = $this->run(new StatCommand($this->repository), ['--limit' => '2', '--format' => 'json']);
+        $decoded = json_decode($tester->getDisplay(), associative: true, flags: \JSON_THROW_ON_ERROR);
+
+        Assert::same($decoded['total']['files'], 1);
+        Assert::null($decoded['nextCursor']);
+        Assert::false(str_contains($this->run(new StatCommand($this->repository), ['--limit' => '2'])->getDisplay(), 'Resume'));
+    }
+
+    public function statPagesPastTheLimitOfOnePage(): void
+    {
+        for ($i = 0; $i < 3; ++$i) {
+            $this->storeFile("f{$i}");
+        }
+
+        $tester = $this->run(new StatCommand($this->repository), ['--limit' => '1', '--format' => 'json']);
+        $decoded = json_decode($tester->getDisplay(), associative: true, flags: \JSON_THROW_ON_ERROR);
+
+        Assert::same($decoded['total']['files'], 1);
+        Assert::same($decoded['nextCursor'], 'f0');
+    }
+
     public function statGroupsAndTotals(): void
     {
         $this->storeFile('a', group: 'avatars');
@@ -1815,7 +1861,7 @@ final class OperationsCommandsTest
     }
 
     /**
-     * A maintenance-capable store whose delete fails for exactly one object —
+     * A maintenance-capable store whose quarantine fails for exactly one object —
      * what a permission problem or a partial outage looks like from the
      * outside. Everything else is answered by the real in-memory store.
      */
@@ -1824,11 +1870,10 @@ final class OperationsCommandsTest
         $store = Understudy::for(MaintenanceStoreInterface::class);
         Understudy::forwarding($store, $this->store);
         when(static fn(): string => $store->name())->returns($name);
-        when(static fn() => $store->deleteObject(Arg::satisfies(
-            static fn(mixed $object): bool => $object instanceof StoredObjectId
-                && $object->relativePath === $failingPath,
+        when(static fn() => $store->quarantine(Arg::satisfies(
+            static fn(mixed $objects): bool => $objects instanceof ObjectSet && $objects->contains($failingPath),
             'the failing object',
-        )))->throws(new StoreException('the object store is unreachable'));
+        ), Arg::any()))->throws(new StoreException('the object store is unreachable'));
 
         return $store;
     }

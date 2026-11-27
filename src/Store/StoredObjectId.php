@@ -41,6 +41,25 @@ final readonly class StoredObjectId
         $this->relativePath = $relativePath;
     }
 
+    /**
+     * The parent directory, the same way {@see \Rasuvaeff\Yii3Filestorage\File::directory()}
+     * derives it: an object at the store root answers itself.
+     *
+     * @return non-empty-string
+     */
+    public function directory(): string
+    {
+        $slash = strrpos($this->relativePath, '/');
+        if ($slash === false || $slash === 0) {
+            return $this->relativePath;
+        }
+
+        $directory = substr($this->relativePath, 0, $slash);
+        \assert($directory !== '');
+
+        return $directory;
+    }
+
     public function equals(self $other): bool
     {
         return $this->relativePath === $other->relativePath;

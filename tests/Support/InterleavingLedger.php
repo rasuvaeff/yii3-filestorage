@@ -29,6 +29,17 @@ final class InterleavingLedger implements BlobLedgerInterface
 
     public function __construct(private readonly BlobLedgerInterface $ledger) {}
 
+    private bool $claims = true;
+
+    /**
+     * Nothing is ever claimable, so a run exercises everything except the
+     * collection pass.
+     */
+    public function withoutClaims(): void
+    {
+        $this->claims = false;
+    }
+
     public function onFirstClaim(Closure $hook): void
     {
         $this->afterClaim = $hook;
@@ -73,6 +84,10 @@ final class InterleavingLedger implements BlobLedgerInterface
     #[Override]
     public function claimForDeletion(DateTimeImmutable $now, DateTimeImmutable $leaseExpiresAt): ?BlobLease
     {
+        if (!$this->claims) {
+            return null;
+        }
+
         $lease = $this->ledger->claimForDeletion($now, $leaseExpiresAt);
 
         $hook = $this->afterClaim;

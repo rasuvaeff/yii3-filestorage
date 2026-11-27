@@ -124,6 +124,27 @@ final class MemoryRepositoryTest
         Assert::false($this->repository->updateContentHash('nope', hash('sha256', 'x')));
     }
 
+    public function referencedPathsAreTheRowsInTheGivenDirectoriesOfOneStore(): void
+    {
+        $this->repository->save($this->file('a'));
+        $this->repository->save($this->file('b'));
+        $this->repository->save(File::create(
+            id: 'elsewhere',
+            storeName: 'archive',
+            groupName: 'common',
+            relativePath: 'common/x/original.txt',
+            originalName: 'x',
+            size: 1,
+            createdAt: new DateTimeImmutable('2026-08-06T12:00:00.000000+00:00'),
+        ));
+
+        Assert::same(
+            $this->repository->referencedPaths('memory', ['common/a', 'common/x', 'common/none']),
+            ['common/a/original.txt'],
+        );
+        Assert::same($this->repository->referencedPaths('memory', ['common']), [], 'a parent directory is not a match');
+    }
+
     private function file(string $id, string $originalName = 'thing.txt'): File
     {
         return File::create(

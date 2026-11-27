@@ -18,8 +18,8 @@ that does not accidentally serve an uploaded HTML file from your own origin.
 > Projects using the [llm/skills](https://github.com/roxblnfk/skills) Composer plugin also get this package's agent skill synced into `.agents/skills/` automatically on install.
 
 **Status: `0.x`.** The API may still change while the database and Flysystem
-backends are built against it. The path layout and the signed-token format are
-already frozen — see [Frozen decisions](#frozen-decisions).
+backends are built against it. The default path layout and the signed-token
+format are already frozen — see [Frozen decisions](#frozen-decisions).
 
 **The road to 1.0.** Already frozen: the directory-per-file layout, the
 `v1.<key>.<expires>.<payload>.<hmac>` token format, the store/repository
@@ -80,6 +80,9 @@ StoreInterface::class => static fn (StreamFactoryInterface $streams): StoreInter
         name: 'upload',
         rootPath: '/app/runtime/upload',
         streamFactory: $streams,
+        // Where filestorage:gc moves what it deletes: outside the root and any
+        // web root, on the same filesystem. Without it gc cannot delete here.
+        quarantinePath: '/app/runtime/upload-quarantine',
     ),
 
 // Optional: record image dimensions into File::$metadata on upload.
@@ -151,6 +154,7 @@ return [
             name: 'upload',
             rootPath: '/app/runtime/upload',
             streamFactory: $streams,
+            quarantinePath: '/app/runtime/upload-quarantine',
         ),
 
     // Development only — every record is lost when the process ends.
@@ -304,6 +308,37 @@ return [
 An upload that fails its policy throws `PolicyViolationException` **before the
 store is touched**, so nothing is written.
 
+**References the application owns.** By default a `File` row *is* the
+reference: it lives until the application removes it
+(`'referencesOwnedBy' => 'rows'`). An application whose references are URLs
+inside text or JSON sets `'referencesOwnedBy' => 'application'` on those groups
+and binds a `Reference\ReferenceCheckerInterface` — by path, batched per page:
+
+```php
+use Rasuvaeff\Yii3Filestorage\Reference\ReferenceCheckerInterface;
+use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
+
+final readonly class TextColumnReferences implements ReferenceCheckerInterface
+{
+    public function referenced(string $storeName, array $objects): array
+    {
+        // Build an index of the paths your text columns mention once per run,
+        // then answer from it.
+        return array_values(array_filter(
+            $objects,
+            fn (StoredObjectId $object): bool => $this->index->mentions($object->relativePath),
+        ));
+    }
+}
+```
+
+`filestorage:gc` then releases rows of those groups that are older than
+`--min-age` and that the checker no longer names: a shared blob through the
+ledger, a unique object into the store's quarantine, restorable for
+`--retention` (7 days by default). The checker is asked again right before a
+blob is quarantined and during the orphan sweep, so a URL pasted back into a
+text in the meantime keeps its bytes.
+
 ### Parameters
 
 | Key | Default | Meaning |
@@ -313,7 +348,7 @@ store is touched**, so nothing is written.
 | `integrityHashMaxBytes` | `0` | `0` leaves `contentHash` null; a positive value opts into a bounded SHA-256 |
 | `defaultUrlTtl` | `PT1H` | Expiry `urlFor()` uses when none is given |
 | `extensionOverrides` | `[]` | Media type ⇒ extension, over the `symfony/mime` table |
-| `policies` | `['*' => …]` | Per-group accept rules |
+| `policies` | `['*' => …]` | Per-group accept rules and `referencesOwnedBy` |
 | `delivery` | `['*' => …]` | Per-group delivery rules |
 
 ### Failure handling
@@ -376,7 +411,8 @@ matched as a second predicate.
 
 Two things cannot change after the first release, so they are settled now.
 
-**Path layout — one directory per file.** Every generator emits
+**Path layout — one directory per file, by default.** `DirectoryLayout` is the
+frozen default: every generator emits
 `<…>/<key>/original.<ext>`, never a bare filename, and `delete()` removes the
 *directory*. That is what lets a thumbnail live at `<key>/thumb.webp` with no
 schema change, and what stops derivatives leaking when a file is deleted. A
@@ -391,6 +427,25 @@ one, with the variant inside the HMAC. The
 extension comes from the **detected** media type through the `symfony/mime`
 table; the client filename never contributes it, and an unrecognised type
 becomes `original.bin`.
+
+A store may instead be configured **once, before it holds data**, with
+`Store\Layout\FlatSiblingLayout` — for a flat content-addressed tree such as
+`blobs/ab/cd/<sha>.<ext>` (`Path\FlatSha256KeyGenerator`), with derivatives
+beside the original as `<sha>-<name>.<ext>`. `delete()` then removes the
+original and every `<sha>-*` sibling; a base must not contain `-` or `.`, and a
+file whose name does not fit is refused rather than guessed at. The layout is
+chosen per store through its constructor (`layout:`), and `StoreInterface::layout()`
+tells `gc` and derivative writers which one is in force:
+
+```php
+new FileSystemStore(
+    name: 'blobs',
+    rootPath: '/app/public/uploads',
+    streamFactory: $streams,
+    quarantinePath: '/app/runtime/uploads-quarantine',
+    layout: new FlatSiblingLayout(),
+);
+```
 
 **Token format.** `v1.<key-id>.<expires>.<base64url payload>.<base64url hmac>`,
 HMAC-SHA256 over everything before the signature. The payload is canonical JSON
@@ -444,6 +499,19 @@ perfectly. The constructor above stays typed `StorageInterface` so the class is
 testable with any double; only the wiring names the concrete id.
 
 Do not fork the core for this.
+
+**Writing a store of your own.** `StoreInterface` now has `layout()` (return a
+`DirectoryLayout` unless you mean otherwise) and `delete()` removes what
+`ObjectLayoutInterface::deletion()` names. A `MaintenanceStoreInterface` lists
+`StoredObject` (id, last-modified time, size — return null for the time when
+the backend cannot tell, and `gc` will never delete that object) and implements
+the quarantine: `quarantine(ObjectSet, $now)` moves the existing members of a
+set under one `QuarantinedObject` entry, `restore()` puts them back without
+overwriting a key that exists again, `purge()` deletes the entry, `quarantined()`
+lists entries oldest first, and `quarantineProblem()` tells `filestorage:check`
+what is wrong with the configuration. The quarantine must never appear in
+`objects()` and must not be publicly readable. `ReferenceAuthority` on a group
+policy is the only thing the application configures for references it owns.
 
 ## Testing your own code
 
@@ -519,14 +587,19 @@ keys, counts and rows instead of tables — and everything the text mode would
 have printed travels inside it under `log`, so a dashboard or a cron wrapper
 parses instead of scraping.
 
-All four page by id and print the last one they reached, so a table too large
-for one run is a sequence of bounded runs:
+`verify`, `backfill-hash` and `stat` page by id and print where they stopped, so
+a table too large for one run is a sequence of bounded runs:
 
 ```bash
 ./yii filestorage:verify --limit=10000
 # Last id: 019603f2-…
 ./yii filestorage:verify --limit=10000 --after=019603f2-…
+./yii filestorage:stat --limit=100000 --after=019603f2-…   # JSON: nextCursor
 ```
+
+`gc --orphans` pages a store by path instead: `--max-scan=N` bounds the objects
+examined, and when it or `--limit` stops the sweep early it prints
+`Resume with --orphans --store=<name> --after=<path>` (JSON: `nextCursor`).
 
 `gc`, `verify`, `backfill-hash` and `stat` need a backend implementing
 `MaintenanceRepositoryInterface` (`-db` does). `gc` additionally collects shared
@@ -535,13 +608,31 @@ orphans. Under `--apply` it is the **only** thing in this family that deletes
 bytes another request might want, and it does so under an exclusive, expiring
 lease — see the deduplication section of `-db`.
 
-**Known limits of `gc` until 0.9.** Both are review findings of 2026-11-27 and
-are fixed by the 0.9 two-phase deletion; until then, operate around them:
+**How `gc` deletes (0.9).** Every deletion is two-phase. Bytes are first moved
+into the store's **quarantine** (`MaintenanceStoreInterface::quarantine()`), the
+decision is committed, and only then are they purged — or restored, with
+put-if-absent semantics, when the decision turned out wrong. A run starts by
+finishing what earlier runs left there. Without a quarantine
+(`FileSystemStore`'s `quarantinePath`) `gc` cannot delete from a store, and
+`filestorage:check` warns about it.
 
-| Limit | What can happen | What to do |
+| Rule | Why |
+|---|---|
+| A shared blob is purged only after `completeDeletion()` succeeds; if it is refused, the bytes go back and a writer's re-publication of them is kept | A collector paused past its lease used to delete bytes a writer had re-published meanwhile |
+| An orphan is a candidate only when it is older than `--min-age` (default `PT1H`) *measured from the moment its page's rows were looked up*, and an object without a timestamp never is | An upload between publishing its bytes and saving its row, or committed while the walk was elsewhere, used to lose its bytes. `--orphans --apply` no longer needs uploads stopped, as long as publication-to-row stays under `--min-age` |
+| Orphans and released application-owned files stay in the quarantine for `--retention` (default `P7D`); blob deletions the ledger committed are purged at once | A mistaken sweep is reversible for a week; the quarantine is outside the web root, so a deleted public file is not downloadable meanwhile |
+| An entry the ledger still knows is put back, unless another collector holds a live lease on it | Recovery of a collector that crashed between the two phases |
+
+| Option | Default | Meaning |
 |---|---|---|
-| The lease guards the ledger row, not the unlink | A collector paused past its lease is superseded; if a writer re-publishes the same content meanwhile, the paused collector deletes the new bytes and a committed row points at nothing. `gc` skips the delete when less than half of the lease is left, which narrows the window to a pause between that check and the unlink — it does not close it | Keep the lease TTL (`leaseTtl`, 5 minutes by default) well above any pause a worker can have, and do not run `gc --apply` on a host that suspends processes |
-| `--orphans` has no minimum object age | The sweep reads the referenced set once, then walks the store. An upload that publishes bytes during the walk — before its row is saved, or entirely after the snapshot — is deleted as an orphan | **Run `gc --orphans --apply` with uploads stopped.** Blob collection without `--orphans` is unaffected |
+| `--apply` | off | Actually delete |
+| `--orphans` | off | Also sweep objects no row points at |
+| `--store=<name>` | every store | Limit the orphan sweep to one store |
+| `--after=<path>` | — | Resume that store's sweep (needs `--orphans --store`) |
+| `--limit=N` | 1000 | Stop after N deletions (releases, blobs and orphans together) |
+| `--max-scan=N` | 0 (no limit) | Stop the sweep after examining N objects |
+| `--min-age=<ISO 8601>` | `PT1H` | Minimum age of an orphan object or a released row |
+| `--retention=<ISO 8601>` | `P7D` | How long quarantined orphans and released files stay restorable |
 
 Order matters after enabling deduplication: `deduplicate --apply` repoints the
 rows, and the objects they used to point at become orphans that
@@ -620,8 +711,8 @@ in, so a wrong wiring is visible before anything sweeps:
 ```php
 // config/console-maintenance/di/filestorage.php — the unscoped skeleton:
 // same stores, same repository, NO FileScopeProviderInterface binding.
-// A store that can list AND delete objects: gc --orphans --apply walks it
-// and calls deleteObject() on each orphan — a read-only binding cannot sweep.
+// A store that can list AND quarantine objects: gc --orphans --apply walks it
+// and moves each orphan into its quarantine — a read-only binding cannot sweep.
 StoreInterface::class => /* the production store, with listing + deletion */,
 RepositoryInterface::class => /* the -db repository */,
 // FileScopeProviderInterface: deliberately NOT bound here.
