@@ -44,6 +44,7 @@ use function Rasuvaeff\Understudy\when;
 #[Covers(VerifyCommand::class)]
 #[Covers(BackfillHashCommand::class)]
 #[Covers(StatCommand::class)]
+#[Covers(\Rasuvaeff\Yii3Filestorage\Command\ContentHash::class)]
 final class OperationsCommandsTest
 {
     private Psr17Factory $factory;
@@ -1078,12 +1079,12 @@ final class OperationsCommandsTest
     }
 
     /**
-     * An empty chunk before EOF is a stalled read, not the end of the data —
-     * but the deep hash loop treats it as one and hashes what it got. The
-     * recorded hash was of the whole body, so the row reports as corrupt; what
-     * matters is that the loop *stopped* instead of spinning on the stall.
+     * An empty chunk before EOF is a stalled read, not the end of the data.
+     * Review 1.0 B9: it used to be hashed as if complete and reported as
+     * `corrupt` — a false alarm about bytes that may be intact. Now the loop
+     * stops and says it could not read to the end.
      */
-    public function deepVerifyStopsHashingAtAStalledRead(): void
+    public function deepVerifyReportsAStalledReadAsUnreadable(): void
     {
         $file = $this->storeFile('a', hash: $this->hash());
         $store = Understudy::for(\Rasuvaeff\Yii3Filestorage\Store\StoreInterface::class);
@@ -1097,8 +1098,20 @@ final class OperationsCommandsTest
         );
 
         Assert::same($tester->getStatusCode(), Command::FAILURE);
-        Assert::string($tester->getDisplay())->contains(sprintf('corrupt: a (%s)', $file->relativePath));
-        Assert::string($tester->getDisplay())->contains('0 rows without an object, 1 with the wrong content.');
+        Assert::string($tester->getDisplay())->contains(sprintf('unreadable: a (%s)', $file->relativePath));
+        Assert::string($tester->getDisplay())->contains('0 rows without an object, 1 that could not be read to the end.');
+    }
+
+    public function deepVerifyCallsACompleteReadOfTheWrongLengthCorrupt(): void
+    {
+        $file = $this->storeFile('a', hash: $this->hash());
+        $this->store->corrupt($file->relativePath, 'hello!');
+
+        $tester = $this->run(new VerifyCommand(new StoreRegistry([$this->store]), $this->repository), ['--deep' => true, '--format' => 'json']);
+        $json = json_decode($tester->getDisplay(), true, flags: \JSON_THROW_ON_ERROR);
+
+        Assert::true(\is_array($json));
+        Assert::same([$json['corrupt'], $json['unreadable']], [1, 0]);
     }
 
     // ---- backfill-hash --------------------------------------------------
@@ -1188,12 +1201,11 @@ final class OperationsCommandsTest
     }
 
     /**
-     * A stalled read ends the hash loop with whatever was read — here, nothing.
-     * The digest of the empty string is stored honestly; a run over a stalled
-     * object produces a row `filestorage:verify --deep` will flag, not a
-     * silently-spun loop or a half-body digest.
+     * Review 1.0 B9: a stalled read stored the digest of what was read —
+     * here, nothing — as the row's hash, and verify --deep then called the
+     * intact object corrupt. Now nothing is written and the row is reported.
      */
-    public function backfillStoresTheHashOfWhatItReadWhenTheStreamStalls(): void
+    public function backfillWritesNoHashWhenTheStreamStalls(): void
     {
         $this->storeFile('a');
         $store = Understudy::for(\Rasuvaeff\Yii3Filestorage\Store\StoreInterface::class);
@@ -1206,8 +1218,20 @@ final class OperationsCommandsTest
             ['--apply' => true],
         );
 
-        Assert::same($this->repository->find('a')?->contentHash, hash('sha256', ''));
-        Assert::string($tester->getDisplay())->contains('Hashed 1 of 1 row.');
+        Assert::null($this->repository->find('a')?->contentHash);
+        Assert::string($tester->getDisplay())->contains('unreadable: a');
+        Assert::string($tester->getDisplay())->contains('Hashed 0 of 1 row.');
+    }
+
+    public function backfillWritesNoHashForAnObjectShorterThanItsRow(): void
+    {
+        $file = $this->storeFile('a');
+        $this->store->corrupt($file->relativePath, 'hel');
+
+        $tester = $this->run(new BackfillHashCommand(new StoreRegistry([$this->store]), $this->repository), ['--apply' => true]);
+
+        Assert::null($this->repository->find('a')?->contentHash);
+        Assert::string($tester->getDisplay())->contains('Hashed 0 of 1 row.');
     }
 
 
