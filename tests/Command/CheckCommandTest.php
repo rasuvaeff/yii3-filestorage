@@ -464,20 +464,15 @@ final class CheckCommandTest
     }
 
     /**
-     * `StoreUrlProviderInterface` is a capability that may answer null at
-     * runtime — one Flysystem class wraps public and private buckets alike —
-     * so the question is whether it *does* hand out a public URL.
+     * Answering `publicUrl()` is not being public: a Flysystem S3 store builds
+     * an object URL for a private bucket too, and that URL answers 403. Only a
+     * store that lives under a web root by definition counts.
      */
-    public function aUrlCapableStoreWithoutPublicUrlsIsNotTreatedAsPublic(): void
+    public function aUrlCapableStoreIsNotTreatedAsPublicMerelyForAnsweringPublicUrl(): void
     {
-        $private = new UrlCapableInMemoryStore(new InMemoryStore('memory', $this->factory), publicUrls: false);
+        $store = new UrlCapableInMemoryStore(new InMemoryStore('memory', $this->factory), publicUrls: true);
 
-        Assert::same($this->run(store: $private)->getStatusCode(), Command::SUCCESS);
-
-        $public = new UrlCapableInMemoryStore(new InMemoryStore('memory', $this->factory), publicUrls: true);
-        Assert::string($this->flatten($this->run(store: $public)->getDisplay()))->contains(
-            'store "memory" serves every object it holds at a public URL',
-        );
+        Assert::same($this->run(store: $store)->getStatusCode(), Command::SUCCESS);
     }
 
     public function directPublicUrlsWithAnInertAllowListArePermitted(): void

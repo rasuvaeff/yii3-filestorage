@@ -14,6 +14,7 @@ use Rasuvaeff\Yii3Filestorage\Exception\SizeLimitExceededException;
 use Rasuvaeff\Yii3Filestorage\Exception\UnsupportedMediaTypeException;
 use Rasuvaeff\Yii3Filestorage\Exception\UploadSizeException;
 use Rasuvaeff\Yii3Filestorage\Policy\ImageDimensions;
+use Rasuvaeff\Yii3Filestorage\Policy\PolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\UploadPolicy;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\Jpeg;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\ShortReadingStream;
@@ -376,6 +377,19 @@ final class UploadPolicyTest
             'Image is 60000x60000 = 3600000000 pixels, over the 40000000 pixel limit',
         );
         (new UploadPolicy(allowedMimeTypes: ['image/jpeg']))->assertAcceptable($this->upload($bomb), 'image/jpeg');
+    }
+
+    /**
+     * The other half of probe p3: the shipped wildcard policy, built the way
+     * `params.php` builds it, with no pixel setting of its own. It inherits the
+     * class default, so the bomb is refused there too.
+     */
+    public function theShippedWildcardPolicyRefusesThePaddedBomb(): void
+    {
+        $policy = PolicyRegistry::fromArray(['*' => ['maxBytes' => 20_971_520]])->for('anything');
+
+        Expect::exception(PolicyViolationException::class)->withMessageContaining('Image is 60000x60000');
+        $policy->assertAcceptable($this->upload(Jpeg::of([Jpeg::padding(), Jpeg::sof(60_000, 60_000)])), 'image/jpeg');
     }
 
     /**

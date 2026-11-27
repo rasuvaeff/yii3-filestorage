@@ -40,8 +40,8 @@ Core does NOT bind `StoreInterface` or `RepositoryInterface`. Install a backend
    `urlFor()` applies.
 6. **Direct public URLs are opt-in per group** and unsafe with active content
    (`Mime\ActiveMediaTypes::SCRIPTABLE`: HTML, SVG, XML, XSLT, JS, feeds).
-   `filestorage:check` fails on that combination, and for every group when any
-   store hands out public URLs (it serves by path regardless of the flag).
+   `filestorage:check` fails on that combination, and for every group when a
+   `PublicFileSystemStore` is registered (it serves by path regardless of the flag).
    Active types are stored as `.bin` and always delivered as `attachment`.
 7. **`add()` is all-or-nothing per file.** There is no `addMany()`.
 8. **Capabilities are `instanceof` checks, not nullable methods** — except

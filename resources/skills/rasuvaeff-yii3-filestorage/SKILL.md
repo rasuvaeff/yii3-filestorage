@@ -52,8 +52,8 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
    + plugin tier: PDF, Flash) — never write a second one. `DeliveryOptions`
    forces `attachment` for every active type, `ExtensionMap` stores them as
    `.bin`, and `filestorage:check` fails a direct-public group accepting a
-   scriptable type, or any permissive/scriptable group when a registered store
-   hands out public URLs (it serves by path regardless of
+   scriptable type, or any permissive/scriptable group when a
+   `PublicFileSystemStore` is registered (it serves by path regardless of
    `allowDirectPublicUrl`) — do not work around it. It also
    fails a bound `FileScopeProviderInterface` with no `ScopedFileResolverInterface`:
    a signed download would then resolve by id alone.

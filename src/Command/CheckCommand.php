@@ -4,9 +4,7 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3Filestorage\Command;
 
-use DateTimeImmutable;
 use Override;
-use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Mime\ActiveMediaTypes;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\PolicyRegistry;
@@ -16,6 +14,7 @@ use Rasuvaeff\Yii3Filestorage\Repository\RepositoryInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\ScopedFileResolverInterface;
 use Rasuvaeff\Yii3Filestorage\Store\ContentAddressableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeAwareStoreInterface;
+use Rasuvaeff\Yii3Filestorage\Store\FileSystem\PublicFileSystemStore;
 use Rasuvaeff\Yii3Filestorage\Store\MaintenanceStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\RangeReadableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
@@ -26,7 +25,6 @@ use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
-use Throwable;
 
 /**
  * Reports what is wired, what each store can do, and what is unsafe.
@@ -298,38 +296,21 @@ final class CheckCommand extends Command
     }
 
     /**
-     * The first registered store that hands out a public URL.
+     * The first registered store that serves every object it holds publicly.
      *
-     * `StoreUrlProviderInterface` is a capability that may answer null at
-     * runtime — one Flysystem class wraps public and private buckets alike — so
-     * the store is asked for the URL of a probe file. URL generation is string
-     * building; nothing is read or written. A store that throws is not counted.
+     * Only `PublicFileSystemStore` is known to: it lives under a web root by
+     * definition. `StoreUrlProviderInterface::publicUrl()` answering is not
+     * evidence — a Flysystem S3 adapter builds an object URL for a private
+     * bucket too, and that URL answers 403. A public bucket behind such a store
+     * is the operator's knowledge, not something this command can see.
      *
      * @return non-empty-string|null
      */
     private function firstPublicStore(): ?string
     {
         foreach ($this->stores->names() as $name) {
-            $store = $this->stores->get($name);
-            if (!$store instanceof StoreUrlProviderInterface) {
-                continue;
-            }
-
-            try {
-                $probe = File::create(
-                    id: 'filestorage-check-probe',
-                    storeName: $name,
-                    groupName: 'common',
-                    relativePath: 'filestorage-check/probe/original.bin',
-                    originalName: 'probe.bin',
-                    size: 0,
-                    createdAt: new DateTimeImmutable('@0'),
-                );
-                if ($store->publicUrl($probe) !== null) {
-                    return $name;
-                }
-            } catch (Throwable) {
-                continue;
+            if ($this->stores->get($name) instanceof PublicFileSystemStore) {
+                return $name;
             }
         }
 
