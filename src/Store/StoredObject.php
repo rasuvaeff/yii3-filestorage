@@ -20,14 +20,6 @@ use InvalidArgumentException;
  */
 final readonly class StoredObject
 {
-    /**
-     * The same as `$id->relativePath`, so code that walked `StoredObjectId`
-     * pages before 0.9 reads the cursor the same way.
-     *
-     * @var non-empty-string
-     */
-    public string $relativePath;
-
     /** @var int<0, max>|null */
     public ?int $size;
 
@@ -43,7 +35,6 @@ final readonly class StoredObject
             throw new InvalidArgumentException('Object size must not be negative');
         }
 
-        $this->relativePath = $id->relativePath;
         $this->size = $size;
     }
 }

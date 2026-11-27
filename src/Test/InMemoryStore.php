@@ -199,7 +199,11 @@ final class InMemoryStore implements MaintenanceStoreInterface
         }
     }
 
-    #[Override]
+    /**
+     * Removes one object outright, as a test arranging a missing object
+     * needs. Not part of any store contract since 0.10: deletion in this
+     * package goes through the layout and the quarantine.
+     */
     public function deleteObject(StoredObjectId $object): void
     {
         unset($this->objects[$object->relativePath], $this->timestamps[$object->relativePath]);

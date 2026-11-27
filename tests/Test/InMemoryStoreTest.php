@@ -221,13 +221,13 @@ final class InMemoryStoreTest
         sort($paths);
 
         $first = array_map(
-            static fn(StoredObject $object): string => $object->relativePath,
+            static fn(StoredObject $object): string => $object->id->relativePath,
             iterator_to_array($this->store->objects(limit: 2), preserve_keys: false),
         );
         Assert::same($first, array_slice($paths, 0, 2));
 
         $second = array_map(
-            static fn(StoredObject $object): string => $object->relativePath,
+            static fn(StoredObject $object): string => $object->id->relativePath,
             iterator_to_array($this->store->objects(afterPath: $first[1], limit: 10), preserve_keys: false),
         );
         Assert::same($second, array_slice($paths, 2));
@@ -288,7 +288,7 @@ final class InMemoryStoreTest
 
         $objects = iterator_to_array($this->store->objects(), preserve_keys: false);
 
-        Assert::same($objects[0]->relativePath, $file->relativePath);
+        Assert::same($objects[0]->id->relativePath, $file->relativePath);
         Assert::same($objects[0]->size, 4);
         Assert::same($objects[0]->lastModified, $this->clock->now());
     }

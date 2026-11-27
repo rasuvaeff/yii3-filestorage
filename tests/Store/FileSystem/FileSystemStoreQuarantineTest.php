@@ -457,7 +457,7 @@ final class FileSystemStoreQuarantineTest
     private function inventory(?FileSystemStore $store = null): array
     {
         return array_map(
-            static fn(StoredObject $o): string => $o->relativePath,
+            static fn(StoredObject $o): string => $o->id->relativePath,
             iterator_to_array(($store ?? $this->store)->objects(), preserve_keys: false),
         );
     }

@@ -205,12 +205,6 @@ final readonly class PublicFileSystemStore implements
     }
 
     #[Override]
-    public function deleteObject(StoredObjectId $object): void
-    {
-        $this->store->deleteObject($object);
-    }
-
-    #[Override]
     public function quarantine(ObjectSet $objects, DateTimeImmutable $now): ?QuarantinedObject
     {
         return $this->store->quarantine($objects, $now);

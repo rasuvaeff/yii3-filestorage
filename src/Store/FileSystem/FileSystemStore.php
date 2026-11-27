@@ -460,8 +460,12 @@ final readonly class FileSystemStore implements
         }
     }
 
-    #[Override]
-    public function deleteObject(StoredObjectId $object): void
+    /**
+     * Idempotent: an object already gone is a success.
+     *
+     * @throws StoreException
+     */
+    private function deleteObject(StoredObjectId $object): void
     {
         $path = $this->resolve($object->relativePath);
         if ($path === null) {

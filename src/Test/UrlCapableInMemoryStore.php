@@ -114,7 +114,11 @@ final readonly class UrlCapableInMemoryStore implements MaintenanceStoreInterfac
         return $this->inner->objects($afterPath, $limit);
     }
 
-    #[Override]
+    /**
+     * Removes one object outright, as a test arranging a missing object
+     * needs. Not part of any store contract since 0.10: deletion in this
+     * package goes through the layout and the quarantine.
+     */
     public function deleteObject(StoredObjectId $object): void
     {
         $this->inner->deleteObject($object);

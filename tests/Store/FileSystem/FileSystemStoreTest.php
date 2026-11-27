@@ -19,7 +19,6 @@ use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeDescriptor;
 use Rasuvaeff\Yii3Filestorage\Store\FileSystem\FileSystemStore;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObject;
-use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\ForwardOnlyStream;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Testo\Assert;
@@ -305,7 +304,7 @@ final class FileSystemStoreTest
         file_put_contents($this->root . '/' . $first->directory() . '/leftover.abc123.part', 'junk');
 
         $paths = array_map(
-            static fn(StoredObject $object): string => $object->relativePath,
+            static fn(StoredObject $object): string => $object->id->relativePath,
             iterator_to_array($this->store->objects(), preserve_keys: false),
         );
 
@@ -345,8 +344,8 @@ final class FileSystemStoreTest
                 break;
             }
 
-            $all[] = $page[0]->relativePath;
-            $after = $page[0]->relativePath;
+            $all[] = $page[0]->id->relativePath;
+            $after = $page[0]->id->relativePath;
         }
 
         sort($all);
@@ -366,7 +365,7 @@ final class FileSystemStoreTest
         file_put_contents($this->root . '/a-b.txt', 'z');
 
         $paths = array_map(
-            static fn(StoredObject $object): string => $object->relativePath,
+            static fn(StoredObject $object): string => $object->id->relativePath,
             iterator_to_array($this->store->objects(), preserve_keys: false),
         );
 
@@ -388,24 +387,13 @@ final class FileSystemStoreTest
         Assert::same(count($first), 2);
 
         $second = iterator_to_array(
-            $this->store->objects(afterPath: $first[1]->relativePath, limit: 2),
+            $this->store->objects(afterPath: $first[1]->id->relativePath, limit: 2),
             preserve_keys: false,
         );
 
         Assert::same(count($second), 2);
-        Assert::true($second[0]->relativePath !== $first[0]->relativePath);
-        Assert::true($second[0]->relativePath !== $first[1]->relativePath);
-    }
-
-    public function deleteObjectRemovesOneObjectAndIsIdempotent(): void
-    {
-        $file = $this->write('x');
-        $object = new StoredObjectId($file->relativePath);
-
-        $this->store->deleteObject($object);
-        $this->store->deleteObject($object);
-
-        Assert::false($this->store->exists($file));
+        Assert::true($second[0]->id->relativePath !== $first[0]->id->relativePath);
+        Assert::true($second[0]->id->relativePath !== $first[1]->id->relativePath);
     }
 
     /**
@@ -735,7 +723,7 @@ final class FileSystemStoreTest
 
         try {
             $paths = array_map(
-                static fn(StoredObject $object): string => $object->relativePath,
+                static fn(StoredObject $object): string => $object->id->relativePath,
                 iterator_to_array($this->store->objects(), preserve_keys: false),
             );
 

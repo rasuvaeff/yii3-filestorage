@@ -150,13 +150,10 @@ final class PublicFileSystemStoreTest
         Assert::same($this->store->derivativeStream($file, $thumb)?->getContents(), 'rendition');
 
         $paths = array_map(
-            static fn(StoredObject $object): string => $object->relativePath,
+            static fn(StoredObject $object): string => $object->id->relativePath,
             iterator_to_array($this->store->objects(), preserve_keys: false),
         );
         Assert::same(count($paths), 2, 'the original and its derivative');
-
-        $this->store->deleteObject(new StoredObjectId($file->relativePath));
-        Assert::false($this->store->exists($file));
 
         $this->store->delete($file);
         Assert::false($this->store->hasDerivative($file, $thumb));

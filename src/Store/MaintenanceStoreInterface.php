@@ -37,18 +37,6 @@ interface MaintenanceStoreInterface extends StoreInterface
     public function objects(?string $afterPath = null, int $limit = 1000): iterable;
 
     /**
-     * Idempotent: deleting something already gone is a success, because a
-     * retried garbage collection must converge rather than fail.
-     *
-     * Irreversible. Garbage collection does not use it: it goes through
-     * {@see quarantine()} so that a decision proven wrong afterwards can be
-     * rolled back.
-     *
-     * @throws StoreException
-     */
-    public function deleteObject(StoredObjectId $object): void;
-
-    /**
      * Takes every existing member of `$objects` off its key, into this
      * store's quarantine, under one new entry.
      *
