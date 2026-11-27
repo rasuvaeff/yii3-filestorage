@@ -10,7 +10,7 @@ use Nyholm\Psr7\Factory\Psr17Factory;
 use Rasuvaeff\Understudy\Arg;
 use Rasuvaeff\Understudy\Understudy;
 use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
-use Rasuvaeff\Yii3Filestorage\Exception\UploadTooLargeException;
+use Rasuvaeff\Yii3Filestorage\Exception\UploadSizeException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
@@ -126,7 +126,9 @@ final class InMemoryStoreTest
                 maxBytes: 10,
             );
             Assert::true(actual: false, message: 'the write should have been refused');
-        } catch (UploadTooLargeException) {
+        } catch (UploadSizeException) {
+            // Review 1.0 B3: the group's limit, crossed mid-copy, is the same
+            // class the policy throws for a known size.
             Assert::same($this->store->paths(), []);
             Assert::same($this->store->writeCount(), 0);
         }

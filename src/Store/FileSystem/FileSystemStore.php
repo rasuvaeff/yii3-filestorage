@@ -10,7 +10,7 @@ use Override;
 use Psr\Http\Message\StreamFactoryInterface;
 use Psr\Http\Message\StreamInterface;
 use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
-use Rasuvaeff\Yii3Filestorage\Exception\UploadTooLargeException;
+use Rasuvaeff\Yii3Filestorage\Exception\UploadSizeException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeAwareStoreInterface;
@@ -672,7 +672,7 @@ final readonly class FileSystemStore implements
      * @return int<0, max>
      *
      * @throws StoreException
-     * @throws UploadTooLargeException
+     * @throws UploadSizeException
      */
     private function copy(StreamInterface $source, string $partial, int $maxBytes, string $relativePath): int
     {
@@ -696,7 +696,7 @@ final readonly class FileSystemStore implements
 
                 $written += \strlen($chunk);
                 if ($maxBytes > 0 && $written > $maxBytes) {
-                    throw new UploadTooLargeException(
+                    throw new UploadSizeException(
                         "Upload exceeds the {$maxBytes} byte limit for this group",
                     );
                 }

@@ -11,7 +11,7 @@ use Psr\Clock\ClockInterface;
 use Psr\Http\Message\StreamFactoryInterface;
 use Psr\Http\Message\StreamInterface;
 use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
-use Rasuvaeff\Yii3Filestorage\Exception\UploadTooLargeException;
+use Rasuvaeff\Yii3Filestorage\Exception\UploadSizeException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Store\Layout\DirectoryLayout;
@@ -123,7 +123,7 @@ final class InMemoryStore implements MaintenanceStoreInterface
             if ($maxBytes > 0 && \strlen($bytes) > $maxBytes) {
                 // Nothing is stored, exactly as a real store removes its
                 // partial output rather than leaving it behind.
-                throw new UploadTooLargeException(
+                throw new UploadSizeException(
                     "Upload exceeds the {$maxBytes} byte limit for this group",
                 );
             }

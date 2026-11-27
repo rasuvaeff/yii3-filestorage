@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Filestorage\Store;
 
 use Psr\Http\Message\StreamInterface;
+use Rasuvaeff\Yii3Filestorage\Exception\SizeLimitExceededException;
 use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
-use Rasuvaeff\Yii3Filestorage\Exception\UploadTooLargeException;
 use Rasuvaeff\Yii3Filestorage\File;
 
 /**
@@ -33,7 +33,7 @@ interface DerivativeAwareStoreInterface extends StoreInterface
      * @param int $maxBytes Zero means no cap.
      *
      * @throws StoreException
-     * @throws UploadTooLargeException
+     * @throws SizeLimitExceededException
      */
     public function writeDerivative(
         File $file,

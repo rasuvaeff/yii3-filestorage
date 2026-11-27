@@ -6,7 +6,9 @@ namespace Rasuvaeff\Yii3Filestorage\Store;
 
 use DateTimeImmutable;
 use Psr\Http\Message\StreamInterface;
+use Rasuvaeff\Yii3Filestorage\Exception\SizeLimitExceededException;
 use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
+use Rasuvaeff\Yii3Filestorage\Exception\UploadSizeException;
 use Rasuvaeff\Yii3Filestorage\Exception\UploadTooLargeException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
@@ -43,14 +45,18 @@ interface StoreInterface
      * body has been written in full — remove any partial object when the cap is
      * crossed, and publish atomically so a reader never observes a half-written
      * file. A generated-path collision is an error: the base store never infers
-     * sharing from an object already being there.
+     * sharing from an object already being there. A cap crossed mid-copy is an
+     * {@see UploadSizeException}, the same class the policy throws for a known
+     * size; stores written before 0.10 throw {@see UploadTooLargeException} —
+     * catch {@see \Rasuvaeff\Yii3Filestorage\Exception\SizeLimitExceededException}
+     * to handle both.
      *
      * @param non-empty-string $groupName
      * @param non-empty-string|null $mediaType Detected type, for the extension.
      * @param int $maxBytes Zero means no policy cap; the ingress spool cap still applies.
      *
      * @throws StoreException
-     * @throws UploadTooLargeException
+     * @throws SizeLimitExceededException
      */
     public function write(
         Upload $upload,

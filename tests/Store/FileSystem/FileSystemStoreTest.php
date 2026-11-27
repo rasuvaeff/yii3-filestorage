@@ -10,8 +10,9 @@ use Nyholm\Psr7\Factory\Psr17Factory;
 use Override;
 use Rasuvaeff\Understudy\Arg;
 use Rasuvaeff\Understudy\Understudy;
+use Rasuvaeff\Yii3Filestorage\Exception\SizeLimitExceededException;
 use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
-use Rasuvaeff\Yii3Filestorage\Exception\UploadTooLargeException;
+use Rasuvaeff\Yii3Filestorage\Exception\UploadSizeException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
@@ -112,7 +113,8 @@ final class FileSystemStoreTest
                 maxBytes: 10,
             );
             Assert::true(actual: false, message: 'the write should have been refused');
-        } catch (UploadTooLargeException $e) {
+        } catch (UploadSizeException $e) {
+            // Review 1.0 B3: same class as the policy's known-size refusal.
             Assert::true(str_contains($e->getMessage(), '10 byte limit'));
             Assert::same($this->filesUnder($this->root), [], 'nothing at all was left behind');
         }
@@ -290,7 +292,7 @@ final class FileSystemStoreTest
         try {
             $this->store->writeDerivative($file, $thumb, $this->factory->createStream(str_repeat('x', 50)), 10);
             Assert::true(actual: false, message: 'the derivative should have been refused');
-        } catch (UploadTooLargeException) {
+        } catch (SizeLimitExceededException) {
             Assert::false($this->store->hasDerivative($file, $thumb));
             Assert::same($this->filesUnder($this->root, '.part'), []);
         }

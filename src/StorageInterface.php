@@ -8,8 +8,14 @@ use DateTimeImmutable;
 use Psr\Http\Message\StreamInterface;
 use Rasuvaeff\Yii3Filestorage\Exception\AddException;
 use Rasuvaeff\Yii3Filestorage\Exception\ContentTooLargeException;
+use Rasuvaeff\Yii3Filestorage\Exception\InvalidConfigException;
 use Rasuvaeff\Yii3Filestorage\Exception\PolicyViolationException;
 use Rasuvaeff\Yii3Filestorage\Exception\RemoveException;
+use Rasuvaeff\Yii3Filestorage\Exception\SizeLimitExceededException;
+use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
+use Rasuvaeff\Yii3Filestorage\Exception\UnsupportedMediaTypeException;
+use Rasuvaeff\Yii3Filestorage\Exception\UploadSizeException;
+use Rasuvaeff\Yii3Filestorage\Exception\UploadTooLargeException;
 
 /**
  * The one entry point application code needs.
@@ -37,8 +43,25 @@ interface StorageInterface
      * @param non-empty-string|null $storeName Defaults to the registry's default store.
      * @param array<array-key, mixed> $metadata
      *
-     * @throws PolicyViolationException When the upload is not acceptable for its group.
-     * @throws AddException When metadata could not be persisted after the write.
+     * A rejected upload writes nothing: the policy and every caller-supplied
+     * field are validated before the store is touched, and anything that fails
+     * after the write is an {@see AddException}.
+     *
+     * @throws PolicyViolationException When the upload is not acceptable for its
+     *         group. {@see UploadSizeException} (also a
+     *         {@see SizeLimitExceededException}) is the size branch — thrown by
+     *         the policy for a known size and by the store when an
+     *         unknown-length body crosses the limit mid-copy;
+     *         {@see UnsupportedMediaTypeException} is the type branch.
+     * @throws SizeLimitExceededException Catch this for every "too large",
+     *         including a store written before 0.10 that still throws
+     *         {@see UploadTooLargeException}.
+     * @throws AddException When anything fails after the write; the object is
+     *         removed where it can be identified.
+     * @throws StoreException When the store could not write.
+     * @throws InvalidConfigException When `$storeName` names no registered store.
+     * @throws \InvalidArgumentException When the group name, the metadata or
+     *         another caller-supplied field is invalid — before anything is written.
      */
     public function add(
         Upload $upload,
