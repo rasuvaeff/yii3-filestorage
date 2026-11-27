@@ -17,6 +17,9 @@ use Rasuvaeff\Yii3Filestorage\Store\FileSystem\PublicFileSystemStore;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObject;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
 use Rasuvaeff\Yii3Filestorage\Upload;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\FlatSiblingLayout;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectSet;
+use Rasuvaeff\Yii3Filestorage\Store\QuarantinedObject;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Expect;
@@ -159,9 +162,70 @@ final class PublicFileSystemStoreTest
         Assert::false($this->store->hasDerivative($file, $thumb));
     }
 
+    public function theQuarantineAndLayoutAreTheInnerStores(): void
+    {
+        $inner = new FileSystemStore('assets', $this->root, $this->factory, quarantinePath: $this->root . '-q');
+        $store = new PublicFileSystemStore($inner, 'https://cdn.example.com/uploads');
+        $file = $this->writeTo($store, 'x');
+
+        try {
+            Assert::same($store->layout(), $inner->layout());
+            Assert::null($store->quarantineProblem());
+
+            $entry = $store->quarantine(ObjectSet::tree(new StoredObjectId($file->relativePath)), new DateTimeImmutable('@1764237600'));
+            Assert::instanceOf($entry, QuarantinedObject::class);
+            Assert::false($store->exists($file));
+            Assert::same(\count(iterator_to_array($store->quarantined(), preserve_keys: false)), 1);
+
+            $store->restore($entry);
+            Assert::true($store->exists($file));
+
+            $again = $store->quarantine(ObjectSet::tree(new StoredObjectId($file->relativePath)), new DateTimeImmutable('@1764237600'));
+            Assert::instanceOf($again, QuarantinedObject::class);
+            $store->purge($again);
+            Assert::same(iterator_to_array($store->quarantined(), preserve_keys: false), []);
+        } finally {
+            FileHelper::removeDirectory($this->root . '-q');
+        }
+    }
+
+    public function withoutAQuarantineThePublicStoreSaysSo(): void
+    {
+        Assert::string((string) $this->store->quarantineProblem())->contains('has no quarantine directory');
+    }
+
+    public function aFlatLayoutDerivativeUrlIsTheSiblingPath(): void
+    {
+        $store = new PublicFileSystemStore(
+            new FileSystemStore('assets', $this->root, $this->factory, layout: new FlatSiblingLayout()),
+            'https://cdn.example.com/uploads',
+        );
+
+        Assert::same(
+            $store->publicDerivativeUrl(
+                File::create(
+                    id: 'f',
+                    storeName: 'assets',
+                    groupName: 'g',
+                    relativePath: 'blobs/ab/cd/abc.jpg',
+                    originalName: 'x',
+                    size: 0,
+                    createdAt: new DateTimeImmutable('2026-01-01T00:00:00+00:00'),
+                ),
+                new DerivativeDescriptor('s-v1', 'webp', 'image/webp'),
+            ),
+            'https://cdn.example.com/uploads/blobs/ab/cd/abc-s-v1.webp',
+        );
+    }
+
     private function write(string $body): File
     {
-        $result = $this->store->write(
+        return $this->writeTo($this->store, $body);
+    }
+
+    private function writeTo(PublicFileSystemStore $store, string $body): File
+    {
+        $result = $store->write(
             Upload::fromStream($this->factory->createStream($body), 'thing.txt', $this->factory),
             'docs',
             new RandomPathGenerator(),

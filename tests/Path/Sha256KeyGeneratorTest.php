@@ -104,4 +104,16 @@ final class Sha256KeyGeneratorTest
         yield 'uppercase' => [str_repeat('A', 64)];
         yield 'not hex' => [str_repeat('z', 64)];
     }
+
+    /**
+     * The extension added to the contract in 0.9 does not move a single
+     * existing key: the same bytes keep the same path.
+     */
+    public function anExtensionDoesNotChangeTheKey(): void
+    {
+        $generator = new Sha256KeyGenerator();
+        $hash = hash('sha256', 'x');
+
+        Assert::same($generator->generate('s', $hash, 'jpg'), $generator->generate('s', $hash));
+    }
 }

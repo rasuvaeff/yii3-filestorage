@@ -21,6 +21,10 @@ use Rasuvaeff\Yii3Filestorage\Store\StoreUrlProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\StallingStream;
 use Rasuvaeff\Yii3Filestorage\Upload;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\FlatSiblingLayout;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectSet;
+use Rasuvaeff\Yii3Filestorage\Store\QuarantinedObject;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\DirectoryLayout;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Expect;
@@ -274,6 +278,149 @@ final class InMemoryStoreTest
         Expect::exception(InvalidArgumentException::class)->withMessageContaining('Invalid store name');
 
         new InMemoryStore('bad name', $this->factory);
+    }
+
+    public function theInventoryCarriesTimestampAndSize(): void
+    {
+        $file = $this->write('four');
+
+        $objects = iterator_to_array($this->store->objects(), preserve_keys: false);
+
+        Assert::same($objects[0]->relativePath, $file->relativePath);
+        Assert::same($objects[0]->size, 4);
+        Assert::same($objects[0]->lastModified, $this->clock->now());
+    }
+
+    public function touchBackDatesAnObjectAndIgnoresAMissingOne(): void
+    {
+        $file = $this->write('x');
+        $old = new DateTimeImmutable('2020-01-01T00:00:00+00:00');
+
+        $this->store->touch($file->relativePath, $old);
+        $this->store->touch('nowhere/x', $old);
+
+        Assert::same($this->store->lastModified($file), $old);
+        Assert::same($this->store->paths(), [$file->relativePath]);
+    }
+
+    public function anObjectPlacedBehindTheStoresBackIsStampedButAReplacedOneKeepsItsStamp(): void
+    {
+        $file = $this->write('x');
+        $old = new DateTimeImmutable('2020-01-01T00:00:00+00:00');
+        $this->store->touch($file->relativePath, $old);
+
+        $this->store->corrupt($file->relativePath, 'y');
+        $this->store->corrupt('placed/x.bin', 'z');
+
+        Assert::same($this->store->lastModified($file), $old);
+        Assert::same($this->store->lastModified($this->file('placed/x.bin')), $this->clock->now());
+    }
+
+    public function quarantineRestoreAndPurgeRoundTrip(): void
+    {
+        $file = $this->write('original');
+        $this->store->corrupt($file->directory() . '/thumb.webp', 'thumb');
+        $this->store->corrupt('docs/other/original.txt', 'other');
+        $now = new DateTimeImmutable('@1764237600');
+
+        $entry = $this->store->quarantine($this->store->layout()->deletion(new StoredObjectId($file->relativePath)), $now);
+
+        Assert::instanceOf($entry, QuarantinedObject::class);
+        Assert::same(\count($entry->objects), 2);
+        Assert::same($entry->quarantinedAt->getTimestamp(), 1_764_237_600);
+        Assert::same($this->store->paths(), ['docs/other/original.txt']);
+        Assert::true($this->store->isQuarantined($file->relativePath));
+        Assert::false($this->store->isQuarantined('docs/other/original.txt'));
+        Assert::same(
+            array_map(static fn(QuarantinedObject $e): string => $e->token, iterator_to_array($this->store->quarantined(), preserve_keys: false)),
+            [$entry->token],
+        );
+
+        $this->store->corrupt($file->relativePath, 'republished');
+        $this->store->restore($entry);
+
+        Assert::same($this->store->bytesAt($file->relativePath), 'republished', 'put-if-absent keeps the newer copy');
+        Assert::same($this->store->bytesAt($file->directory() . '/thumb.webp'), 'thumb');
+        Assert::false($this->store->isQuarantined($file->relativePath));
+        Assert::same(iterator_to_array($this->store->quarantined(), preserve_keys: false), []);
+        Assert::null($this->store->quarantineProblem());
+    }
+
+    public function aRestoredObjectKeepsItsTimestamp(): void
+    {
+        $file = $this->write('x');
+        $old = new DateTimeImmutable('2020-01-01T00:00:00+00:00');
+        $this->store->touch($file->relativePath, $old);
+
+        $entry = $this->store->quarantine(ObjectSet::tree(new StoredObjectId($file->relativePath)), $this->clock->now());
+        Assert::instanceOf($entry, QuarantinedObject::class);
+        $this->store->restore($entry);
+
+        Assert::same($this->store->lastModified($file), $old);
+    }
+
+    public function purgedObjectsAreGoneForGood(): void
+    {
+        $file = $this->write('x');
+        $entry = $this->store->quarantine(ObjectSet::tree(new StoredObjectId($file->relativePath)), $this->clock->now());
+        Assert::instanceOf($entry, QuarantinedObject::class);
+
+        $this->store->purge($entry);
+        $this->store->restore($entry);
+
+        Assert::same($this->store->paths(), []);
+        Assert::false($this->store->isQuarantined($file->relativePath));
+    }
+
+    public function quarantiningNothingReturnsNull(): void
+    {
+        Assert::null($this->store->quarantine(ObjectSet::tree(new StoredObjectId('none')), $this->clock->now()));
+    }
+
+    public function theQuarantinePagesInTokenOrder(): void
+    {
+        $tokens = [];
+        foreach ([3, 1, 2] as $second) {
+            $file = $this->write("x{$second}");
+            $entry = $this->store->quarantine(
+                ObjectSet::tree(new StoredObjectId($file->relativePath)),
+                new DateTimeImmutable('@' . (1_764_237_600 + $second)),
+            );
+            Assert::instanceOf($entry, QuarantinedObject::class);
+            $tokens[$second] = $entry->token;
+        }
+
+        $tokensOf = static fn(iterable $entries): array => array_map(
+            static fn(QuarantinedObject $e): string => $e->token,
+            iterator_to_array($entries, preserve_keys: false),
+        );
+
+        Assert::same($tokensOf($this->store->quarantined(limit: 2)), [$tokens[1], $tokens[2]]);
+        Assert::same($tokensOf($this->store->quarantined($tokens[1])), [$tokens[2], $tokens[3]]);
+    }
+
+    public function clearEmptiesTheQuarantineToo(): void
+    {
+        $file = $this->write('x');
+        $this->store->quarantine(ObjectSet::tree(new StoredObjectId($file->relativePath)), $this->clock->now());
+
+        $this->store->clear();
+
+        Assert::same(iterator_to_array($this->store->quarantined(), preserve_keys: false), []);
+    }
+
+    public function theLayoutDecidesWhatDeleteRemoves(): void
+    {
+        $store = new InMemoryStore('memory', $this->factory, $this->clock, new FlatSiblingLayout());
+        $store->corrupt('b/ab/abc.jpg', 'original');
+        $store->corrupt('b/ab/abc-s.webp', 'thumb');
+        $store->corrupt('b/ab/abcd.jpg', 'another');
+
+        $store->delete($this->file('b/ab/abc.jpg'));
+
+        Assert::same($store->paths(), ['b/ab/abcd.jpg']);
+        Assert::same($store->layout()::class, FlatSiblingLayout::class);
+        Assert::same($this->store->layout()::class, DirectoryLayout::class);
     }
 
     /**
