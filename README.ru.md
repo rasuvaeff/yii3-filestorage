@@ -37,7 +37,7 @@
 - `psr/http-message` ^2.0, `psr/http-factory` ^1.0 (плюс реализация PSR-17 в
   приложении — например `nyholm/psr7` или `httpsoft/http-message`)
 - `symfony/console` ^6.4 || ^7.0 || ^8.0
-- `symfony/mime` ^6.4 || ^7.0 || ^8.0
+- `symfony/mime` ^6.4.49 || ^7.4.22 || ^8.1.10
 - `yiisoft/files` ^2.0
 
 ## Установка

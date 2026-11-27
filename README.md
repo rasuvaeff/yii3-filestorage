@@ -38,7 +38,7 @@ not a forecast that it will.
 - `psr/http-message` ^2.0, `psr/http-factory` ^1.0 (and a PSR-17 implementation
   in your application, e.g. `nyholm/psr7` or `httpsoft/http-message`)
 - `symfony/console` ^6.4 || ^7.0 || ^8.0
-- `symfony/mime` ^6.4 || ^7.0 || ^8.0
+- `symfony/mime` ^6.4.49 || ^7.4.22 || ^8.1.10
 - `yiisoft/files` ^2.0
 
 ## Installation
