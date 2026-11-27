@@ -9,6 +9,7 @@ use Override;
 use Rasuvaeff\Understudy\Understudy;
 use Rasuvaeff\Yii3Filestorage\Command\CheckCommand;
 use Rasuvaeff\Yii3Filestorage\Path\ContentAddressedKeyGeneratorInterface;
+use Rasuvaeff\Yii3Filestorage\Path\FlatSha256KeyGenerator;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicy;
@@ -658,6 +659,35 @@ final class CheckCommandTest
 
         Assert::same($tester->getStatusCode(), Command::FAILURE);
         Assert::string($this->flatten($tester->getDisplay()))->contains('Store "memory": Path generator');
+    }
+
+    public function flatContentKeysOnAStoreWithTheDirectoryLayoutAreAnError(): void
+    {
+        $tester = $this->run(
+            store: new FileSystemStore('upload', $this->root, $this->factory),
+            contentKeys: new FlatSha256KeyGenerator(prefix: 'blobs'),
+        );
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string($this->flatten($tester->getDisplay()))->contains('Store "upload": Content-addressed key generator');
+    }
+
+    public function flatContentKeysOnAFlatStoreAreSound(): void
+    {
+        $tester = $this->run(
+            store: new FileSystemStore('upload', $this->root, $this->factory, layout: new FlatSiblingLayout()),
+            contentKeys: new FlatSha256KeyGenerator(prefix: 'blobs'),
+        );
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+    }
+
+    public function withoutABoundGeneratorTheDedupDefaultIsProbed(): void
+    {
+        Assert::same(
+            $this->run(store: new FileSystemStore('upload', $this->root, $this->factory))->getStatusCode(),
+            Command::SUCCESS,
+        );
     }
 
     public function theShippedPathGeneratorFitsTheDefaultLayout(): void

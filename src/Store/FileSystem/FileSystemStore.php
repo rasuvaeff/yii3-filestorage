@@ -13,6 +13,7 @@ use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
 use Rasuvaeff\Yii3Filestorage\Exception\UploadSizeException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
+use Rasuvaeff\Yii3Filestorage\Store\ContentAddressableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeAwareStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeDescriptor;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeObject;
@@ -55,9 +56,18 @@ use Yiisoft\Files\FileHelper;
  * the same filesystem, or the move is a copy. Without one, garbage collection
  * cannot delete from this store, and `filestorage:check` says so.
  *
+ * Content-addressed writes ({@see self::putIfAbsent()}, what deduplication in
+ * `rasuvaeff/yii3-filestorage-db` uses) stage under a random `.part` name and
+ * publish with `link()`, which refuses an existing target: put-if-absent,
+ * atomic on one filesystem. Two writers of the same content both succeed; a
+ * crash leaves a `.part` that nothing lists or reuses — under a flat layout it
+ * sits in a fan-out directory shared with live blobs, so it is removed by
+ * hand, never by `gc`.
+ *
  * @api
  */
 final readonly class FileSystemStore implements
+    ContentAddressableStoreInterface,
     DerivativeAwareStoreInterface,
     MaintenanceStoreInterface,
     RangeReadableStoreInterface
@@ -189,6 +199,63 @@ final readonly class FileSystemStore implements
             throw new StoreException(
                 "Could not publish \"{$object->relativePath}\" in store \"{$this->name}\"",
             );
+        }
+
+        return new StoreResult(relativePath: $object->relativePath, size: $written);
+    }
+
+    /**
+     * Publishes the upload at a content-addressed key, or reuses the bytes
+     * already there after a size check — the key is the content hash, so a
+     * matching length is the same content, and a different one means
+     * something outside this convention wrote the key: a hard error.
+     */
+    #[Override]
+    public function putIfAbsent(Upload $upload, StoredObjectId $object, int $maxBytes = 0): StoreResult
+    {
+        $target = $this->rootPath . '/' . $object->relativePath;
+        $declared = $upload->size();
+        if ($maxBytes > 0 && $declared !== null && $declared > $maxBytes) {
+            throw new UploadSizeException("Upload of {$declared} bytes exceeds the {$maxBytes} byte limit");
+        }
+
+        if (file_exists($target) || is_link($target)) {
+            return $this->reuse($upload, $object, $maxBytes);
+        }
+
+        $directory = \dirname($target);
+
+        try {
+            FileHelper::ensureDirectory($directory, $this->directoryMode);
+        } catch (\Throwable $e) {
+            throw new StoreException("Could not create \"{$directory}\" in store \"{$this->name}\"", 0, $e);
+        }
+        $this->assertContained($directory);
+
+        // A random staging name, unlike write(): two writers of the same
+        // content must both succeed, and link() below decides which copy wins.
+        $partial = $target . '.' . bin2hex(random_bytes(8)) . self::PARTIAL_SUFFIX;
+        $written = $this->copy($upload->stream(), $partial, $maxBytes, $object->relativePath);
+
+        if (@link($partial, $target)) {
+            @unlink($partial);
+
+            return new StoreResult(relativePath: $object->relativePath, size: $written);
+        }
+
+        if (file_exists($target)) {
+            @unlink($partial);
+
+            return $this->reuse($upload, $object, $maxBytes);
+        }
+
+        // No hard links on this filesystem. rename() replaces a target that
+        // appeared meanwhile, which for a content-addressed key is the same
+        // bytes — still atomic for a reader.
+        if (!@rename($partial, $target)) {
+            @unlink($partial);
+
+            throw new StoreException("Could not publish \"{$object->relativePath}\" in store \"{$this->name}\"");
         }
 
         return new StoreResult(relativePath: $object->relativePath, size: $written);
@@ -537,6 +604,57 @@ final readonly class FileSystemStore implements
         }
 
         return null;
+    }
+
+    /**
+     * @throws StoreException
+     * @throws UploadSizeException
+     */
+    private function reuse(Upload $upload, StoredObjectId $object, int $maxBytes): StoreResult
+    {
+        $path = $this->resolve($object->relativePath);
+        if ($path === null || !is_file($path)) {
+            throw new StoreException(
+                "Content-addressed key \"{$object->relativePath}\" in store \"{$this->name}\" is not a regular file",
+            );
+        }
+
+        $existing = max(0, (int) @filesize($path));
+        $actual = $upload->size() ?? $this->measure($upload);
+        if ($existing !== $actual) {
+            throw new StoreException(
+                "Content-addressed object \"{$object->relativePath}\" holds {$existing} bytes but the upload is "
+                . "{$actual}. Something outside this package wrote that key",
+            );
+        }
+
+        // The cap is about what this caller may store, however the bytes got
+        // there: reusing past it would bypass a group's limit through a laxer one.
+        if ($maxBytes > 0 && $existing > $maxBytes) {
+            throw new UploadSizeException("Upload of {$existing} bytes exceeds the {$maxBytes} byte limit");
+        }
+
+        return new StoreResult(relativePath: $object->relativePath, size: $existing, created: false);
+    }
+
+    /**
+     * @return int<0, max>
+     */
+    private function measure(Upload $upload): int
+    {
+        $stream = $upload->stream();
+        $counted = 0;
+        while (!$stream->eof()) {
+            $chunk = $stream->read(self::CHUNK);
+            if ($chunk === '') {
+                break;
+            }
+
+            $counted += \strlen($chunk);
+        }
+        $stream->rewind();
+
+        return $counted;
     }
 
     /**

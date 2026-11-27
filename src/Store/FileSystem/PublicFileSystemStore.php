@@ -11,6 +11,7 @@ use Psr\Http\Message\StreamInterface;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryOptions;
+use Rasuvaeff\Yii3Filestorage\Store\ContentAddressableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeDescriptor;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeObject;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeUrlProviderInterface;
@@ -46,6 +47,7 @@ use Rasuvaeff\Yii3Filestorage\Upload;
  * @api
  */
 final readonly class PublicFileSystemStore implements
+    ContentAddressableStoreInterface,
     DerivativeUrlProviderInterface,
     MaintenanceStoreInterface,
     RangeReadableStoreInterface,
@@ -116,6 +118,12 @@ final readonly class PublicFileSystemStore implements
         int $maxBytes = 0,
     ): StoreResult {
         return $this->store->write($upload, $groupName, $pathGenerator, $mediaType, $maxBytes);
+    }
+
+    #[Override]
+    public function putIfAbsent(Upload $upload, StoredObjectId $object, int $maxBytes = 0): StoreResult
+    {
+        return $this->store->putIfAbsent($upload, $object, $maxBytes);
     }
 
     #[Override]
