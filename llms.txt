@@ -41,7 +41,8 @@ Core does NOT bind `StoreInterface` or `RepositoryInterface`. Install a backend
 6. **Direct public URLs are opt-in per group** and unsafe with active content
    (`Mime\ActiveMediaTypes::SCRIPTABLE`: HTML, SVG, XML, XSLT, JS, feeds).
    `filestorage:check` fails on that combination, and for every group when a
-   `PublicFileSystemStore` is registered (it serves by path regardless of the flag).
+   publicly readable store is registered (`Store\PubliclyReadableStoreInterface::isPubliclyReadable()`
+   true — `PublicFileSystemStore` always; it serves by path regardless of the flag).
    Active types are stored as `.bin` and always delivered as `attachment`.
 7. **`add()` is all-or-nothing per file.** There is no `addMany()`.
 8. **Capabilities are `instanceof` checks, not nullable methods** — except
@@ -210,7 +211,15 @@ LayoutCompatibility::contentKeysProblem(ContentAddressedKeyGeneratorInterface $k
 LayoutCompatibility::assertContentKeys(ContentAddressedKeyGeneratorInterface $keys, StoreInterface $store): void; // InvalidConfigException
 LayoutCompatibility::pathsProblem(PathGeneratorInterface $paths, ObjectLayoutInterface $layout, StreamFactoryInterface $streams): ?string;
 LayoutCompatibility::assertPaths(PathGeneratorInterface $paths, StoreInterface $store, StreamFactoryInterface $streams): void;
+// Does the generator keep the scope (tenant) in the key? One digest, two scopes; equal keys = problem.
+LayoutCompatibility::tenantProblem(ContentAddressedKeyGeneratorInterface $keys, string $firstScope = 'tenant-a', string $secondScope = 'tenant-b'): ?string; // equal scopes: InvalidArgumentException
+LayoutCompatibility::assertTenantKept(ContentAddressedKeyGeneratorInterface $keys, string $firstScope = 'tenant-a', string $secondScope = 'tenant-b'): void; // InvalidConfigException
 ```
+`tenantProblem()` is a probe, not a verdict: sharing across tenants is intended under `-db`'s
+`global` dedup scope. `check` warns on it only while a `FileScopeProviderInterface` is bound.
+
+Public stores: `Store\PubliclyReadableStoreInterface extends StoreInterface { isPubliclyReadable(): bool }` —
+a method, not a marker type, so one bucket store class can be either. Not implemented = not public.
 Behavioural probe: two keys sharing the fan-out prefix; deleting one must remove
 it and its derivative and nothing of the other.
 `BlobId::create(string $storeName, string $relativePath)` — physical identity for dedup.
@@ -407,7 +416,7 @@ No clock double ships here. Everything takes a PSR-20 clock; use
 
 | Class | Command | Does |
 |---|---|---|
-| `Command\CheckCommand` | `filestorage:check` | Wiring, per-store layout and capabilities, tenancy, per-group rules. Non-zero on an unsafe delivery combination, on a bound `FileScopeProviderInterface` with no `ScopedFileResolverInterface`, or on a path generator — or a content-key generator on the default store (other stores: warning) — its store's layout cannot delete one by one (`LayoutCompatibility`; unbound content keys = `Sha256KeyGenerator`). Warns: public store without `ownedPrefixes` or `webRoot`; application-owned group with no `ReferenceCheckerInterface` |
+| `Command\CheckCommand` | `filestorage:check` | Wiring, per-store layout and capabilities, tenancy, per-group rules. Non-zero on an unsafe delivery combination, on a bound `FileScopeProviderInterface` with no `ScopedFileResolverInterface`, or on a path generator — or a content-key generator on the default store (other stores: warning) — its store's layout cannot delete one by one (`LayoutCompatibility`; unbound content keys = `Sha256KeyGenerator`). Treats every group as reachable through a store whose `isPubliclyReadable()` is true (capability `public`). Warns: `PublicFileSystemStore` without `ownedPrefixes` or `webRoot`; content-key generator ignoring the tenant (`LayoutCompatibility::tenantProblem()`) while a scope provider is bound; application-owned group with no `ReferenceCheckerInterface` |
 | `Command\StatCommand` | `filestorage:stat` | Counts and sizes by group, plus what sharing saved. Physical figures withheld under tenancy. `--limit`/`--after`, JSON `nextCursor`, `windowed` (sharing counted within the window only) |
 | `Command\VerifyCommand` | `filestorage:verify` | Rows whose object is missing. `--deep` re-reads and compares the hash: `corrupt` (wrong bytes or length), `unreadable` (read stopped before EOF; JSON `unreadable`). Non-zero on any finding |
 | `Command\BackfillHashCommand` | `filestorage:backfill-hash` | Fills `contentHash` on rows written before hashing was on; never from a read cut short or of the wrong length |

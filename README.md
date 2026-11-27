@@ -460,6 +460,20 @@ LayoutCompatibility::assertPaths($pathGenerator, $store, $streams);
 $problem = LayoutCompatibility::contentKeysProblem($keys, $store->layout()); // ?string
 ```
 
+A second probe asks whether a content-key generator keeps the **tenant** in the
+key at all: it generates one digest under two scopes and compares.
+`FlatSha256KeyGenerator(prefix: …)` does not, so two tenants' identical bytes
+would share one object. Only the caller knows whether that is intended (`-db`'s
+`global` deduplication scope shares on purpose), so `filestorage:check` reports
+it as a **warning** when a `FileScopeProviderInterface` is bound, and `-db`
+refuses it at boot under its tenant scopes:
+
+```php
+$problem = LayoutCompatibility::tenantProblem($keys);                  // ?string, scopes 'tenant-a'/'tenant-b'
+$problem = LayoutCompatibility::tenantProblem($keys, $scopeA, $scopeB); // your real scope strings
+LayoutCompatibility::assertTenantKept($keys);                          // InvalidConfigException
+```
+
 ### Tenant scope
 
 Two contracts, both optional, both unbound by default:
@@ -640,7 +654,7 @@ Assert::same($store->bytesAt($file->relativePath), 'hello');
 | Ingress size | A non-seekable upload is spooled with a finite cap; stores enforce the group's `maxBytes` *while copying* and remove partial output |
 | Decompression bombs | `maxPixels` is checked from the image header; JPEG is walked marker by marker, so metadata padding cannot hide the frame header. A JPEG/PNG/GIF/WebP whose dimensions cannot be established is refused. Pixels are never decoded |
 | Active content | One list, `Mime\ActiveMediaTypes` (scriptable tier: HTML, XHTML, SVG, XML, XSLT, MathML, JavaScript, RSS/Atom; plugin tier: PDF, Flash). `DeliveryOptions` forces `attachment` for all of them, so a presigned URL never serves them inline; `ExtensionMap` stores them as `.bin` |
-| Direct public URLs | Off by default. `filestorage:check` **fails** when a group combines them with a permissive or scriptable allow-list — and when a `PublicFileSystemStore` is registered, for every group, since it serves objects by path whatever `allowDirectPublicUrl` says. A public *bucket* behind `-flysystem` cannot be detected (an S3 adapter builds object URLs for private buckets too): treat it the same way yourself |
+| Direct public URLs | Off by default. `filestorage:check` **fails** when a group combines them with a permissive or scriptable allow-list — and when a publicly readable store is registered, for every group, since it serves objects by path whatever `allowDirectPublicUrl` says. A store says so through `Store\PubliclyReadableStoreInterface::isPubliclyReadable()`: `PublicFileSystemStore` always, a bucket store when configured as public (answering `publicUrl()` is not enough — an S3 adapter builds object URLs for private buckets too) |
 | Signed URLs | HMAC-SHA256 over version, key id, expiry and canonical payload; strict length and schema checks; `hash_equals()`; key-ring rotation; keys shorter than 32 bytes are a configuration error |
 | Deduplication | Ownership is a physical `BlobId`, never a hash count — a hash is content identity and says nothing about who owns the bytes |
 
@@ -658,7 +672,7 @@ re-encode if the files will be served publicly.
 
 | Command | Does |
 |---|---|
-| `filestorage:check` | Reports wiring, per-store layout and capabilities, tenancy and per-group rules; fails on an unsafe delivery combination, on tenant mode with no scoped resolver, and on a path generator — or a content-key generator on the default store — that the store's layout cannot delete one by one (other stores: a warning); warns about a public store owning its whole root or with no `webRoot`, and about an application-owned group with no reference checker |
+| `filestorage:check` | Reports wiring, per-store layout and capabilities, tenancy and per-group rules; fails on an unsafe delivery combination, on tenant mode with no scoped resolver, and on a path generator — or a content-key generator on the default store — that the store's layout cannot delete one by one (other stores: a warning); warns about a `PublicFileSystemStore` owning its whole root or with no `webRoot`, about a content-key generator that ignores the tenant while a scope provider is bound, and about an application-owned group with no reference checker. Stores that are publicly readable list the `public` capability |
 | `filestorage:stat` | Counts and sizes by group, plus how much sharing has saved (physical figures withheld under tenancy) |
 | `filestorage:verify` | Reports rows whose object is missing; `--deep` re-reads each one and compares its hash — `corrupt` for wrong bytes or length, `unreadable` for a read cut short before EOF |
 | `filestorage:backfill-hash` | Fills in `contentHash` on rows written before integrity hashing was on; a read cut short, or one whose length differs from the row, writes nothing |

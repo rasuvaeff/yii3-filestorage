@@ -43,7 +43,9 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
    `assertPaths($paths, $store, $streams)` — flat keys under `DirectoryLayout`
    delete a whole fan-out bucket (`DirectoryLayout` now refuses names other than
    `original[.ext]`). `FlatSha256KeyGenerator(prefix: 'blobs')` gives
-   `blobs/ab/cd/<sha>.<ext>` and ignores the scope (single-tenant only).
+   `blobs/ab/cd/<sha>.<ext>` and ignores the scope (single-tenant only);
+   `LayoutCompatibility::tenantProblem($keys[, $scopeA, $scopeB])` detects that,
+   and `check` warns about it while a scope provider is bound.
 
 4. **`urlFor()`, not `url()`.** `url()` is raw and ignores delivery policy;
    `temporaryUrl()` does pass the group's `DeliveryOptions` to the store, so a
@@ -58,9 +60,11 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
    + plugin tier: PDF, Flash) — never write a second one. `DeliveryOptions`
    forces `attachment` for every active type, `ExtensionMap` stores them as
    `.bin`, and `filestorage:check` fails a direct-public group accepting a
-   scriptable type, or any permissive/scriptable group when a
-   `PublicFileSystemStore` is registered (it serves by path regardless of
-   `allowDirectPublicUrl`) — do not work around it. It also
+   scriptable type, or any permissive/scriptable group when a publicly
+   readable store is registered (`Store\PubliclyReadableStoreInterface::isPubliclyReadable()`
+   true: `PublicFileSystemStore` always, a public bucket store when configured
+   so; it serves by path regardless of `allowDirectPublicUrl`) — do not work
+   around it. It also
    fails a bound `FileScopeProviderInterface` with no `ScopedFileResolverInterface`:
    a signed download would then resolve by id alone.
 

@@ -16,7 +16,7 @@ capabilities `StoreUrlProviderInterface`, `RangeReadableStoreInterface`,
 `Store\StoreRegistry`, `StoreResult`, `StoredObjectId`, `BlobId`,
 `DerivativeDescriptor`, `DerivativeObject`, `StoredObject`, `QuarantinedObject`;
 `Store\Layout\ObjectLayoutInterface` with `DirectoryLayout` (default) and
-`FlatSiblingLayout`, `ObjectSet` and `LayoutCompatibility`; `Store\FileSystem\FileSystemStore`
+`FlatSiblingLayout`, `ObjectSet` and `LayoutCompatibility`; `Store\PubliclyReadableStoreInterface`; `Store\FileSystem\FileSystemStore`
 and `PublicFileSystemStore`; `Repository\RepositoryInterface` and
 `MaintenanceRepositoryInterface`; `Path\PathGeneratorInterface` with
 `RandomPathGenerator` / `DatePathGenerator`, and
@@ -253,7 +253,15 @@ asserting only one half lets the operands be swapped undetected.
   fan-out bucket per blob. `Store\Layout\LayoutCompatibility` probes behaviourally
   (two keys sharing the fan-out prefix; deletion and derivative of each) and is
   what `-db`'s factory, `-flysystem`'s DI and `check` call. Keep it behavioural —
-  a third-party layout will not refuse.
+  a third-party layout will not refuse. `tenantProblem()` is the separate
+  tenant-in-key probe (one digest, two scopes); `check` only **warns** on it —
+  core cannot see `-db`'s `DedupScope`, and `global` shares across tenants on
+  purpose.
+- **"Public" is the store's statement, not a type.** `check` treats a store as
+  public only through `PubliclyReadableStoreInterface::isPubliclyReadable()`,
+  never through `instanceof PublicFileSystemStore` or `publicUrl()` answering
+  (a private bucket builds URLs too). The `ownedPrefixes`/`webRoot` warnings stay
+  on `PublicFileSystemStore`: they are its constructor arguments.
 - **The store root belongs to the store.** `gc --orphans` sweeps every row-less
   file the inventory lists. The local inventory skips hidden entries and, with
   `ownedPrefixes`, everything outside them — a write outside is refused so no
