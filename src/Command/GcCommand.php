@@ -299,9 +299,31 @@ final class GcCommand extends Command
 
             try {
                 while (($page = iterator_to_array($store->quarantined($after, self::PAGE), preserve_keys: false)) !== []) {
+                    // One reference lookup per page, not per entry: the checker
+                    // is documented as batched, and an orphan sweep leaves one
+                    // entry per object.
+                    $decisions = [];
+                    $purgeable = [];
+                    foreach ($page as $entry) {
+                        $decisions[$entry->token] = $this->quarantineDecision($name, $entry, $now, $cutoff);
+                        if ($decisions[$entry->token] === 'purged') {
+                            $purgeable[] = $entry;
+                        }
+                    }
+                    $referenced = $this->referencedEntries($name, $store->layout(), $purgeable);
+
                     foreach ($page as $entry) {
                         $after = $entry->token;
-                        $this->settleQuarantined($io, $apply, $name, $store, $entry, $now, $cutoff, $counts);
+                        $this->settleQuarantined(
+                            $io,
+                            $apply,
+                            $name,
+                            $store,
+                            $entry,
+                            $decisions[$entry->token],
+                            isset($referenced[$entry->token]),
+                            $counts,
+                        );
                     }
                 }
             } catch (StoreException $e) {
@@ -318,6 +340,7 @@ final class GcCommand extends Command
 
     /**
      * @param non-empty-string $storeName
+     * @param 'restored'|'purged'|'kept' $decision
      * @param array{restored: int, purged: int, kept: int, failed: int} $counts
      */
     private function settleQuarantined(
@@ -326,12 +349,11 @@ final class GcCommand extends Command
         string $storeName,
         MaintenanceStoreInterface $store,
         QuarantinedObject $entry,
-        DateTimeImmutable $now,
-        DateTimeImmutable $cutoff,
+        string $decision,
+        bool $referencedAgain,
         array &$counts,
     ): void {
-        $decision = $this->quarantineDecision($storeName, $entry, $now, $cutoff);
-        if ($decision === 'purged' && $this->stillReferenced($storeName, $store->layout(), $entry)) {
+        if ($decision === 'purged' && $referencedAgain) {
             $decision = 'restored';
             $io->warning(sprintf(
                 'Restoring quarantined "%s" (%s): a row or the application references it again.',
@@ -373,33 +395,47 @@ final class GcCommand extends Command
     }
 
     /**
-     * Whether a row — matched through the layout, as the orphan sweep matches
-     * — or the application points at any object of the entry.
+     * The entries a row — matched through the layout, as the orphan sweep
+     * matches — or the application points at again.
      *
      * Under a tenant-scoped repository the rows are only the current scope's;
      * run gc from an entry point that sees every row (see `--orphans`).
      *
      * @param non-empty-string $storeName
+     * @param list<QuarantinedObject> $entries
+     *
+     * @return array<string, true> Tokens.
      */
-    private function stillReferenced(string $storeName, ObjectLayoutInterface $layout, QuarantinedObject $entry): bool
+    private function referencedEntries(string $storeName, ObjectLayoutInterface $layout, array $entries): array
     {
+        if ($entries === []) {
+            return [];
+        }
+
+        $objects = array_merge(...array_map(static fn(QuarantinedObject $entry): array => $entry->objects, $entries));
         $directories = array_values(array_unique(array_map(
             static fn(StoredObjectId $object): string => $object->directory(),
-            $entry->objects,
+            $objects,
         )));
 
         $owners = [];
         foreach ($this->repository->referencedPaths($storeName, $directories) as $path) {
             $owners[$layout->ownerOf(new StoredObjectId($path))] = true;
         }
+        $byApplication = $this->referencedByApplication($storeName, $objects);
 
-        foreach ($entry->objects as $object) {
-            if (isset($owners[$layout->ownerOf($object)])) {
-                return true;
+        $referenced = [];
+        foreach ($entries as $entry) {
+            foreach ($entry->objects as $object) {
+                if (isset($owners[$layout->ownerOf($object)]) || isset($byApplication[$object->relativePath])) {
+                    $referenced[$entry->token] = true;
+
+                    break;
+                }
             }
         }
 
-        return $this->referencedByApplication($storeName, $entry->objects) !== [];
+        return $referenced;
     }
 
     /**

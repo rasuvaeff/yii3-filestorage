@@ -309,7 +309,12 @@ final readonly class FileSystemStore implements
     #[Override]
     public function delete(File $file): void
     {
-        $set = $this->layout->deletion(new StoredObjectId($file->relativePath));
+        try {
+            $set = $this->layout->deletion(new StoredObjectId($file->relativePath));
+        } catch (InvalidArgumentException $e) {
+            throw new StoreException($e->getMessage(), 0, $e);
+        }
+
         if (!$set->isTree()) {
             foreach ($this->members($set) as $member) {
                 $this->deleteObject(new StoredObjectId($member));
@@ -837,11 +842,21 @@ final readonly class FileSystemStore implements
     }
 
     /**
+     * A path the layout refuses is a store error, so callers that handle
+     * {@see \Rasuvaeff\Yii3Filestorage\Exception\FilestorageException} (a
+     * download action answering 404) keep working for such a row.
+     *
      * @return non-empty-string
+     *
+     * @throws StoreException
      */
     private function derivativePath(File $file, DerivativeDescriptor $derivative): string
     {
-        return $this->layout->derivativePath($file, $derivative);
+        try {
+            return $this->layout->derivativePath($file, $derivative);
+        } catch (InvalidArgumentException $e) {
+            throw new StoreException($e->getMessage(), 0, $e);
+        }
     }
 
     /**

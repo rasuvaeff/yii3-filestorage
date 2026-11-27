@@ -446,7 +446,7 @@ That is what lets `-db`'s deduplication run on a local disk, public or not.
 places, and a mismatch deletes other files' bytes: flat keys
 (`FlatSha256KeyGenerator`) under the default `DirectoryLayout` made deleting one
 blob delete its whole `ab/cd/` bucket. `DirectoryLayout` now refuses any file not
-named `original` / `original.<ext>`, and `Store\Layout\LayoutCompatibility`
+named `original` / `original.<ext>` (a store reports that as `StoreException`), and `Store\Layout\LayoutCompatibility`
 checks a pair behaviourally — it generates two keys that differ only after the
 fan-out prefix and asks the layout what deleting each removes and where each
 one's derivative goes. Call it wherever a generator meets a store; `-db`'s
@@ -658,7 +658,7 @@ re-encode if the files will be served publicly.
 
 | Command | Does |
 |---|---|
-| `filestorage:check` | Reports wiring, per-store layout and capabilities, tenancy and per-group rules; fails on an unsafe delivery combination, on tenant mode with no scoped resolver, and on a key or path generator the store's layout cannot delete one by one; warns about a public store owning its whole root or with no `webRoot`, and about an application-owned group with no reference checker |
+| `filestorage:check` | Reports wiring, per-store layout and capabilities, tenancy and per-group rules; fails on an unsafe delivery combination, on tenant mode with no scoped resolver, and on a path generator — or a content-key generator on the default store — that the store's layout cannot delete one by one (other stores: a warning); warns about a public store owning its whole root or with no `webRoot`, and about an application-owned group with no reference checker |
 | `filestorage:stat` | Counts and sizes by group, plus how much sharing has saved (physical figures withheld under tenancy) |
 | `filestorage:verify` | Reports rows whose object is missing; `--deep` re-reads each one and compares its hash — `corrupt` for wrong bytes or length, `unreadable` for a read cut short before EOF |
 | `filestorage:backfill-hash` | Fills in `contentHash` on rows written before integrity hashing was on; a read cut short, or one whose length differs from the row, writes nothing |

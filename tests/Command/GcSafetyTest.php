@@ -774,6 +774,18 @@ final class GcSafetyTest
         Assert::string($display)->contains('a row or the application references it again');
     }
 
+    public function theCheckerIsAskedOncePerQuarantinePage(): void
+    {
+        $this->oldOrphans('docs/k1/original.bin', 'docs/k2/original.bin');
+        $this->run(['--orphans' => true, '--apply' => true]);
+        $this->clock->advance(new DateInterval('P8D'));
+        $checker = new ListReferenceChecker();
+
+        $this->run(['--apply' => true], references: $checker);
+
+        Assert::same($checker->asked, [['docs/k1/original.bin', 'docs/k2/original.bin']]);
+    }
+
     public function anUnreferencedQuarantinedObjectIsStillPurged(): void
     {
         $this->oldOrphans('docs/k1/original.bin');

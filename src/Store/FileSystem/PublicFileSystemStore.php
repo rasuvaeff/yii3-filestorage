@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use InvalidArgumentException;
 use Override;
 use Psr\Http\Message\StreamInterface;
+use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryOptions;
@@ -107,7 +108,13 @@ final readonly class PublicFileSystemStore implements
     #[Override]
     public function publicDerivativeUrl(File $file, DerivativeDescriptor $derivative): string
     {
-        return $this->baseUrl . '/' . $this->encodePath($this->store->layout()->derivativePath($file, $derivative));
+        try {
+            $path = $this->store->layout()->derivativePath($file, $derivative);
+        } catch (InvalidArgumentException $e) {
+            throw new StoreException($e->getMessage(), 0, $e);
+        }
+
+        return $this->baseUrl . '/' . $this->encodePath($path);
     }
 
     /**

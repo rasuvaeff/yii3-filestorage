@@ -434,6 +434,38 @@ final class FileSystemStoreQuarantineTest
         Assert::same([...$store->quarantined()], []);
     }
 
+    /**
+     * A legacy row that does not fit the layout is a StoreException at the
+     * store boundary — what download actions and derivative generators catch —
+     * never the layout's InvalidArgumentException.
+     */
+    public function aRowTheLayoutRefusesIsAStoreError(): void
+    {
+        $this->place('docs/x.bin', 'legacy');
+        $file = $this->file('docs/x.bin');
+        $thumb = new DerivativeDescriptor('s', 'webp', 'image/webp');
+        $public = new \Rasuvaeff\Yii3Filestorage\Store\FileSystem\PublicFileSystemStore($this->store, 'https://x.test');
+        $memory = new \Rasuvaeff\Yii3Filestorage\Test\InMemoryStore('m', $this->factory);
+
+        foreach ([
+            'delete' => fn() => $this->store->delete($file),
+            'hasDerivative' => fn() => $this->store->hasDerivative($file, $thumb),
+            'derivativeStream' => fn() => $this->store->derivativeStream($file, $thumb),
+            'writeDerivative' => fn() => $this->store->writeDerivative($file, $thumb, $this->factory->createStream('x')),
+            'publicDerivativeUrl' => static fn() => $public->publicDerivativeUrl($file, $thumb),
+            'in-memory delete' => static fn() => $memory->delete($file),
+        ] as $call => $run) {
+            try {
+                $run();
+                Assert::fail("{$call} did not refuse");
+            } catch (StoreException $e) {
+                Assert::string($e->getMessage())->contains('does not fit the directory layout');
+            }
+        }
+
+        Assert::same(file_get_contents($this->root . '/docs/x.bin'), 'legacy');
+    }
+
     private function place(string $relativePath, string $bytes): void
     {
         $absolute = $this->root . '/' . $relativePath;

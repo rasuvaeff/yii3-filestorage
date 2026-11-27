@@ -22,8 +22,15 @@ use Rasuvaeff\Yii3Filestorage\File;
  */
 interface DerivativeAwareStoreInterface extends StoreInterface
 {
+    /**
+     * @throws StoreException When the file's path does not fit the store's
+     *         layout — never an `InvalidArgumentException` from the layout.
+     */
     public function hasDerivative(File $file, DerivativeDescriptor $derivative): bool;
 
+    /**
+     * @throws StoreException When the file's path does not fit the store's layout.
+     */
     public function derivativeStream(File $file, DerivativeDescriptor $derivative): ?StreamInterface;
 
     /**

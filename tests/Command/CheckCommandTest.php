@@ -682,6 +682,31 @@ final class CheckCommandTest
         Assert::same($tester->getStatusCode(), Command::SUCCESS);
     }
 
+    /**
+     * Deduplication writes to one store; a second local store with the default
+     * layout — private attachments next to a flat public tree — is only a
+     * warning, not a failed check.
+     */
+    public function aContentKeyMismatchOnANonDefaultStoreIsAWarning(): void
+    {
+        $command = new CheckCommand(
+            stores: new StoreRegistry([
+                new FileSystemStore('public', $this->root . '/public', $this->factory, layout: new FlatSiblingLayout()),
+                new FileSystemStore('private', $this->root . '/private', $this->factory),
+            ]),
+            repository: new MemoryRepository(),
+            policies: new PolicyRegistry(),
+            deliveryPolicies: new DeliveryPolicyRegistry(),
+            contentKeys: new FlatSha256KeyGenerator(prefix: 'blobs'),
+        );
+        $tester = new CommandTester($command);
+        $tester->execute([]);
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        Assert::string($this->flatten($tester->getDisplay()))->contains('Store "private": Content-addressed key generator');
+        Assert::string($this->flatten($tester->getDisplay()))->contains('only a problem if deduplication writes to this store');
+    }
+
     public function withoutABoundGeneratorTheDedupDefaultIsProbed(): void
     {
         Assert::same(

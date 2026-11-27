@@ -198,7 +198,7 @@ interface ObjectLayoutInterface {
 ```
 `DirectoryLayout` refuses (`InvalidArgumentException`) `deletion()`/`derivativePath()`
 for a file not named `original` / `original.<ext>` (root objects excepted): a
-flat key's directory is a shared fan-out bucket.
+flat key's directory is a shared fan-out bucket. Stores rethrow it as `StoreException`.
 
 **Check every generator against the store's layout** — they are configured in
 two places, and a mismatch deletes other files' bytes:
@@ -407,7 +407,7 @@ No clock double ships here. Everything takes a PSR-20 clock; use
 
 | Class | Command | Does |
 |---|---|---|
-| `Command\CheckCommand` | `filestorage:check` | Wiring, per-store layout and capabilities, tenancy, per-group rules. Non-zero on an unsafe delivery combination, on a bound `FileScopeProviderInterface` with no `ScopedFileResolverInterface`, or on a content-key/path generator its store's layout cannot delete one by one (`LayoutCompatibility`; unbound content keys = `Sha256KeyGenerator`). Warns: public store without `ownedPrefixes` or `webRoot`; application-owned group with no `ReferenceCheckerInterface` |
+| `Command\CheckCommand` | `filestorage:check` | Wiring, per-store layout and capabilities, tenancy, per-group rules. Non-zero on an unsafe delivery combination, on a bound `FileScopeProviderInterface` with no `ScopedFileResolverInterface`, or on a path generator — or a content-key generator on the default store (other stores: warning) — its store's layout cannot delete one by one (`LayoutCompatibility`; unbound content keys = `Sha256KeyGenerator`). Warns: public store without `ownedPrefixes` or `webRoot`; application-owned group with no `ReferenceCheckerInterface` |
 | `Command\StatCommand` | `filestorage:stat` | Counts and sizes by group, plus what sharing saved. Physical figures withheld under tenancy. `--limit`/`--after`, JSON `nextCursor`, `windowed` (sharing counted within the window only) |
 | `Command\VerifyCommand` | `filestorage:verify` | Rows whose object is missing. `--deep` re-reads and compares the hash: `corrupt` (wrong bytes or length), `unreadable` (read stopped before EOF; JSON `unreadable`). Non-zero on any finding |
 | `Command\BackfillHashCommand` | `filestorage:backfill-hash` | Fills `contentHash` on rows written before hashing was on; never from a read cut short or of the wrong length |

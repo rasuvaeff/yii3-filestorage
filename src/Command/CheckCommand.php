@@ -127,8 +127,27 @@ final class CheckCommand extends Command
             // An error: a key generator whose keys the layout cannot delete
             // one by one loses other files' bytes on the first deletion
             // (review 1.0 A1).
-            foreach ($this->layoutProblems($store) as $problem) {
-                $errors[] = "Store \"{$name}\": {$problem}";
+            if ($store instanceof ContentAddressableStoreInterface) {
+                $problem = LayoutCompatibility::contentKeysProblem(
+                    $this->contentKeys ?? new Sha256KeyGenerator(),
+                    $store->layout(),
+                );
+                // Deduplication writes to one store — the default unless
+                // `-db`'s factory is told otherwise, and it refuses a mismatch
+                // itself. On the default store this is an error; on any other
+                // it only matters if deduplication is pointed there.
+                if ($problem !== null && $name === $this->stores->defaultName()) {
+                    $errors[] = "Store \"{$name}\": {$problem}";
+                } elseif ($problem !== null) {
+                    $warnings[] = "Store \"{$name}\": {$problem}. It is only a problem if deduplication writes to "
+                        . 'this store; rasuvaeff/yii3-filestorage-db refuses that combination when it is built.';
+                }
+            }
+            if ($this->paths instanceof PathGeneratorInterface && $this->streams instanceof StreamFactoryInterface) {
+                $problem = LayoutCompatibility::pathsProblem($this->paths, $store->layout(), $this->streams);
+                if ($problem !== null) {
+                    $errors[] = "Store \"{$name}\": {$problem}";
+                }
             }
 
             // A warning, not an error: uploads and reads work without a usable
@@ -380,25 +399,6 @@ final class CheckCommand extends Command
             $allowedMimeTypes,
             $this->activeTypes->contains(...),
         ));
-    }
-
-    /**
-     * @return list<non-empty-string>
-     */
-    private function layoutProblems(StoreInterface $store): array
-    {
-        $problems = [];
-        if ($store instanceof ContentAddressableStoreInterface) {
-            $problems[] = LayoutCompatibility::contentKeysProblem(
-                $this->contentKeys ?? new Sha256KeyGenerator(),
-                $store->layout(),
-            );
-        }
-        if ($this->paths instanceof PathGeneratorInterface && $this->streams instanceof StreamFactoryInterface) {
-            $problems[] = LayoutCompatibility::pathsProblem($this->paths, $store->layout(), $this->streams);
-        }
-
-        return array_values(array_filter($problems, static fn(?string $problem): bool => $problem !== null));
     }
 
     private function shortName(string $class): string

@@ -139,7 +139,11 @@ final class InMemoryStore implements MaintenanceStoreInterface
     #[Override]
     public function delete(File $file): void
     {
-        $set = $this->layout->deletion(new StoredObjectId($file->relativePath));
+        try {
+            $set = $this->layout->deletion(new StoredObjectId($file->relativePath));
+        } catch (InvalidArgumentException $e) {
+            throw new StoreException($e->getMessage(), 0, $e);
+        }
         foreach (array_map(strval(...), array_keys($this->objects)) as $path) {
             if ($set->contains($path)) {
                 unset($this->objects[$path], $this->timestamps[$path]);
