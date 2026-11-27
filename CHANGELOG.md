@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.8.3 — 2026-11-27
+
+- Docs: the agent skill and `llms.txt`: maintenance commands are always registered (a container error without `MaintenanceRepositoryInterface`), and only `verify`/`backfill-hash` take `--after`.
+
 ## 0.8.2 — 2026-11-27
 
 - **Fixed:** since 0.8.1 the flags `gc --apply`, `gc --orphans`, `verify --deep`, `backfill-hash --apply` and `import --apply` were off when an input built in code (`ArrayInput`) passed `1` or `'1'`: a run meant to write stayed a dry run, and `verify --deep` did not compare contents. Truthy values switch the flags on again. Runs from a shell were not affected.

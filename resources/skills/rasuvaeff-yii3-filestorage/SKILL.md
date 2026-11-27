@@ -100,10 +100,12 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
 - Timestamps serialise as `Y-m-d\TH:i:s.uP`. `DateTimeInterface::ATOM` drops
   microseconds and breaks the `File` round-trip against a PSR-20 clock.
 - The maintenance commands need a backend implementing
-  `MaintenanceRepositoryInterface`. An installation without one simply has no
-  maintenance commands, which is better than a container error under cron.
-- They all page by id and print the last one reached; resume with
-  `--after=<id>`. `gc --orphans` walks every store unless `--store=` narrows it,
-  and `--limit` is a budget for the whole pass, not per store.
+  `MaintenanceRepositoryInterface`. All six are always registered; without one,
+  running any of them is a container error naming that interface — loud, not
+  silent.
+- `verify` and `backfill-hash` page by id and print the last one reached; resume
+  with `--after=<id>`. `import` resumes through its manifest. `gc --orphans`
+  walks every store unless `--store=` narrows it, and `--limit` is a budget for
+  the whole pass, not per store.
 - `add()` is all-or-nothing per file. There is no `addMany()`, because an atomic
   batch is impossible over a filesystem or an object store.
