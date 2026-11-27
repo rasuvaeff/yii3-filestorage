@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.8.4 — 2026-11-27
+
+- Fix: `filestorage:gc` skips a blob's physical delete when less than half of its lease is left, and returns the blob to the queue. A collector paused past its lease could delete bytes a writer had re-published meanwhile; this narrows that window to a pause between the check and the unlink, it does not close it (#43).
+- Docs: known limits of `gc` until 0.9 — the lease guards the ledger row, not the unlink; `gc --orphans --apply` must run with uploads stopped, because the sweep has no minimum object age.
+- Docs: `ContentAddressableStoreInterface` — check-then-write disqualifies an adapter only *without atomic visibility*; the guarantee is atomic publication of identical content, not a single creator. `StoreResult::$created` is advisory for content-addressed puts and nothing may delete on it.
+- Dist: `composer-require-checker.json` is export-ignored.
+
 ## 0.8.3 — 2026-11-27
 
 - Docs: the agent skill and `llms.txt`: maintenance commands are always registered (a container error without `MaintenanceRepositoryInterface`), and only `verify`/`backfill-hash` take `--after`.

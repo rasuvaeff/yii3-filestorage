@@ -19,6 +19,14 @@ use DateTimeImmutable;
  * idempotent physical delete — including the case where the bytes are already
  * gone but the ledger row survived the crash.
  *
+ * The lease guards the ledger row, not the physical delete. A collector that
+ * was merely *paused* past the expiry does not know it has been superseded:
+ * if a writer re-published the same key in the meantime, its delete removes
+ * live bytes, and only the ledger row survives because `completeDeletion()`
+ * refuses the stale token. `filestorage:gc` therefore skips the delete when
+ * less than half of the lease is left, which narrows the window without
+ * closing it.
+ *
  * @api
  */
 final readonly class BlobLease

@@ -28,6 +28,10 @@ final readonly class StoreResult
      *        content-addressed put can report this; an ordinary write always
      *        creates, which is why compensation on the base path may delete
      *        the object it just wrote without endangering anyone else's.
+     *        For a content-addressed put it is advisory, not exclusive: two
+     *        writers that both found the key absent may both report true for
+     *        the same bytes. Never delete bytes on the basis of this flag —
+     *        the blob ledger decides that.
      *
      * @throws InvalidArgumentException
      */

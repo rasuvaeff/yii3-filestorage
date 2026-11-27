@@ -198,6 +198,16 @@ asserting only one half lets the operands be swapped undetected.
   the token (`SignedPayload::$scopeId`) and `ScopedFileResolverInterface` matches
   it as a second predicate. Disabling the filter is a cross-tenant read of every
   file whose id leaks.
+- **Two known `gc` limits until 0.9 (review 2026-11-27, #2/#3).** The blob
+  lease guards the ledger row, not the unlink: a collector paused past its lease
+  can delete bytes a writer re-published meanwhile, and `completeDeletion()`
+  refusing the stale token comes too late. `collectBlobs()` skips the delete
+  when less than half of `leaseTtl` is left (`GcLeaseFreshnessTest`); that
+  narrows the window to a pause between the check and the unlink, it does not
+  close it — 0.9's two-phase deletion does. The orphan sweep has no minimum
+  object age and reads the referenced set once before walking, so the
+  documented operating rule is `gc --orphans --apply` with uploads stopped.
+  Do not describe either as fixed in docs until 0.9 lands.
 - **`gc --orphans` refuses when a `FileScopeProviderInterface` is bound, and
   that refusal is load-bearing.** The referenced-set comes from the repository,
   which filters by the current tenant; the object listing is physical and

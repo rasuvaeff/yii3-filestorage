@@ -535,6 +535,14 @@ orphans. Under `--apply` it is the **only** thing in this family that deletes
 bytes another request might want, and it does so under an exclusive, expiring
 lease — see the deduplication section of `-db`.
 
+**Known limits of `gc` until 0.9.** Both are review findings of 2026-11-27 and
+are fixed by the 0.9 two-phase deletion; until then, operate around them:
+
+| Limit | What can happen | What to do |
+|---|---|---|
+| The lease guards the ledger row, not the unlink | A collector paused past its lease is superseded; if a writer re-publishes the same content meanwhile, the paused collector deletes the new bytes and a committed row points at nothing. `gc` skips the delete when less than half of the lease is left, which narrows the window to a pause between that check and the unlink — it does not close it | Keep the lease TTL (`leaseTtl`, 5 minutes by default) well above any pause a worker can have, and do not run `gc --apply` on a host that suspends processes |
+| `--orphans` has no minimum object age | The sweep reads the referenced set once, then walks the store. An upload that publishes bytes during the walk — before its row is saved, or entirely after the snapshot — is deleted as an orphan | **Run `gc --orphans --apply` with uploads stopped.** Blob collection without `--orphans` is unaffected |
+
 Order matters after enabling deduplication: `deduplicate --apply` repoints the
 rows, and the objects they used to point at become orphans that
 `gc --orphans --apply` reclaims. Under tenancy that last step moves — `deduplicate`

@@ -16,12 +16,20 @@ use Rasuvaeff\Yii3Filestorage\Upload;
  * a ledger counts references — see the dedup design in
  * `rasuvaeff/yii3-filestorage-db`.
  *
- * "Atomic" is the load-bearing word. A `fileExists()` followed by a `write()`
- * is not an implementation of this interface: two callers race, one observes a
- * half-written object and reuses it, and the file that comes back is corrupt.
- * An adapter that cannot promise atomic publication simply does not implement
- * this — it stays a perfectly good store that cannot enable dedup, and
- * `filestorage:check` names the missing capability.
+ * "Atomic" is the load-bearing word. Without atomic visibility, a
+ * `fileExists()` followed by a `write()` is not an implementation of this
+ * interface: two callers race, one observes a half-written object and reuses
+ * it, and the file that comes back is corrupt. With atomic visibility — a
+ * reader sees the whole object or none — the same check-then-write is a valid
+ * implementation. An adapter that cannot promise atomic publication simply does
+ * not implement this — it stays a perfectly good store that cannot enable
+ * dedup, and `filestorage:check` names the missing capability.
+ *
+ * The guarantee is atomic publication of identical content, not a single
+ * creator. Two writers that both find the key absent may both publish the same
+ * bytes and both report {@see StoreResult::$created} as true. The ledger's
+ * reservations and references decide when bytes may be deleted, never
+ * `created`.
  *
  * @api
  */

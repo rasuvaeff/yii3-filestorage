@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Filestorage\Command;
 
 use DateInterval;
+use DateTimeImmutable;
 use Override;
 use Psr\Clock\ClockInterface;
 use Rasuvaeff\Yii3Filestorage\Exception\InvalidConfigException;
@@ -13,6 +14,7 @@ use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\MaintenanceRepositoryInterface;
 use Rasuvaeff\Yii3Filestorage\Store\BlobId;
+use Rasuvaeff\Yii3Filestorage\Store\BlobLease;
 use Rasuvaeff\Yii3Filestorage\Store\BlobLedgerInterface;
 use Rasuvaeff\Yii3Filestorage\Store\MaintenanceStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
@@ -32,14 +34,21 @@ use Symfony\Component\Console\Style\SymfonyStyle;
  * **Shared blobs.** The only place in this package that deletes bytes another
  * request might want. It takes an exclusive, expiring lease, deletes the
  * object, and removes the ledger row only if the blob is *still* unreferenced —
- * so a writer that committed since the claim wins, and the blob survives to be
- * collected next time.
+ * so a writer that committed since the claim keeps its ledger row. The lease
+ * does not protect the unlink itself: a collector paused past its lease can be
+ * superseded, and the bytes it then deletes may already have been re-published
+ * by a writer. The delete is skipped when less than half of the lease is left,
+ * which narrows that window to a pause between the check and the unlink; it
+ * does not close it.
  *
  * **Orphans.** Objects with no metadata row at all: what a crash between
  * writing bytes and saving a row leaves behind, and what a failed compensation
  * leaves behind. Reclaiming them is a scan, so it is opt-in — and it is refused
  * outright when the repository is tenant-scoped, because the two halves of the
- * comparison would not be the same universe.
+ * comparison would not be the same universe. The sweep has no minimum object
+ * age and reads the referenced set once before walking, so an upload that
+ * publishes bytes during the walk can lose them: run `--orphans --apply` with
+ * uploads stopped.
  *
  * Dry-run is the default. A command whose first run deletes is a command
  * somebody eventually runs on the wrong database.
@@ -208,6 +217,23 @@ final class GcCommand extends Command
                 continue;
             }
 
+            // The lease protects the ledger row, not the unlink: a collector
+            // paused past its expiry has been superseded, and the bytes at this
+            // key may already belong to a writer that re-published them. This
+            // narrows that window to a pause *between this check and the
+            // unlink* longer than half the TTL; it does not close it.
+            $now = $this->clock->now();
+            if (!$this->leaseIsFresh($lease, $now)) {
+                $this->ledger->abandonDeletion($lease, $now);
+                $io->warning(sprintf(
+                    'Skipped "%s": less than half of its lease was left before the delete, so another collector may '
+                    . 'already have taken it over. It stays queued.',
+                    $lease->blob->key(),
+                ));
+
+                continue;
+            }
+
             try {
                 $store->deleteObject($lease->blob->object);
             } catch (StoreException $e) {
@@ -226,6 +252,19 @@ final class GcCommand extends Command
         }
 
         return $collected;
+    }
+
+    /**
+     * Whether at least half of the lease's time to live is still ahead. The
+     * half is measured against {@see self::$leaseTtl} through a reference date,
+     * so a calendar interval such as `P1D` converts like a fixed one.
+     */
+    private function leaseIsFresh(BlobLease $lease, DateTimeImmutable $now): bool
+    {
+        $reference = new DateTimeImmutable('@0');
+        $halfTtl = intdiv($reference->add($this->leaseTtl)->getTimestamp() - $reference->getTimestamp(), 2);
+
+        return $lease->expiresAt->getTimestamp() - $now->getTimestamp() >= $halfTtl;
     }
 
     /**

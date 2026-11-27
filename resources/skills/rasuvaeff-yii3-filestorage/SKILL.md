@@ -77,7 +77,11 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
 10. **`gc --apply` is the only thing here that deletes shared bytes.** It takes
    an exclusive, expiring lease per blob and removes the ledger row only if the
    blob is still unreferenced in the statement that acts. Never delete a shared
-   object anywhere else, and never inside a request.
+   object anywhere else, and never inside a request. The lease guards the
+   ledger row, not the unlink: a collector paused past its lease can delete
+   bytes a writer re-published meanwhile. `gc` skips the delete when less than
+   half of the lease is left — that narrows the window, it does not close it
+   (two-phase deletion in 0.9). Do not shorten `leaseTtl` below worker pauses.
 
 11. **No suppressions.** No `@psalm-suppress`, no baseline. Fix the root cause.
 
@@ -106,6 +110,8 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
 - `verify` and `backfill-hash` page by id and print the last one reached; resume
   with `--after=<id>`. `import` resumes through its manifest. `gc --orphans`
   walks every store unless `--store=` narrows it, and `--limit` is a budget for
-  the whole pass, not per store.
+  the whole pass, not per store. It has no minimum object age, so until 0.9
+  `gc --orphans --apply` must run with uploads stopped — an upload in flight
+  during the walk loses its bytes.
 - `add()` is all-or-nothing per file. There is no `addMany()`, because an atomic
   batch is impossible over a filesystem or an object store.
