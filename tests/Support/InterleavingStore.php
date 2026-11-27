@@ -8,6 +8,7 @@ use Closure;
 use DateTimeImmutable;
 use Override;
 use Psr\Http\Message\StreamInterface;
+use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectLayoutInterface;
@@ -35,6 +36,14 @@ final class InterleavingStore implements MaintenanceStoreInterface
     private ?Closure $beforeQuarantine = null;
     private ?Closure $beforeObjects = null;
     private bool $undated = false;
+
+    /** @var array<string, true> Entries holding one of these paths cannot be restored or purged. */
+    private array $stuck = [];
+
+    public function refuseEntriesHolding(string $relativePath): void
+    {
+        $this->stuck[$relativePath] = true;
+    }
 
     public function __construct(private readonly MaintenanceStoreInterface $store) {}
 
@@ -162,13 +171,24 @@ final class InterleavingStore implements MaintenanceStoreInterface
     #[Override]
     public function restore(QuarantinedObject $entry): void
     {
+        $this->refuseStuck($entry);
         $this->store->restore($entry);
     }
 
     #[Override]
     public function purge(QuarantinedObject $entry): void
     {
+        $this->refuseStuck($entry);
         $this->store->purge($entry);
+    }
+
+    private function refuseStuck(QuarantinedObject $entry): void
+    {
+        foreach ($entry->objects as $object) {
+            if (isset($this->stuck[$object->relativePath])) {
+                throw new StoreException("Permission denied on \"{$object->relativePath}\"");
+            }
+        }
     }
 
     #[Override]

@@ -408,6 +408,32 @@ final class FileSystemStoreQuarantineTest
         Assert::same($objects[0]->size, 0);
     }
 
+    /**
+     * Review 1.0 B8: a quarantine that failed on its second member left the
+     * first one moved; the row stayed, and the retention purged its original.
+     * The failure here is a target path over PATH_MAX — the quarantine is
+     * deeper than the root — which fails for root too, unlike permissions.
+     */
+    public function aFailedQuarantinePutsBackWhatItAlreadyMoved(): void
+    {
+        $deep = $this->base . '/' . implode('/', array_fill(0, 15, str_repeat('q', 200)));
+        $store = new FileSystemStore('upload', $this->root, $this->factory, quarantinePath: $deep);
+        $long = 'k/' . implode('/', array_fill(0, 8, str_repeat('b', 200))) . '/x.bin';
+        $this->place('k/a.bin', 'first');
+        $this->place($long, 'second');
+
+        try {
+            $store->quarantine(ObjectSet::tree(new StoredObjectId('k')), $this->now);
+            Assert::fail('expected the second move to fail');
+        } catch (StoreException $e) {
+            Assert::string($e->getMessage())->contains('nothing was moved');
+        }
+
+        Assert::same(file_get_contents($this->root . '/k/a.bin'), 'first');
+        Assert::same(file_get_contents($this->root . '/' . $long), 'second');
+        Assert::same([...$store->quarantined()], []);
+    }
+
     private function place(string $relativePath, string $bytes): void
     {
         $absolute = $this->root . '/' . $relativePath;

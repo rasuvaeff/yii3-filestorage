@@ -83,7 +83,7 @@ final class GcCommand extends Command
 {
     private const int PAGE = 500;
 
-    /** @var array<string, true> Stores already warned about in this run. */
+    /** @var array<string, true> Store and warning kind pairs already reported in this run. */
     private array $warned = [];
 
     /**
@@ -115,6 +115,17 @@ final class GcCommand extends Command
         private readonly ?PolicyRegistry $policies = null,
         private readonly DateInterval $retention = new DateInterval('P7D'),
     ) {
+        // A zero lease is stolen the instant it is taken; a zero grace period
+        // lets a released blob be collected while the request that released
+        // it is still running; a zero retention makes the quarantine a plain
+        // delete. None is a tuning choice (review 1.0, -db B5).
+        foreach (['leaseTtl' => $leaseTtl, 'gracePeriod' => $gracePeriod, 'retention' => $retention] as $name => $interval) {
+            $epoch = new DateTimeImmutable('@0');
+            if ($epoch->add($interval) <= $epoch) {
+                throw new \InvalidArgumentException("{$name} must be a positive interval");
+            }
+        }
+
         parent::__construct();
     }
 
@@ -195,6 +206,9 @@ final class GcCommand extends Command
                 $orphans['undated'],
             ));
         }
+        if ($orphans !== null && $orphans['skipped']) {
+            $io->text('Orphan sweep skipped: --limit was used up by released rows and blobs. Run again to sweep.');
+        }
         if ($orphans !== null && $orphans['nextCursor'] !== null) {
             $io->text(sprintf(
                 'Stopped early. Resume with --orphans --store=%s --after=%s',
@@ -225,6 +239,7 @@ final class GcCommand extends Command
                 'orphansTooNew' => $orphans['tooNew'] ?? null,
                 'orphansUndated' => $orphans['undated'] ?? null,
                 'nextCursor' => $orphans['nextCursor'] ?? null,
+                'orphanSweepSkipped' => $orphans['skipped'] ?? null,
                 'quarantine' => $quarantine,
                 'log' => $log,
             ]);
@@ -258,15 +273,21 @@ final class GcCommand extends Command
      * An entry the ledger still knows is a blob whose deletion was never
      * committed — its collector crashed or was refused — and goes back, unless
      * another collector holds a live lease on it right now. Anything else is a
-     * committed decision and is purged once it is older than the retention.
+     * committed decision and is purged once it is older than the retention —
+     * unless a row or the application references one of its objects again
+     * (review 1.0 B5): then it is restored, because the retention exists so a
+     * mistaken release can be undone.
      *
-     * @return array{restored: int, purged: int, kept: int}
+     * One entry that cannot be restored or purged is counted and skipped; it
+     * must not stop the entries after it (review 1.0 B6).
+     *
+     * @return array{restored: int, purged: int, kept: int, failed: int}
      */
     private function sweepQuarantine(SymfonyStyle $io, bool $apply, DateInterval $retention): array
     {
         $now = $this->clock->now();
         $cutoff = $now->sub($retention);
-        $counts = ['restored' => 0, 'purged' => 0, 'kept' => 0];
+        $counts = ['restored' => 0, 'purged' => 0, 'kept' => 0, 'failed' => 0];
 
         foreach ($this->stores->names() as $name) {
             $store = $this->storeFor($name);
@@ -280,28 +301,105 @@ final class GcCommand extends Command
                 while (($page = iterator_to_array($store->quarantined($after, self::PAGE), preserve_keys: false)) !== []) {
                     foreach ($page as $entry) {
                         $after = $entry->token;
-                        $decision = $this->quarantineDecision($name, $entry, $now, $cutoff);
-                        $counts[$decision]++;
-                        if ($decision === 'kept') {
-                            continue;
-                        }
-
-                        $io->text(sprintf(
-                            '  %s quarantined %s',
-                            $apply ? ($decision === 'restored' ? 'restoring' : 'purging') : 'would ' . ($decision === 'restored' ? 'restore' : 'purge'),
-                            $entry->objects[0]->relativePath,
-                        ));
-                        if ($apply) {
-                            $decision === 'restored' ? $store->restore($entry) : $store->purge($entry);
-                        }
+                        $this->settleQuarantined($io, $apply, $name, $store, $entry, $now, $cutoff, $counts);
                     }
                 }
             } catch (StoreException $e) {
-                $this->warnOnce($io, $name, sprintf('Quarantine of store "%s" could not be swept: %s', $name, $e->getMessage()));
+                $this->warnOnce($io, $name, 'quarantine-listing', sprintf(
+                    'Quarantine of store "%s" could not be swept: %s',
+                    $name,
+                    $e->getMessage(),
+                ));
             }
         }
 
         return $counts;
+    }
+
+    /**
+     * @param non-empty-string $storeName
+     * @param array{restored: int, purged: int, kept: int, failed: int} $counts
+     */
+    private function settleQuarantined(
+        SymfonyStyle $io,
+        bool $apply,
+        string $storeName,
+        MaintenanceStoreInterface $store,
+        QuarantinedObject $entry,
+        DateTimeImmutable $now,
+        DateTimeImmutable $cutoff,
+        array &$counts,
+    ): void {
+        $decision = $this->quarantineDecision($storeName, $entry, $now, $cutoff);
+        if ($decision === 'purged' && $this->stillReferenced($storeName, $store->layout(), $entry)) {
+            $decision = 'restored';
+            $io->warning(sprintf(
+                'Restoring quarantined "%s" (%s): a row or the application references it again.',
+                $entry->objects[0]->relativePath,
+                $entry->token,
+            ));
+        }
+
+        if ($decision === 'kept') {
+            $counts['kept']++;
+
+            return;
+        }
+
+        $io->text(sprintf(
+            '  %s quarantined %s',
+            $apply ? ($decision === 'restored' ? 'restoring' : 'purging') : 'would ' . ($decision === 'restored' ? 'restore' : 'purge'),
+            $entry->objects[0]->relativePath,
+        ));
+
+        if ($apply) {
+            try {
+                $decision === 'restored' ? $store->restore($entry) : $store->purge($entry);
+            } catch (StoreException $e) {
+                $counts['failed']++;
+                $io->warning(sprintf(
+                    'Could not %s quarantine entry "%s" of store "%s": %s',
+                    $decision === 'restored' ? 'restore' : 'purge',
+                    $entry->token,
+                    $storeName,
+                    $e->getMessage(),
+                ));
+
+                return;
+            }
+        }
+
+        $counts[$decision]++;
+    }
+
+    /**
+     * Whether a row — matched through the layout, as the orphan sweep matches
+     * — or the application points at any object of the entry.
+     *
+     * Under a tenant-scoped repository the rows are only the current scope's;
+     * run gc from an entry point that sees every row (see `--orphans`).
+     *
+     * @param non-empty-string $storeName
+     */
+    private function stillReferenced(string $storeName, ObjectLayoutInterface $layout, QuarantinedObject $entry): bool
+    {
+        $directories = array_values(array_unique(array_map(
+            static fn(StoredObjectId $object): string => $object->directory(),
+            $entry->objects,
+        )));
+
+        $owners = [];
+        foreach ($this->repository->referencedPaths($storeName, $directories) as $path) {
+            $owners[$layout->ownerOf(new StoredObjectId($path))] = true;
+        }
+
+        foreach ($entry->objects as $object) {
+            if (isset($owners[$layout->ownerOf($object)])) {
+                return true;
+            }
+        }
+
+        return $this->referencedByApplication($storeName, $entry->objects) !== [];
     }
 
     /**
@@ -378,10 +476,11 @@ final class GcCommand extends Command
                         continue;
                     }
 
-                    $released++;
                     $io->text(sprintf('  %s %s (%s)', $apply ? 'releasing' : 'would release', $file->id, $file->relativePath));
-                    if ($apply) {
-                        $this->releaseRow($io, $file);
+                    // Counted only when it happened (review 1.0 C16): a row
+                    // left in place must not spend --limit or inflate the report.
+                    if (!$apply || $this->releaseRow($io, $file)) {
+                        $released++;
                     }
 
                     if ($released >= $limit) {
@@ -398,26 +497,28 @@ final class GcCommand extends Command
      * A shared blob is the ledger's to schedule. A unique object goes to the
      * quarantine *before* its row is removed, and comes back if removing the
      * row fails: a row must never point at bytes the retention will purge.
+     *
+     * @return bool Whether the row was released.
      */
-    private function releaseRow(SymfonyStyle $io, File $file): void
+    private function releaseRow(SymfonyStyle $io, File $file): bool
     {
         $now = $this->clock->now();
         if ($this->ledger instanceof BlobLedgerInterface && $this->ledgerKnows($file->storeName, $file->relativePath)) {
             $this->ledger->releaseFile($file->id, $now->add($this->gracePeriod));
 
-            return;
+            return true;
         }
 
         $store = $this->storeFor($file->storeName);
         if (!$store instanceof MaintenanceStoreInterface) {
-            $this->warnOnce($io, $file->storeName, sprintf(
+            $this->warnOnce($io, $file->storeName, 'cannot-release', sprintf(
                 'Store "%s" cannot quarantine objects (%s is not implemented or is not configured), so its rows are '
                 . 'not released.',
                 $file->storeName,
                 MaintenanceStoreInterface::class,
             ));
 
-            return;
+            return false;
         }
 
         try {
@@ -428,7 +529,7 @@ final class GcCommand extends Command
             // one row of it must not end the run.
             $io->warning(sprintf('Could not release "%s": %s', $file->id, $e->getMessage()));
 
-            return;
+            return false;
         }
 
         try {
@@ -437,11 +538,24 @@ final class GcCommand extends Command
                 : $this->repository->delete($file->id);
         } catch (\Throwable $e) {
             if ($entry instanceof QuarantinedObject) {
-                $store->restore($entry);
+                // The row still points at these bytes, so the next run's
+                // quarantine sweep restores them even if this fails
+                // (review 1.0 B5/B7). The original failure is what to report.
+                try {
+                    $store->restore($entry);
+                } catch (StoreException $restore) {
+                    $io->warning(sprintf(
+                        'Could not restore "%s" after its row failed to release; the next run restores it: %s',
+                        $file->id,
+                        $restore->getMessage(),
+                    ));
+                }
             }
 
             throw $e;
         }
+
+        return true;
     }
 
     /**
@@ -494,7 +608,7 @@ final class GcCommand extends Command
             $store = $this->storeFor($lease->blob->storeName);
             if (!$store instanceof MaintenanceStoreInterface) {
                 $this->ledger->abandonDeletion($lease, $this->clock->now()->add($this->gracePeriod));
-                $this->warnOnce($io, $lease->blob->storeName, sprintf(
+                $this->warnOnce($io, $lease->blob->storeName, 'cannot-collect', sprintf(
                     'Store "%s" cannot delete objects (%s is not implemented or is not configured), so its '
                     . 'blobs cannot be collected.',
                     $lease->blob->storeName,
@@ -553,7 +667,17 @@ final class GcCommand extends Command
             // back, and a writer's re-publication of them is kept.
             if (!$this->ledger->completeDeletion($lease)) {
                 if ($entry instanceof QuarantinedObject) {
-                    $store->restore($entry);
+                    try {
+                        $store->restore($entry);
+                    } catch (StoreException $e) {
+                        // The ledger still knows the blob, so the next run's
+                        // quarantine sweep restores it (review 1.0 B7).
+                        $io->warning(sprintf(
+                            'Could not restore "%s"; the next run restores it: %s',
+                            $lease->blob->key(),
+                            $e->getMessage(),
+                        ));
+                    }
                 }
 
                 continue;
@@ -596,7 +720,7 @@ final class GcCommand extends Command
      * @param non-empty-string|null $storeName
      * @param non-empty-string|null $after
      *
-     * @return array{found: int, tooNew: int, undated: int, nextCursor: array{store: string, after: string}|null}
+     * @return array{found: int, tooNew: int, undated: int, nextCursor: array{store: string, after: string}|null, skipped: bool}
      */
     private function sweepOrphans(
         SymfonyStyle $io,
@@ -611,6 +735,18 @@ final class GcCommand extends Command
         // and reporting a total would say "no orphans" about stores nobody
         // looked at.
         $names = $storeName === null ? $this->stores->names() : [$storeName];
+        if ($limit <= 0) {
+            // Nothing was examined: reporting "0 orphans" would claim a
+            // result nobody looked for (review 1.0 C14).
+            return [
+                'found' => 0,
+                'tooNew' => 0,
+                'undated' => 0,
+                'nextCursor' => $storeName !== null && $after !== null ? ['store' => $storeName, 'after' => $after] : null,
+                'skipped' => true,
+            ];
+        }
+
         $result = ['found' => 0, 'tooNew' => 0, 'undated' => 0, 'scanned' => 0, 'nextCursor' => null];
 
         foreach ($names as $name) {
@@ -623,7 +759,7 @@ final class GcCommand extends Command
 
         unset($result['scanned']);
 
-        return $result;
+        return $result + ['skipped' => false];
     }
 
     /**
@@ -817,10 +953,15 @@ final class GcCommand extends Command
         }
     }
 
-    private function warnOnce(SymfonyStyle $io, string $storeName, string $message): void
+    /**
+     * Once per store *and kind*: a first warning of one sort must not hide a
+     * later one of another for the same store (review 1.0 C17).
+     */
+    private function warnOnce(SymfonyStyle $io, string $storeName, string $kind, string $message): void
     {
-        if (!isset($this->warned[$storeName])) {
-            $this->warned[$storeName] = true;
+        $key = $storeName . "\0" . $kind;
+        if (!isset($this->warned[$key])) {
+            $this->warned[$key] = true;
             $io->warning($message);
         }
     }

@@ -60,8 +60,10 @@ interface MaintenanceStoreInterface extends StoreInterface
      * @return QuarantinedObject|null Null when no member existed.
      *
      * @throws StoreException When the store has no quarantine or the move failed.
-     *         Members already moved stay in the quarantine under the entry, so
-     *         {@see quarantined()} finds them.
+     *         A failed move puts the members already moved back first, so the
+     *         set stays whole; one that cannot go back stays under the entry,
+     *         where {@see quarantined()} finds it and `gc` restores it while a
+     *         row still references it.
      */
     public function quarantine(ObjectSet $objects, DateTimeImmutable $now): ?QuarantinedObject;
 

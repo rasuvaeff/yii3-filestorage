@@ -502,12 +502,18 @@ final readonly class FileSystemStore implements
 
             try {
                 FileHelper::ensureDirectory(\dirname($target), $this->directoryMode);
+                if (!@rename($source, $target)) {
+                    throw new StoreException("Could not quarantine \"{$member}\" in store \"{$this->name}\"");
+                }
             } catch (\Throwable $e) {
-                throw new StoreException("Could not quarantine \"{$member}\" in store \"{$this->name}\"", 0, $e);
-            }
-
-            if (!@rename($source, $target)) {
-                throw new StoreException("Could not quarantine \"{$member}\" in store \"{$this->name}\"");
+                // All or nothing (review 1.0 B8): a half-moved set whose row
+                // stays would have its original purged by the retention.
+                throw new StoreException(
+                    "Could not quarantine \"{$member}\" in store \"{$this->name}\""
+                    . $this->rollBack($quarantine . '/' . $token, $moved),
+                    0,
+                    $e,
+                );
             }
 
             $moved[] = new StoredObjectId($member);
@@ -524,6 +530,37 @@ final readonly class FileSystemStore implements
         }
 
         return new QuarantinedObject($token, $moved);
+    }
+
+    /**
+     * Puts already moved members back after a failed quarantine.
+     *
+     * @param list<StoredObjectId> $moved
+     *
+     * @return string Appended to the failure message: what could not go back.
+     */
+    private function rollBack(string $entry, array $moved): string
+    {
+        $stuck = [];
+        foreach ($moved as $object) {
+            $target = $this->rootPath . '/' . $object->relativePath;
+            if (!is_dir(\dirname($target))) {
+                @mkdir(\dirname($target), $this->directoryMode, true);
+            }
+            if (file_exists($target) || !@rename($entry . '/' . $object->relativePath, $target)) {
+                $stuck[] = $object->relativePath;
+            }
+        }
+
+        if ($stuck === []) {
+            if (is_dir($entry)) {
+                FileHelper::removeDirectory($entry);
+            }
+
+            return '; nothing was moved';
+        }
+
+        return '; left in the quarantine, restored by gc while a row references them: ' . implode(', ', $stuck);
     }
 
     #[Override]
