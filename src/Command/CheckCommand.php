@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3Filestorage\Command;
 
+use DateTimeImmutable;
 use Override;
+use Rasuvaeff\Yii3Filestorage\File;
+use Rasuvaeff\Yii3Filestorage\Mime\ActiveMediaTypes;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\PolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
@@ -23,6 +26,7 @@ use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
+use Throwable;
 
 /**
  * Reports what is wired, what each store can do, and what is unsafe.
@@ -41,18 +45,7 @@ use Symfony\Component\Console\Output\OutputInterface;
 #[AsCommand(name: 'filestorage:check', description: 'Verify file storage wiring, capabilities and delivery safety')]
 final class CheckCommand extends Command
 {
-    /**
-     * Formats that execute in a browser. A permanent public URL cannot be
-     * combined with any of them, because nothing on that path can force a
-     * download or send `X-Content-Type-Options`.
-     */
-    private const array ACTIVE_MEDIA_TYPES = [
-        'application/xhtml+xml',
-        'application/xml',
-        'image/svg+xml',
-        'text/html',
-        'text/xml',
-    ];
+    private readonly ActiveMediaTypes $activeTypes;
 
     /**
      * @param list<non-empty-string> $knownGroups Groups worth reporting on;
@@ -69,6 +62,11 @@ final class CheckCommand extends Command
         private readonly ?ScopedFileResolverInterface $scopedFiles = null,
     ) {
         parent::__construct();
+        // Formats that execute as the origin. A permanent public URL cannot be
+        // combined with any of them, because nothing on that path can force a
+        // download or send `X-Content-Type-Options`. The plugin tier (PDF) is
+        // not refused: a public PDF is a legitimate publication.
+        $this->activeTypes = ActiveMediaTypes::scriptable();
     }
 
     #[Override]
@@ -115,6 +113,7 @@ final class CheckCommand extends Command
             }
         }
         $io->table(['Name', 'Class', 'Capabilities'], $rows);
+        $publicStore = $this->firstPublicStore();
 
         $io->section('Metadata repository');
         $io->writeln($this->repository::class);
@@ -181,7 +180,8 @@ final class CheckCommand extends Command
                 $delivery->allowDirectPublicUrl ? 'direct public URL' : 'signed only',
             ];
 
-            $unsafe = $this->unsafeDirectDelivery($group, $upload->allowedMimeTypes, $delivery->allowDirectPublicUrl);
+            $unsafe = $this->unsafeDirectDelivery($group, $upload->allowedMimeTypes, $delivery->allowDirectPublicUrl)
+                ?? $this->unsafePublicStore($group, $upload->allowedMimeTypes, $publicStore);
             if ($unsafe !== null) {
                 $errors[] = $unsafe;
             }
@@ -253,7 +253,7 @@ final class CheckCommand extends Command
                 . 'allowDirectPublicUrl to false.';
         }
 
-        $active = array_values(array_intersect($allowedMimeTypes, self::ACTIVE_MEDIA_TYPES));
+        $active = $this->active($allowedMimeTypes);
         if ($active !== []) {
             return "Group \"{$group}\" allows direct public URLs and accepts " . implode(', ', $active)
                 . '. Served from your own origin these execute as your site. Remove them from allowedMimeTypes, '
@@ -261,6 +261,92 @@ final class CheckCommand extends Command
         }
 
         return null;
+    }
+
+    /**
+     * A store that serves objects at public URLs serves them by path whatever
+     * `allowDirectPublicUrl` says — that flag only chooses which URL the
+     * application prints — and a content-addressed path is computable by
+     * whoever uploaded the bytes (review 1.0 B5). Groups are not bound to
+     * stores, so every group counts as reachable through such a store.
+     *
+     * @param list<non-empty-string> $allowedMimeTypes
+     * @param non-empty-string|null $publicStore
+     */
+    private function unsafePublicStore(string $group, array $allowedMimeTypes, ?string $publicStore): ?string
+    {
+        if ($publicStore === null) {
+            return null;
+        }
+
+        $reach = "store \"{$publicStore}\" serves every object it holds at a public URL whatever the delivery "
+            . 'policy says.';
+
+        if ($allowedMimeTypes === []) {
+            return "Group \"{$group}\" accepts any media type, and {$reach} Set an explicit allowedMimeTypes list "
+                . 'that excludes active content, or keep this group out of public stores.';
+        }
+
+        $active = $this->active($allowedMimeTypes);
+        if ($active !== []) {
+            return "Group \"{$group}\" accepts " . implode(', ', $active) . ", and {$reach} Served from your own "
+                . 'origin these execute as your site. Remove them from allowedMimeTypes, or keep this group out of '
+                . 'public stores.';
+        }
+
+        return null;
+    }
+
+    /**
+     * The first registered store that hands out a public URL.
+     *
+     * `StoreUrlProviderInterface` is a capability that may answer null at
+     * runtime — one Flysystem class wraps public and private buckets alike — so
+     * the store is asked for the URL of a probe file. URL generation is string
+     * building; nothing is read or written. A store that throws is not counted.
+     *
+     * @return non-empty-string|null
+     */
+    private function firstPublicStore(): ?string
+    {
+        foreach ($this->stores->names() as $name) {
+            $store = $this->stores->get($name);
+            if (!$store instanceof StoreUrlProviderInterface) {
+                continue;
+            }
+
+            try {
+                $probe = File::create(
+                    id: 'filestorage-check-probe',
+                    storeName: $name,
+                    groupName: 'common',
+                    relativePath: 'filestorage-check/probe/original.bin',
+                    originalName: 'probe.bin',
+                    size: 0,
+                    createdAt: new DateTimeImmutable('@0'),
+                );
+                if ($store->publicUrl($probe) !== null) {
+                    return $name;
+                }
+            } catch (Throwable) {
+                continue;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param list<non-empty-string> $allowedMimeTypes
+     *
+     * @return list<non-empty-string>
+     */
+    private function active(array $allowedMimeTypes): array
+    {
+        return array_values(array_filter(
+            $allowedMimeTypes,
+            $this->activeTypes->contains(...),
+        ));
     }
 
     /**

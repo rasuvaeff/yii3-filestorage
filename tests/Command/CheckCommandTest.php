@@ -20,6 +20,7 @@ use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
+use Rasuvaeff\Yii3Filestorage\Test\UrlCapableInMemoryStore;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
 use Testo\Assert;
@@ -375,6 +376,110 @@ final class CheckCommandTest
         Assert::false(str_contains($tester->getDisplay(), '"ok"'), 'no JSON keys in text mode');
     }
 
+    /**
+     * Review 1.0 C5: the list `check` used knew five types. JavaScript, XSLT
+     * and feed types execute as well, and now come from the one family list.
+     */
+    public function directPublicUrlsWithScriptAreAnError(): void
+    {
+        $tester = $this->run(
+            policies: new PolicyRegistry([
+                'assets' => new UploadPolicy(allowedMimeTypes: ['image/png', 'text/javascript', 'application/rss+xml']),
+            ]),
+            deliveryPolicies: new DeliveryPolicyRegistry([
+                'assets' => new DeliveryPolicy(allowDirectPublicUrl: true),
+            ]),
+            knownGroups: ['assets'],
+        );
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string($this->flatten($tester->getDisplay()))->contains(
+            'Group "assets" allows direct public URLs and accepts text/javascript, application/rss+xml.',
+        );
+    }
+
+    /**
+     * PDF is in the active list `-web` forces to download, but it runs in a
+     * plugin, not as the origin: a public PDF is a legitimate publication and
+     * not the stored XSS this gate exists for.
+     */
+    public function directPublicUrlsForPdfArePermitted(): void
+    {
+        $tester = $this->run(
+            policies: new PolicyRegistry([
+                'documents' => new UploadPolicy(allowedMimeTypes: ['application/pdf']),
+            ]),
+            deliveryPolicies: new DeliveryPolicyRegistry([
+                'documents' => new DeliveryPolicy(allowDirectPublicUrl: true),
+            ]),
+            knownGroups: ['documents'],
+        );
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+    }
+
+    /**
+     * Review 1.0 B5: a store that serves objects at public URLs serves them by
+     * path whatever `allowDirectPublicUrl` says — that flag only chooses which
+     * URL the application prints. A permissive group next to such a store is
+     * stored XSS for anyone who can compute a content-addressed path.
+     */
+    public function aPublicStoreMakesAPermissiveGroupAnErrorEvenWithoutDirectUrls(): void
+    {
+        $tester = $this->run(store: $this->publicStore());
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string($this->flatten($tester->getDisplay()))->contains(
+            'Group "*" accepts any media type, and store "assets" serves every object it holds at a public URL '
+            . 'whatever the delivery policy says. Set an explicit allowedMimeTypes list that excludes active '
+            . 'content, or keep this group out of public stores.',
+        );
+    }
+
+    public function aPublicStoreMakesAScriptableAllowListAnError(): void
+    {
+        $tester = $this->run(
+            store: $this->publicStore(),
+            policies: new PolicyRegistry([
+                '*' => new UploadPolicy(allowedMimeTypes: ['image/png']),
+                'assets' => new UploadPolicy(allowedMimeTypes: ['image/png', 'image/svg+xml']),
+            ]),
+            knownGroups: ['assets'],
+        );
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string($this->flatten($tester->getDisplay()))->contains(
+            'Group "assets" accepts image/svg+xml, and store "assets" serves every object it holds at a public URL',
+        );
+    }
+
+    public function aPublicStoreWithInertAllowListsIsSound(): void
+    {
+        $tester = $this->run(
+            store: $this->publicStore(),
+            policies: new PolicyRegistry(['*' => new UploadPolicy(allowedMimeTypes: ['image/png', 'image/jpeg'])]),
+        );
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+    }
+
+    /**
+     * `StoreUrlProviderInterface` is a capability that may answer null at
+     * runtime — one Flysystem class wraps public and private buckets alike —
+     * so the question is whether it *does* hand out a public URL.
+     */
+    public function aUrlCapableStoreWithoutPublicUrlsIsNotTreatedAsPublic(): void
+    {
+        $private = new UrlCapableInMemoryStore(new InMemoryStore('memory', $this->factory), publicUrls: false);
+
+        Assert::same($this->run(store: $private)->getStatusCode(), Command::SUCCESS);
+
+        $public = new UrlCapableInMemoryStore(new InMemoryStore('memory', $this->factory), publicUrls: true);
+        Assert::string($this->flatten($this->run(store: $public)->getDisplay()))->contains(
+            'store "memory" serves every object it holds at a public URL',
+        );
+    }
+
     public function directPublicUrlsWithAnInertAllowListArePermitted(): void
     {
         $tester = $this->run(
@@ -389,6 +494,14 @@ final class CheckCommandTest
 
         Assert::same($tester->getStatusCode(), Command::SUCCESS);
         Assert::string($tester->getDisplay())->contains('direct public URL');
+    }
+
+    private function publicStore(): PublicFileSystemStore
+    {
+        return new PublicFileSystemStore(
+            new FileSystemStore('assets', $this->root, $this->factory),
+            'https://cdn.example.com',
+        );
     }
 
     /**

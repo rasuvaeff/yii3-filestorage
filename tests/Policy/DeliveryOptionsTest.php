@@ -127,6 +127,51 @@ final class DeliveryOptionsTest
         yield 'strips to nothing' => ["\r\n\0", 'file.webp'];
     }
 
+    /**
+     * Review 1.0 A5 (summary): a presigned URL carries this disposition, and a
+     * signed S3 link used to serve `image/svg+xml` and `text/html` inline from
+     * the bucket — stored XSS wherever the bucket shares an origin. Active
+     * content is an attachment whatever the group's policy says, exactly as the
+     * `-web` proxy has always answered.
+     */
+    #[DataProvider('activeTypeProvider')]
+    public function activeContentIsAnAttachmentWhateverThePolicySays(string $mediaType): void
+    {
+        $options = DeliveryOptions::fromFile($this->file(mimeType: $mediaType), new DeliveryPolicy(forceDownload: false));
+
+        Assert::true($options->forceDownload);
+        Assert::same($options->responseMediaType, $mediaType);
+    }
+
+    /**
+     * @return iterable<string, array{non-empty-string}>
+     */
+    public static function activeTypeProvider(): iterable
+    {
+        yield 'svg' => ['image/svg+xml'];
+        yield 'html' => ['text/html'];
+        yield 'javascript' => ['text/javascript'];
+        yield 'pdf, the plugin tier' => ['application/pdf'];
+    }
+
+    public function anActiveRenditionIsAnAttachmentToo(): void
+    {
+        $options = DeliveryOptions::forVariant(
+            $this->file(),
+            new DeliveryPolicy(forceDownload: false),
+            new DerivativeDescriptor('vector', 'svg', 'image/svg+xml'),
+        );
+
+        Assert::true($options->forceDownload);
+    }
+
+    public function inertContentKeepsThePolicysInlineChoice(): void
+    {
+        $options = DeliveryOptions::fromFile($this->file(mimeType: 'image/png'), new DeliveryPolicy(forceDownload: false));
+
+        Assert::false($options->forceDownload);
+    }
+
     private function file(string $originalName = 'thing.bin', ?string $mimeType = 'text/plain'): File
     {
         return File::create(

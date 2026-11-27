@@ -111,6 +111,37 @@ final class ConfigWiringTest
         Assert::same($base->content($file), 'hello');
     }
 
+    /**
+     * Review 1.0 C6, probe p5: `extensionOverrides` is read by the
+     * `ExtensionMap` definition, and only autowiring carries it on to the path
+     * generator. Asserted end to end, on the path of a stored file — including
+     * the documented way to opt an active type back in.
+     */
+    public function extensionOverridesReachThePathOfAStoredFile(): void
+    {
+        $params = $this->params();
+        $params['rasuvaeff/yii3-filestorage']['extensionOverrides'] = ['text/plain' => 'log', 'text/html' => 'htm'];
+        $storage = $this->container(params: $params)->get(StorageInterface::class);
+        $factory = new Psr17Factory();
+
+        $text = $storage->add(Upload::fromStream($factory->createStream('hello'), 'a.txt', $factory));
+        $html = $storage->add(Upload::fromStream($factory->createStream('<html><body>x</body></html>'), 'a.html', $factory));
+
+        Assert::true(str_ends_with($text->relativePath, '/original.log'), $text->relativePath);
+        Assert::true(str_ends_with($html->relativePath, '/original.htm'), $html->relativePath);
+    }
+
+    public function withoutOverridesAnUploadedHtmlFileGetsTheInertExtension(): void
+    {
+        $storage = $this->container()->get(StorageInterface::class);
+        $factory = new Psr17Factory();
+
+        $html = $storage->add(Upload::fromStream($factory->createStream('<html><body>x</body></html>'), 'a.html', $factory));
+
+        Assert::same($html->mimeType, 'text/html');
+        Assert::true(str_ends_with($html->relativePath, '/original.bin'), $html->relativePath);
+    }
+
     public function coreServicesResolveToTheirDefaultImplementations(): void
     {
         $container = $this->container();
@@ -361,10 +392,11 @@ final class ConfigWiringTest
 
     /**
      * @param array<string, mixed> $extra
+     * @param array<string, array<string, mixed>>|null $params
      */
-    private function container(array $extra = []): Container
+    private function container(array $extra = [], ?array $params = null): Container
     {
-        $definitions = $this->definitions();
+        $definitions = $this->definitions($params);
 
         $definitions[StreamFactoryInterface::class] = Psr17Factory::class;
         $definitions[ClockInterface::class] = static fn(): ClockInterface => new StaticClock(new DateTimeImmutable('2026-01-01T00:00:00.000000+00:00'));
@@ -395,11 +427,13 @@ final class ConfigWiringTest
     }
 
     /**
+     * @param array<string, array<string, mixed>>|null $params
+     *
      * @return array<string, mixed>
      */
-    private function definitions(): array
+    private function definitions(?array $params = null): array
     {
-        $params = $this->params();
+        $params ??= $this->params();
 
         return require __DIR__ . '/../config/di.php';
     }

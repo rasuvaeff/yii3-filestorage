@@ -23,9 +23,19 @@ use Symfony\Component\Mime\MimeTypesInterface;
  *    guarantee should not depend on a third-party data file.
  *
  * The extension is derived from the *detected* type alone. A client-supplied
- * filename never contributes it, so `invoice.pdf.php` cannot make the stored
- * object executable on a misconfigured origin, and an unknown type lands on
- * the inert {@see self::FALLBACK_EXTENSION}.
+ * filename never contributes it, and an unknown type lands on the inert
+ * {@see self::FALLBACK_EXTENSION}.
+ *
+ * Content that executes lands there too (review 1.0 B5). A public store serves
+ * objects by path whatever the delivery policy says, so on such a store the
+ * extension *is* the response type: `original.html` or `original.svg` is
+ * stored XSS on a computable path, and `original.pl` a CGI script on a
+ * misconfigured server. Every {@see ActiveMediaTypes::SCRIPTABLE} type maps to
+ * `bin`, and so does every type a table — whichever table — lists with an
+ * extension from {@see self::INERT_EXTENSIONS}. Only new files are affected: an existing object keeps
+ * the path stored in `File::$relativePath`. An override is the explicit way
+ * back (`'image/svg+xml' => 'svg'` for SVG an application really serves
+ * publicly).
  *
  * @api
  */
@@ -35,6 +45,19 @@ final readonly class ExtensionMap
     public const string FALLBACK_EXTENSION = 'bin';
 
     private const string EXTENSION_PATTERN = '/^[a-z0-9]{1,10}\z/';
+
+    /**
+     * Extensions a browser renders as active content or a web server hands to
+     * an interpreter. Never produced from the table; only an override can.
+     */
+    public const array INERT_EXTENSIONS = [
+        'htm', 'html', 'shtml', 'xht', 'xhtml', 'mht', 'mhtml', 'hta',
+        'svg', 'svgz', 'xml', 'xsl', 'xslt', 'mml', 'rss', 'atom',
+        'js', 'mjs', 'cjs', 'swf',
+        'php', 'php3', 'php4', 'php5', 'php7', 'php8', 'phtml', 'pht', 'phar',
+        'pl', 'pm', 'cgi', 'py', 'rb', 'sh', 'bash', 'asp', 'aspx', 'jsp',
+        'exe', 'com', 'bat', 'cmd', 'dll', 'msi', 'vbs', 'wsf', 'ps1', 'jar',
+    ];
 
     private MimeTypesInterface $mimeTypes;
 
@@ -74,7 +97,19 @@ final readonly class ExtensionMap
             return $this->overrides[$normalised];
         }
 
-        foreach ($this->mimeTypes->getExtensions($normalised) as $candidate) {
+        if (\in_array($normalised, ActiveMediaTypes::SCRIPTABLE, strict: true)) {
+            return self::FALLBACK_EXTENSION;
+        }
+
+        $candidates = $this->mimeTypes->getExtensions($normalised);
+        // A type the table knows by *any* executable extension is executable:
+        // `text/x-perl` is `pl` first and `al` later, and taking the later one
+        // would still store a Perl script under a guessable name.
+        if (array_intersect($candidates, self::INERT_EXTENSIONS) !== []) {
+            return self::FALLBACK_EXTENSION;
+        }
+
+        foreach ($candidates as $candidate) {
             if ($candidate !== '' && preg_match(self::EXTENSION_PATTERN, $candidate) === 1) {
                 return $candidate;
             }

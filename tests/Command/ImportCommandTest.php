@@ -485,6 +485,10 @@ final class ImportCommandTest
             '1 file imported but could not be written to the manifest, so a later run will import it again.',
         );
         Assert::string($display)->notContains('files imported but could not be written');
+        // Review 1.0 C7: dirname() of a manifest at a stream wrapper's root is
+        // "fs-unflushable:", which is a *local relative* path — the command
+        // used to mkdir it in the working directory.
+        Assert::false(is_dir('fs-unflushable:'), 'no local directory was created for the wrapper root');
     }
 
     /**
