@@ -59,7 +59,7 @@ final class GcLeaseFreshnessTest
         [$file, $blob] = $this->scheduledBlob();
         $this->pauseAfterClaim(seconds: 151);
 
-        $display = $this->gc()->getDisplay();
+        $display = $this->flatten($this->gc()->getDisplay());
 
         Assert::same($this->store->bytesAt($file->relativePath), 'shared bytes');
         $record = $this->memory->find($blob);
@@ -74,7 +74,7 @@ final class GcLeaseFreshnessTest
         [$file, $blob] = $this->scheduledBlob();
         $this->pauseAfterClaim(seconds: 150);
 
-        $display = $this->gc()->getDisplay();
+        $display = $this->flatten($this->gc()->getDisplay());
 
         Assert::null($this->store->bytesAt($file->relativePath));
         Assert::null($this->memory->find($blob));
@@ -113,6 +113,15 @@ final class GcLeaseFreshnessTest
 
         Assert::null($this->store->bytesAt($file->relativePath), 'the next run collects it with a fresh lease');
         Assert::null($this->memory->find($blob));
+    }
+
+    /**
+     * The console wraps warnings at the terminal width, which differs between
+     * runners; squeeze the wrapping and the block gutter out.
+     */
+    private function flatten(string $display): string
+    {
+        return trim((string) preg_replace('/[\s!]+/u', ' ', $display));
     }
 
     private function pauseAfterClaim(int $seconds): void
