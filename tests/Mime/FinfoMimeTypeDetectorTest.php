@@ -7,6 +7,7 @@ namespace Rasuvaeff\Yii3Filestorage\Tests\Mime;
 use InvalidArgumentException;
 use Nyholm\Psr7\Factory\Psr17Factory;
 use Rasuvaeff\Yii3Filestorage\Mime\FinfoMimeTypeDetector;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\ShortReadingStream;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Testo\Assert;
 use Testo\Codecov\Covers;
@@ -102,6 +103,23 @@ final class FinfoMimeTypeDetectorTest
             (new FinfoMimeTypeDetector(sniffBytes: 4_096))->detect($this->upload($body)),
             'application/octet-stream',
         );
+    }
+
+    /**
+     * Review 1.0 B1: PSR-7 lets `read($n)` return less than `$n`. A sniff that
+     * trusted one read classified whatever fragment arrived — here, text,
+     * where the full window holds a NUL byte and is binary.
+     */
+    public function shortReadsStillFillTheWholeWindow(): void
+    {
+        $body = str_repeat('a', 600) . "\x00" . str_repeat('b', 100);
+        $upload = Upload::fromStream(
+            new ShortReadingStream($this->factory->createStream($body), 100),
+            'thing.bin',
+            $this->factory,
+        );
+
+        Assert::same((new FinfoMimeTypeDetector())->detect($upload), 'application/octet-stream');
     }
 
     public function tooSmallASniffWindowIsRejected(): void
