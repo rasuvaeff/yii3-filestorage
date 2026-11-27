@@ -690,6 +690,23 @@ final class CheckCommandTest
         );
     }
 
+    public function aPublicStoreOwningItsWholeRootIsAWarning(): void
+    {
+        $tester = $this->run(store: $this->publicStore());
+
+        Assert::string($this->flatten($tester->getDisplay()))->contains('serves its root publicly and owns all of it');
+    }
+
+    public function aPublicStoreWithOwnedPrefixesIsQuiet(): void
+    {
+        $tester = $this->run(store: new PublicFileSystemStore(
+            new FileSystemStore('upload', $this->root, $this->factory, ownedPrefixes: ['blobs']),
+            'https://cdn.example.test',
+        ));
+
+        Assert::false(str_contains($tester->getDisplay(), 'owns all of it'));
+    }
+
     public function theShippedPathGeneratorFitsTheDefaultLayout(): void
     {
         Assert::same($this->run(paths: new RandomPathGenerator())->getStatusCode(), Command::SUCCESS);

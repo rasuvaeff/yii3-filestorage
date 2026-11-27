@@ -126,6 +126,14 @@ final readonly class PublicFileSystemStore implements
         return $this->store->putIfAbsent($upload, $object, $maxBytes);
     }
 
+    /**
+     * @return list<non-empty-string>
+     */
+    public function ownedPrefixes(): array
+    {
+        return $this->store->ownedPrefixes();
+    }
+
     #[Override]
     public function layout(): ObjectLayoutInterface
     {

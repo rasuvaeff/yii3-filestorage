@@ -133,6 +133,14 @@ final class CheckCommand extends Command
 
             // A warning, not an error: uploads and reads work without a usable
             // quarantine, only filestorage:gc cannot delete from the store.
+            // A web root usually holds the application's own files too, and
+            // the orphan sweep would take every one of them (review 1.0 B2).
+            if ($store instanceof PublicFileSystemStore && $store->ownedPrefixes() === []) {
+                $warnings[] = "Store \"{$name}\" serves its root publicly and owns all of it: filestorage:gc "
+                    . '--orphans quarantines, then purges, every file under it that has no row. If anything else '
+                    . 'lives there, pass ownedPrefixes to the FileSystemStore.';
+            }
+
             $quarantineProblem = $store instanceof MaintenanceStoreInterface ? $store->quarantineProblem() : null;
             if ($quarantineProblem !== null) {
                 $warnings[] = $quarantineProblem;

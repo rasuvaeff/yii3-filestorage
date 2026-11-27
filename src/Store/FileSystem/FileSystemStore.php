@@ -64,6 +64,16 @@ use Yiisoft\Files\FileHelper;
  * sits in a fan-out directory shared with live blobs, so it is removed by
  * hand, never by `gc`.
  *
+ * **The inventory is what the store owns, not everything under the root.**
+ * `objects()` — what `gc --orphans` sweeps — never lists a hidden entry (a
+ * name starting with `.`: `.htaccess`, `.well-known/`), which no generator
+ * emits. Beyond that, the root belongs to the store: a directory the
+ * application keeps there (`banners/`, generated cards) has no rows, so the
+ * orphan sweep would quarantine and then purge it. When the root is shared —
+ * typically a web root such as `public/uploads` — pass `ownedPrefixes`: the
+ * inventory is then the listed top-level subtrees only, and a write outside
+ * them is refused, so nothing the store creates escapes its own sweep.
+ *
  * @api
  */
 final readonly class FileSystemStore implements
@@ -73,6 +83,7 @@ final readonly class FileSystemStore implements
     RangeReadableStoreInterface
 {
     private const string NAME_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\z/';
+    private const string PREFIX_PATTERN = '~^[A-Za-z0-9][A-Za-z0-9_-]{0,63}(?:/[A-Za-z0-9][A-Za-z0-9_-]{0,63})*\z~';
     /**
      * The staging name is derived from the target, not randomised. Two writers
      * racing for one target would otherwise each stage under their own name and
@@ -101,6 +112,9 @@ final readonly class FileSystemStore implements
 
     private ObjectLayoutInterface $layout;
 
+    /** @var list<non-empty-string> Sorted as directories, none inside another. */
+    private array $ownedPrefixes;
+
     /**
      * @param string $rootPath Created when missing.
      * @param string|null $quarantinePath Created when missing. Outside the root,
@@ -108,6 +122,10 @@ final readonly class FileSystemStore implements
      *        which garbage collection refuses to delete from.
      * @param ObjectLayoutInterface|null $layout Null is {@see DirectoryLayout},
      *        the default. Chosen once for the lifetime of the data.
+     * @param list<string> $ownedPrefixes The subtrees of the root this store
+     *        owns — the first segments its path and key generators produce
+     *        (group names, `blobs`). Empty: the whole root. See the class
+     *        docblock.
      *
      * @throws StoreException
      * @throws InvalidArgumentException
@@ -119,6 +137,7 @@ final readonly class FileSystemStore implements
         private int $directoryMode = 0o775,
         ?string $quarantinePath = null,
         ?ObjectLayoutInterface $layout = null,
+        array $ownedPrefixes = [],
     ) {
         if ($name === '' || preg_match(self::NAME_PATTERN, $name) !== 1) {
             throw new InvalidArgumentException("Invalid store name \"{$name}\"");
@@ -145,6 +164,7 @@ final readonly class FileSystemStore implements
         $this->name = $name;
         $this->rootPath = $resolved;
         $this->layout = $layout ?? new DirectoryLayout();
+        $this->ownedPrefixes = self::validatePrefixes($name, $ownedPrefixes);
         $this->quarantinePath = $quarantinePath === null ? null : $this->resolveQuarantine($quarantinePath);
     }
 
@@ -152,6 +172,17 @@ final readonly class FileSystemStore implements
     public function layout(): ObjectLayoutInterface
     {
         return $this->layout;
+    }
+
+    /**
+     * The subtrees the inventory is limited to; empty when the store owns
+     * its whole root.
+     *
+     * @return list<non-empty-string>
+     */
+    public function ownedPrefixes(): array
+    {
+        return $this->ownedPrefixes;
     }
 
     #[Override]
@@ -170,6 +201,7 @@ final readonly class FileSystemStore implements
     ): StoreResult {
         $relativePath = $pathGenerator->generate($groupName, $upload, $mediaType);
         $object = new StoredObjectId($relativePath);
+        $this->assertOwned($object);
         $target = $this->rootPath . '/' . $object->relativePath;
 
         if (file_exists($target)) {
@@ -213,6 +245,7 @@ final readonly class FileSystemStore implements
     #[Override]
     public function putIfAbsent(Upload $upload, StoredObjectId $object, int $maxBytes = 0): StoreResult
     {
+        $this->assertOwned($object);
         $target = $this->rootPath . '/' . $object->relativePath;
         $declared = $upload->size();
         if ($maxBytes > 0 && $declared !== null && $declared > $maxBytes) {
@@ -406,7 +439,7 @@ final readonly class FileSystemStore implements
     public function objects(?string $afterPath = null, int $limit = 1000): iterable
     {
         $yielded = 0;
-        foreach ($this->walk($this->rootPath, '') as $relativePath) {
+        foreach ($this->inventory($afterPath) as $relativePath) {
             if ($afterPath !== null && strcmp($relativePath, $afterPath) <= 0) {
                 continue;
             }
@@ -604,6 +637,99 @@ final readonly class FileSystemStore implements
         }
 
         return null;
+    }
+
+    /**
+     * The owned subtrees in cursor order — every path under `p/` sorts
+     * between the paths of the prefixes before and after it, because no
+     * prefix lies inside another.
+     *
+     * @return iterable<int, non-empty-string>
+     */
+    private function inventory(?string $after): iterable
+    {
+        if ($this->ownedPrefixes === []) {
+            yield from $this->walk($this->rootPath, '', $after);
+
+            return;
+        }
+
+        foreach ($this->ownedPrefixes as $prefix) {
+            if ($after !== null && $this->wholeSubtreeIsBefore($prefix, $after)) {
+                continue;
+            }
+
+            $absolute = $this->rootPath . '/' . $prefix;
+            if (is_dir($absolute) && !is_link($absolute) && $this->resolve($prefix) === $absolute) {
+                yield from $this->walk($absolute, $prefix, $after);
+            }
+        }
+    }
+
+    /**
+     * True when every path under `$relative/` — and `$relative` itself —
+     * sorts at or before the cursor, so the walk need not look inside.
+     */
+    private function wholeSubtreeIsBefore(string $relative, string $after): bool
+    {
+        return strcmp($relative . '/', $after) < 0 && !str_starts_with($after, $relative . '/');
+    }
+
+    /**
+     * @throws StoreException
+     */
+    private function assertOwned(StoredObjectId $object): void
+    {
+        if ($this->ownedPrefixes === []) {
+            return;
+        }
+
+        foreach ($this->ownedPrefixes as $prefix) {
+            if (str_starts_with($object->relativePath, $prefix . '/')) {
+                return;
+            }
+        }
+
+        throw new StoreException(
+            "Path \"{$object->relativePath}\" is outside the owned prefixes of store \"{$this->name}\" ("
+            . implode(', ', $this->ownedPrefixes) . '): the orphan sweep would never see it. Add its first segment '
+            . 'to ownedPrefixes',
+        );
+    }
+
+    /**
+     * @param array<array-key, mixed> $prefixes
+     *
+     * @return list<non-empty-string>
+     *
+     * @throws InvalidArgumentException
+     */
+    private static function validatePrefixes(string $name, array $prefixes): array
+    {
+        /** @var array<string, non-empty-string> $sorted */
+        $sorted = [];
+        foreach ($prefixes as $prefix) {
+            if (!\is_string($prefix) || $prefix === '' || preg_match(self::PREFIX_PATTERN, $prefix) !== 1) {
+                throw new InvalidArgumentException(
+                    "Store \"{$name}\": invalid owned prefix " . var_export($prefix, true),
+                );
+            }
+
+            $sorted[$prefix . '/'] = $prefix;
+        }
+
+        ksort($sorted, SORT_STRING);
+        $previous = null;
+        foreach ($sorted as $key => $prefix) {
+            if ($previous !== null && str_starts_with($key, $previous)) {
+                throw new InvalidArgumentException(
+                    "Store \"{$name}\": owned prefix \"{$prefix}\" lies inside \"" . rtrim($previous, '/') . '"',
+                );
+            }
+            $previous = $key;
+        }
+
+        return array_values($sorted);
     }
 
     /**
@@ -856,9 +982,19 @@ final readonly class FileSystemStore implements
      * Stable, resumable, depth-first walk, ordered so that a `strcmp()` cursor
      * over full relative paths can skip forward through it safely.
      *
+     * With a cursor, an entry whose whole subtree sorts before it is skipped
+     * before it is even stat()ed, and only the directories on the cursor's
+     * own path are listed again: resuming a page costs the depth of the tree,
+     * not everything before the cursor (review 1.0 B10). Paths at or before
+     * the cursor may still be yielded; the caller filters them.
+     *
+     * Hidden entries — a name starting with `.` — are never part of a store:
+     * no generator emits one, and `.htaccess` under a web root is the
+     * application's (review 1.0 B2).
+     *
      * @return iterable<int, non-empty-string>
      */
-    private function walk(string $absolute, string $prefix): iterable
+    private function walk(string $absolute, string $prefix, ?string $after = null): iterable
     {
         $entries = @scandir($absolute);
         if ($entries === false) {
@@ -868,7 +1004,12 @@ final readonly class FileSystemStore implements
         /** @var array<string, array{string, string, bool}> $ordered */
         $ordered = [];
         foreach ($entries as $entry) {
-            if ($entry === '.' || $entry === '..' || str_ends_with($entry, self::PARTIAL_SUFFIX)) {
+            if ($entry === '' || $entry[0] === '.' || str_ends_with($entry, self::PARTIAL_SUFFIX)) {
+                continue;
+            }
+
+            $relative = $prefix === '' ? $entry : $prefix . '/' . $entry;
+            if ($after !== null && $this->wholeSubtreeIsBefore($relative, $after)) {
                 continue;
             }
 
@@ -898,7 +1039,7 @@ final readonly class FileSystemStore implements
             \assert($relative !== '');
 
             if ($isDirectory) {
-                yield from $this->walk($path, $relative);
+                yield from $this->walk($path, $relative, $after);
             } else {
                 yield $relative;
             }
