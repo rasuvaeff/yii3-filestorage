@@ -59,7 +59,7 @@ final class VerifyCommand extends Command
     {
         $log = [];
         $io = Json::style($input, $output, $log);
-        $deep = (bool) $input->getOption('deep');
+        $deep = $input->getOption('deep') === true;
         $limit = max(1, (int) $input->getOption('limit'));
         $after = $this->stringOption($input, 'after');
 

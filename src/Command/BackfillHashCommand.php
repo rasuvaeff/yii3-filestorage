@@ -57,7 +57,7 @@ final class BackfillHashCommand extends Command
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $io = new SymfonyStyle($input, $output);
-        $apply = (bool) $input->getOption('apply');
+        $apply = $input->getOption('apply') === true;
         $limit = max(1, (int) $input->getOption('limit'));
         $after = $this->stringOption($input, 'after');
 

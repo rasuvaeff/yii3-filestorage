@@ -85,14 +85,14 @@ final class GcCommand extends Command
     {
         $log = [];
         $io = Json::style($input, $output, $log);
-        $apply = (bool) $input->getOption('apply');
+        $apply = $input->getOption('apply') === true;
         $limit = max(1, (int) $input->getOption('limit'));
 
         if (!$apply) {
             $io->note('Dry run. Nothing will be deleted — pass --apply to act.');
         }
 
-        $orphansRequested = (bool) $input->getOption('orphans');
+        $orphansRequested = $input->getOption('orphans') === true;
         if ($orphansRequested && $this->scopes instanceof \Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface) {
             $io->error($this->scopedSweepRefusal());
             if (Json::enabled($input)) {
