@@ -18,6 +18,7 @@ use Rasuvaeff\Yii3Filestorage\Repository\MaintenanceRepositoryInterface;
 final class InterleavingRepository implements MaintenanceRepositoryInterface
 {
     private ?Closure $beforeSave = null;
+    private ?\Throwable $deleteFailure = null;
 
     public function __construct(private readonly MaintenanceRepositoryInterface $repository) {}
 
@@ -44,9 +45,18 @@ final class InterleavingRepository implements MaintenanceRepositoryInterface
         $this->repository->save($file);
     }
 
+    public function failDeletesWith(\Throwable $failure): void
+    {
+        $this->deleteFailure = $failure;
+    }
+
     #[Override]
     public function delete(string $id): bool
     {
+        if ($this->deleteFailure instanceof \Throwable) {
+            throw $this->deleteFailure;
+        }
+
         return $this->repository->delete($id);
     }
 

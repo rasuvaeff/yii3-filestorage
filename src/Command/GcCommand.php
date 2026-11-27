@@ -149,20 +149,25 @@ final class GcCommand extends Command
 
         $minAge = $this->duration($input, 'min-age') ?? $this->gracePeriod;
         $retention = $this->duration($input, 'retention') ?? $this->retention;
-        $error = match (true) {
-            $minAge === false => 'Invalid --min-age: expected an ISO 8601 duration such as PT1H',
-            $retention === false => 'Invalid --retention: expected an ISO 8601 duration such as P7D',
-            $after !== null && ($storeName === null || !$orphansRequested) => '--after resumes one store\'s orphan sweep: pass it with --orphans and --store',
-            $orphansRequested && $this->scopes instanceof FileScopeProviderInterface => $this->scopedSweepRefusal(),
-            default => null,
-        };
-        if ($error !== null || $minAge === false || $retention === false) {
-            $io->error($error);
-            if (Json::enabled($input)) {
-                Json::emit($output, ['applied' => $apply, 'error' => $error, 'log' => $log]);
-            }
+        if ($minAge === false || $retention === false) {
+            return $this->fail($input, $output, $io, $apply, $log, $minAge === false
+                ? 'Invalid --min-age: expected an ISO 8601 duration such as PT1H'
+                : 'Invalid --retention: expected an ISO 8601 duration such as P7D');
+        }
 
-            return Command::FAILURE;
+        if ($after !== null && ($storeName === null || !$orphansRequested)) {
+            return $this->fail(
+                $input,
+                $output,
+                $io,
+                $apply,
+                $log,
+                '--after resumes one store\'s orphan sweep: pass it with --orphans and --store',
+            );
+        }
+
+        if ($orphansRequested && $this->scopes instanceof FileScopeProviderInterface) {
+            return $this->fail($input, $output, $io, $apply, $log, $this->scopedSweepRefusal());
         }
 
         if (!$apply) {
@@ -226,6 +231,25 @@ final class GcCommand extends Command
         }
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * @param array<int, string> $log
+     */
+    private function fail(
+        InputInterface $input,
+        OutputInterface $output,
+        SymfonyStyle $io,
+        bool $apply,
+        array &$log,
+        string $error,
+    ): int {
+        $io->error($error);
+        if (Json::enabled($input)) {
+            Json::emit($output, ['applied' => $apply, 'error' => $error, 'log' => $log]);
+        }
+
+        return Command::FAILURE;
     }
 
     /**

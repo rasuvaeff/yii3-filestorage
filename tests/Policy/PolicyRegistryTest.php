@@ -7,6 +7,7 @@ namespace Rasuvaeff\Yii3Filestorage\Tests\Policy;
 use InvalidArgumentException;
 use Rasuvaeff\Yii3Filestorage\Policy\PolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\UploadPolicy;
+use Rasuvaeff\Yii3Filestorage\Reference\ReferenceAuthority;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Data\DataProvider;
@@ -151,13 +152,43 @@ final class PolicyRegistryTest
         PolicyRegistry::fromArray(['g' => ['allowedMimeType' => ['image/png']]]);
     }
 
+    public function referencesAreOwnedByRowsUnlessConfiguredOtherwise(): void
+    {
+        $registry = PolicyRegistry::fromArray([
+            'avatars' => ['referencesOwnedBy' => 'application'],
+            'docs' => ['referencesOwnedBy' => 'rows'],
+            'other' => [],
+        ]);
+
+        Assert::same($registry->for('avatars')->referencesOwnedBy, ReferenceAuthority::Application);
+        Assert::same($registry->for('docs')->referencesOwnedBy, ReferenceAuthority::Rows);
+        Assert::same($registry->for('other')->referencesOwnedBy, ReferenceAuthority::Rows);
+        Assert::same((new UploadPolicy())->referencesOwnedBy, ReferenceAuthority::Rows);
+    }
+
+    #[DataProvider('invalidAuthorityProvider')]
+    public function anUnknownReferenceAuthorityIsRejected(mixed $value): void
+    {
+        Expect::exception(InvalidArgumentException::class)
+            ->withMessageContaining('referencesOwnedBy for group "g" must be one of: rows, application');
+
+        PolicyRegistry::fromArray(['g' => ['referencesOwnedBy' => $value]]);
+    }
+
+    public static function invalidAuthorityProvider(): iterable
+    {
+        yield 'typo' => ['aplication'];
+        yield 'case' => ['Application'];
+        yield 'not a string' => [true];
+    }
+
     /**
      * The message names what is accepted, so the fix does not need the source.
      */
     public function theRejectionListsTheKnownOptions(): void
     {
         Expect::exception(InvalidArgumentException::class)
-            ->withMessageContaining('allowedMimeTypes, maxBytes, maxPixels, requireImageDimensions');
+            ->withMessageContaining('allowedMimeTypes, maxBytes, maxPixels, requireImageDimensions, referencesOwnedBy');
 
         PolicyRegistry::fromArray(['g' => ['maxByte' => 10]]);
     }

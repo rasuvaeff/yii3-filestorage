@@ -1363,6 +1363,51 @@ final class OperationsCommandsTest
         Assert::string($tester->getDisplay())->contains('No files stored');
     }
 
+    public function statStopsAtItsLimitAndPrintsWhereToResume(): void
+    {
+        $this->storeFile('a');
+        $this->storeFile('b');
+        $this->storeFile('c');
+
+        $first = $this->run(new StatCommand($this->repository), ['--limit' => '2', '--format' => 'json']);
+        $decoded = json_decode($first->getDisplay(), associative: true, flags: \JSON_THROW_ON_ERROR);
+        Assert::same($decoded['total']['files'], 2);
+        Assert::same($decoded['nextCursor'], 'b');
+
+        $text = $this->run(new StatCommand($this->repository), ['--limit' => '2']);
+        Assert::string($text->getDisplay())->contains('Stopped at --limit. Resume with --after=b');
+
+        $rest = $this->run(new StatCommand($this->repository), ['--after' => 'b', '--format' => 'json']);
+        $decoded = json_decode($rest->getDisplay(), associative: true, flags: \JSON_THROW_ON_ERROR);
+        Assert::same($decoded['total']['files'], 1);
+        Assert::null($decoded['nextCursor']);
+    }
+
+    public function statHasNoCursorWhenTheLimitIsNotReached(): void
+    {
+        $this->storeFile('a');
+
+        $tester = $this->run(new StatCommand($this->repository), ['--limit' => '2', '--format' => 'json']);
+        $decoded = json_decode($tester->getDisplay(), associative: true, flags: \JSON_THROW_ON_ERROR);
+
+        Assert::same($decoded['total']['files'], 1);
+        Assert::null($decoded['nextCursor']);
+        Assert::false(str_contains($this->run(new StatCommand($this->repository), ['--limit' => '2'])->getDisplay(), 'Resume'));
+    }
+
+    public function statPagesPastTheLimitOfOnePage(): void
+    {
+        for ($i = 0; $i < 3; ++$i) {
+            $this->storeFile("f{$i}");
+        }
+
+        $tester = $this->run(new StatCommand($this->repository), ['--limit' => '1', '--format' => 'json']);
+        $decoded = json_decode($tester->getDisplay(), associative: true, flags: \JSON_THROW_ON_ERROR);
+
+        Assert::same($decoded['total']['files'], 1);
+        Assert::same($decoded['nextCursor'], 'f0');
+    }
+
     public function statGroupsAndTotals(): void
     {
         $this->storeFile('a', group: 'avatars');

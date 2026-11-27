@@ -14,6 +14,7 @@ use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectLayoutInterface;
 use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectSet;
 use Rasuvaeff\Yii3Filestorage\Store\MaintenanceStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\QuarantinedObject;
+use Rasuvaeff\Yii3Filestorage\Store\StoredObject;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
 use Rasuvaeff\Yii3Filestorage\Store\StoreResult;
 use Rasuvaeff\Yii3Filestorage\Upload;
@@ -33,6 +34,7 @@ final class InterleavingStore implements MaintenanceStoreInterface
     private ?Closure $beforeDeleteObject = null;
     private ?Closure $beforeQuarantine = null;
     private ?Closure $beforeObjects = null;
+    private bool $undated = false;
 
     public function __construct(private readonly MaintenanceStoreInterface $store) {}
 
@@ -44,6 +46,14 @@ final class InterleavingStore implements MaintenanceStoreInterface
     public function onFirstQuarantine(Closure $hook): void
     {
         $this->beforeQuarantine = $hook;
+    }
+
+    /**
+     * Lists every object without a timestamp, as an adapter that cannot tell does.
+     */
+    public function withoutTimestamps(): void
+    {
+        $this->undated = true;
     }
 
     public function onFirstObjects(Closure $hook): void
@@ -113,7 +123,16 @@ final class InterleavingStore implements MaintenanceStoreInterface
             $hook();
         }
 
-        return $this->store->objects($afterPath, $limit);
+        if (!$this->undated) {
+            return $this->store->objects($afterPath, $limit);
+        }
+
+        $objects = [];
+        foreach ($this->store->objects($afterPath, $limit) as $object) {
+            $objects[] = new StoredObject($object->id, null, $object->size);
+        }
+
+        return $objects;
     }
 
     #[Override]

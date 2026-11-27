@@ -110,6 +110,11 @@ final class GcRaceTest
             $this->disk->exists($republished),
             'a committed file row points at bytes the stalled collector deleted',
         );
+        Assert::same(
+            iterator_to_array($this->disk->quarantined(), preserve_keys: false),
+            [],
+            'collector 2 purged what it committed; collector 1 put back what it moved',
+        );
     }
 
     /**
@@ -150,6 +155,38 @@ final class GcRaceTest
         Assert::instanceOf($file, File::class);
         Assert::instanceOf($this->repository->find($file->id), File::class);
         Assert::true($this->disk->exists($file), 'the sweep deleted the bytes of a committed file');
+    }
+
+    /**
+     * Positive control for the two tests above: without it, a sweep that
+     * deleted nothing at all would pass them. A genuinely abandoned object,
+     * older than the minimum age, is taken off its key into the quarantine,
+     * stays restorable for the retention, and is purged after it.
+     */
+    public function anOldOrphanIsStillSweptAndPurgedOnceTheRetentionIsOver(): void
+    {
+        $file = $this->storage($this->repository)->add($this->upload('abandoned'));
+        $kept = $this->storage($this->repository)->add($this->upload('still referenced'));
+        $this->repository->delete($file->id);
+        touch($this->root . '/store/' . $file->relativePath, time() - 7200);
+        touch($this->root . '/store/' . $kept->relativePath, time() - 7200);
+
+        $this->gc(null, $this->repository, ['--orphans' => true, '--apply' => true]);
+
+        Assert::false($this->disk->exists($file), 'the old orphan left its key');
+        Assert::true($this->disk->exists($kept));
+        $entries = iterator_to_array($this->disk->quarantined(), preserve_keys: false);
+        Assert::same(\count($entries), 1);
+        Assert::same($entries[0]->objects[0]->relativePath, $file->relativePath);
+
+        $this->clock->advance(new DateInterval('P6D'));
+        $this->gc(null, $this->repository, ['--apply' => true]);
+        Assert::same(\count(iterator_to_array($this->disk->quarantined(), preserve_keys: false)), 1, 'kept within the retention');
+
+        $this->clock->advance(new DateInterval('P2D'));
+        $this->gc(null, $this->repository, ['--apply' => true]);
+        Assert::same(iterator_to_array($this->disk->quarantined(), preserve_keys: false), [], 'purged after it');
+        Assert::true($this->disk->exists($kept));
     }
 
     /**

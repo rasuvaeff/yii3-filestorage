@@ -503,6 +503,28 @@ final class CheckCommandTest
     /**
      * @param list<non-empty-string> $knownGroups
      */
+    public function aStoreWithoutAQuarantineIsAWarningNotAnError(): void
+    {
+        $tester = $this->run(store: new FileSystemStore('upload', $this->root, $this->factory));
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        Assert::string((string) preg_replace('/[\s!]+/u', ' ', $tester->getDisplay()))->contains(
+            'Store "upload" has no quarantine directory, so filestorage:gc cannot delete from it.',
+        );
+    }
+
+    public function aUsableQuarantineIsNotMentioned(): void
+    {
+        $tester = $this->run(store: new FileSystemStore(
+            'upload',
+            $this->root . '/root',
+            $this->factory,
+            quarantinePath: $this->root . '/quarantine',
+        ));
+
+        Assert::false(str_contains($tester->getDisplay(), 'quarantine'));
+    }
+
     private function run(
         ?StoreInterface $store = null,
         ?RepositoryInterface $repository = null,
