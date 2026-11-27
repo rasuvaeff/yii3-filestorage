@@ -22,6 +22,10 @@ interface UrlSignerInterface
 {
     /**
      * @return non-empty-string
+     *
+     * @throws \InvalidArgumentException When the token format cannot carry
+     *         `$expiresAt` (before 1970, or past the expiry field's width), so
+     *         `verify()` could never accept it.
      */
     public function sign(SignedPayload $payload, DateTimeImmutable $expiresAt): string;
 

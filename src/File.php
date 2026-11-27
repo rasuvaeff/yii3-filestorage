@@ -43,6 +43,16 @@ final readonly class File
      */
     public const string TIMESTAMP_FORMAT = 'Y-m-d\TH:i:s.uP';
 
+    /**
+     * The longest `originalName`, in characters, that {@see Upload} produces.
+     *
+     * It is what fits a `VARCHAR(255)` on every database, and the column the
+     * `-db` backend declares. `Upload` truncates to it (keeping the extension);
+     * `create()` does not enforce it, so a row written by older code still
+     * reads back. A repository of your own should accept at least this much.
+     */
+    public const int MAX_ORIGINAL_NAME_LENGTH = 255;
+
     private const string NAME_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\z/';
     private const string SHA256_PATTERN = '/^[a-f0-9]{64}\z/';
     private const string TRAVERSAL_PATTERN = '~(?:^|/)\.\.(?:/|\z)~';
@@ -190,10 +200,16 @@ final readonly class File
     }
 
     /**
-     * The directory holding this file's object and every derivative of it.
+     * The directory part of {@see self::$relativePath}: everything before the
+     * last `/`, or the path itself when it has none.
      *
-     * Every path generator emits `<…>/<key>/original.<ext>`, so removing the
-     * parent directory is what makes derivative cleanup automatic.
+     * Only under the default `DirectoryLayout` with a unique path generator is
+     * this the file's own directory holding its derivatives. Under
+     * `FlatSiblingLayout`, `FlatSha256KeyGenerator` or a deduplicated key it is
+     * shared by many objects — removing it removes other files. Derivative
+     * paths and deletion sets come from
+     * {@see \Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectLayoutInterface},
+     * never from this method.
      *
      * @return non-empty-string
      */
@@ -293,6 +309,11 @@ final readonly class File
             }
             if ($value !== null && !is_scalar($value)) {
                 throw new InvalidArgumentException("File metadata value \"{$key}\" must be scalar or null");
+            }
+            // NAN and INF are scalars that no JSON encoder accepts, and the
+            // metadata is stored as JSON.
+            if (\is_float($value) && !is_finite($value)) {
+                throw new InvalidArgumentException("File metadata value \"{$key}\" must be a finite number");
             }
             $validated[$key] = $value;
         }

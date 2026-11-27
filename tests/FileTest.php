@@ -259,6 +259,25 @@ final class FileTest
             'must be scalar or null',
             static fn(): File => self::file(metadata: ['a' => ['nested']]),
         ];
+        // Review 1.0 C4: `is_scalar()` lets these through, and every JSON
+        // encoder downstream (`-db` stores metadata as JSON) throws on them.
+        yield 'NAN metadata value' => [
+            'File metadata value "a" must be a finite number',
+            static fn(): File => self::file(metadata: ['a' => \NAN]),
+        ];
+        yield 'INF metadata value' => [
+            'File metadata value "a" must be a finite number',
+            static fn(): File => self::file(metadata: ['a' => \INF]),
+        ];
+        yield '-INF metadata value' => [
+            'File metadata value "a" must be a finite number',
+            static fn(): File => self::file(metadata: ['a' => -\INF]),
+        ];
+    }
+
+    public function aFiniteFloatInMetadataIsKept(): void
+    {
+        Assert::same(self::file(metadata: ['ratio' => 1.5])->metadata, ['ratio' => 1.5]);
     }
 
     /**

@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Filestorage\Tests\Url;
 
 use DateInterval;
+use DateTimeImmutable;
+use InvalidArgumentException;
 use Rasuvaeff\PropertyTesting\ArbitraryInterface;
 use Rasuvaeff\PropertyTesting\Gen;
 use Rasuvaeff\PropertyTesting\Property;
@@ -15,6 +17,7 @@ use Rasuvaeff\Yii3Filestorage\Url\SigningKeyRing;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Data\DataProvider;
+use Testo\Expect;
 use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
 
@@ -63,6 +66,45 @@ final class HmacUrlSignerTest
         Assert::same($verified?->fileId, 'f-1');
         Assert::same($verified?->variant, 'thumb');
         Assert::same($verified?->scopeId, 'tenant-9');
+    }
+
+    /**
+     * Review 1.0 C2: `sign()` used to mint tokens `verify()` can never accept —
+     * a negative timestamp or one past eleven digits fails the expiry shape.
+     * A link that is dead on arrival is a bug to report at the call site.
+     */
+    #[DataProvider('unrepresentableExpiryProvider')]
+    public function anExpiryTheTokenCannotCarryIsRefusedAtSigning(string $expiresAt, string $timestamp): void
+    {
+        Expect::exception(InvalidArgumentException::class)->withMessage(
+            "Cannot sign a token expiring at {$timestamp}: the expiry must be between 0 and 99999999999 seconds since the epoch",
+        );
+
+        $this->signer->sign(new SignedPayload(fileId: 'f-1'), new DateTimeImmutable($expiresAt));
+    }
+
+    /**
+     * @return iterable<string, array{non-empty-string, non-empty-string}>
+     */
+    public static function unrepresentableExpiryProvider(): iterable
+    {
+        yield 'before 1970' => ['1969-12-31T23:59:59+00:00', '-1'];
+        yield 'twelve digits' => ['@100000000000', '100000000000'];
+    }
+
+    public function theLargestRepresentableExpirySignsAndVerifiesItsShape(): void
+    {
+        $token = $this->signer->sign(new SignedPayload(fileId: 'f-1'), new DateTimeImmutable('@99999999999'));
+
+        Assert::same(explode('.', $token)[2], '99999999999');
+        Assert::same($this->signer->verify($token)?->fileId, 'f-1');
+    }
+
+    public function theEpochItselfSigns(): void
+    {
+        $token = $this->signer->sign(new SignedPayload(fileId: 'f-1'), new DateTimeImmutable('@0'));
+
+        Assert::same(explode('.', $token)[2], '0');
     }
 
     public function signingIsDeterministicForTheSameInputs(): void

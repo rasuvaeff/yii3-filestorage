@@ -28,6 +28,15 @@ interface RepositoryInterface
     public function find(string $id): ?File;
 
     /**
+     * Insert or replace by `File::$id` — an upsert, not an insert.
+     *
+     * `Storage::add()` calls it for a new file; updating metadata calls it again
+     * with `$file->withMetadata(...)`, and so do decorators such as `-images`'s
+     * metadata writer. An implementation that inserts only breaks every one of
+     * them with a duplicate-key error. A backend that scopes rows (a tenant
+     * column) assigns the scope once, on insert, and never moves an existing
+     * row to another scope on replace.
+     *
      * Returns nothing: the id was assigned before the write, so there is
      * nothing for the repository to give back.
      */
