@@ -16,7 +16,7 @@ capabilities `StoreUrlProviderInterface`, `RangeReadableStoreInterface`,
 `Store\StoreRegistry`, `StoreResult`, `StoredObjectId`, `BlobId`,
 `DerivativeDescriptor`, `DerivativeObject`, `StoredObject`, `QuarantinedObject`;
 `Store\Layout\ObjectLayoutInterface` with `DirectoryLayout` (default) and
-`FlatSiblingLayout`, and `ObjectSet`; `Store\FileSystem\FileSystemStore`
+`FlatSiblingLayout`, `ObjectSet` and `LayoutCompatibility`; `Store\FileSystem\FileSystemStore`
 and `PublicFileSystemStore`; `Repository\RepositoryInterface` and
 `MaintenanceRepositoryInterface`; `Path\PathGeneratorInterface` with
 `RandomPathGenerator` / `DatePathGenerator`, and
@@ -125,6 +125,10 @@ removes the original and every `<base>-*`) is chosen once per store, before it
 holds data; it refuses a file whose name is not `<base>[.<ext>]` with a base of
 `[A-Za-z0-9_]`, because a dash or dot in the base would make `foo-bar.jpg` a
 derivative of `foo.jpg`.
+Since 0.10 `DirectoryLayout` likewise refuses, in `deletion()`/`derivativePath()`,
+a file not named `original[.<ext>]` outside the root (review 1.0 A1) — only
+shapes that were already data-losing change; the regression test passes
+unedited.
 
 **Token format `v1.<key-id>.<expires>.<b64url payload>.<b64url hmac>`.**
 Version, key id, expiry and payload are all covered by the HMAC. The payload is
@@ -244,6 +248,20 @@ asserting only one half lets the operands be swapped undetected.
   The half-lease freshness check from 0.8.4 stays as an optimisation; correctness
   no longer depends on it. The run-start quarantine sweep restores an entry the
   ledger still knows unless its lease is live — that is the crash recovery.
+- **A key generator and a store layout are configured apart, so check the
+  pair.** Review 1.0 A1: flat keys under `DirectoryLayout` deleted a whole
+  fan-out bucket per blob. `Store\Layout\LayoutCompatibility` probes behaviourally
+  (two keys sharing the fan-out prefix; deletion and derivative of each) and is
+  what `-db`'s factory, `-flysystem`'s DI and `check` call. Keep it behavioural —
+  a third-party layout will not refuse.
+- **The store root belongs to the store.** `gc --orphans` sweeps every row-less
+  file the inventory lists. The local inventory skips hidden entries and, with
+  `ownedPrefixes`, everything outside them — a write outside is refused so no
+  object of the store escapes its own sweep (review 1.0 B2).
+- **A quarantine entry is purged only when nothing references it again**
+  (rows via the layout, plus the checker — B5), entries are settled one by one
+  (B6), a failed restore is a warning (B7), and a failed quarantine rolls back
+  what it moved (B8). A row must never outlive its bytes because of gc.
 - **The orphan sweep checks references after listing, per page, against a
   minimum age.** Review #3: a snapshot of every row read before the walk lost
   uploads between publication and `save()`, and files committed after the

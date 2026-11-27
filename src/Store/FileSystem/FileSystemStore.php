@@ -166,7 +166,7 @@ final readonly class FileSystemStore implements
         $this->name = $name;
         $this->rootPath = $resolved;
         $this->layout = $layout ?? new DirectoryLayout();
-        $this->ownedPrefixes = self::validatePrefixes($name, $ownedPrefixes);
+        $this->ownedPrefixes = $this->validatePrefixes($name, $ownedPrefixes);
         $this->quarantinePath = $quarantinePath === null ? null : $this->resolveQuarantine($quarantinePath);
     }
 
@@ -561,7 +561,7 @@ final readonly class FileSystemStore implements
         foreach ($moved as $object) {
             $target = $this->rootPath . '/' . $object->relativePath;
             if (!is_dir(\dirname($target))) {
-                @mkdir(\dirname($target), $this->directoryMode, true);
+                @mkdir(\dirname($target), $this->directoryMode, recursive: true);
             }
             if (file_exists($target) || !@rename($entry . '/' . $object->relativePath, $target)) {
                 $stuck[] = $object->relativePath;
@@ -757,14 +757,14 @@ final readonly class FileSystemStore implements
      *
      * @throws InvalidArgumentException
      */
-    private static function validatePrefixes(string $name, array $prefixes): array
+    private function validatePrefixes(string $name, array $prefixes): array
     {
         /** @var array<string, non-empty-string> $sorted */
         $sorted = [];
         foreach ($prefixes as $prefix) {
             if (!\is_string($prefix) || $prefix === '' || preg_match(self::PREFIX_PATTERN, $prefix) !== 1) {
                 throw new InvalidArgumentException(
-                    "Store \"{$name}\": invalid owned prefix " . var_export($prefix, true),
+                    "Store \"{$name}\": invalid owned prefix " . var_export($prefix, return: true),
                 );
             }
 

@@ -87,7 +87,7 @@ final class FlatSha256KeyGeneratorTest
     {
         $sha = str_repeat('ab', 32);
 
-        Assert::same((new FlatSha256KeyGenerator(prefix: null))->generate('sha', $sha, 'jpg'), 'sha/ab/ab/' . $sha . '.jpg');
+        Assert::same((new FlatSha256KeyGenerator())->generate('sha', $sha, 'jpg'), 'sha/ab/ab/' . $sha . '.jpg');
     }
 
     #[DataProvider('invalidPrefixProvider')]

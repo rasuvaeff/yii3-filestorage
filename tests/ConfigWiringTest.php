@@ -302,7 +302,7 @@ final class ConfigWiringTest
         try {
             $container->get(GcCommand::class);
         } catch (\Throwable $e) {
-            for ($current = $e; $current !== null; $current = $current->getPrevious()) {
+            for ($current = $e; $current instanceof \Throwable; $current = $current->getPrevious()) {
                 $messages[] = $current->getMessage();
             }
         }

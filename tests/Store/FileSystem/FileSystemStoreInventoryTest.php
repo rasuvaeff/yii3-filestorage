@@ -96,7 +96,7 @@ final class FileSystemStoreInventoryTest
     public function aSymlinkedPrefixIsNotFollowed(): void
     {
         $this->place('elsewhere/secret');
-        mkdir($this->base . '/root', 0o777, true);
+        mkdir($this->base . '/root', 0o777, recursive: true);
         symlink($this->base . '/elsewhere', $this->base . '/root/blobs');
 
         Assert::same($this->all($this->store(ownedPrefixes: ['blobs'])), []);
@@ -250,7 +250,7 @@ final class FileSystemStoreInventoryTest
         foreach ($paths as $path) {
             $absolute = $this->base . '/' . (str_starts_with($path, 'elsewhere/') ? '' : 'root/') . $path;
             if (!is_dir(\dirname($absolute))) {
-                mkdir(\dirname($absolute), 0o777, true);
+                mkdir(\dirname($absolute), 0o777, recursive: true);
             }
             file_put_contents($absolute, 'x');
             touch($absolute, time() - 7200);

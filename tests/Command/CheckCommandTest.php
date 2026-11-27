@@ -737,7 +737,7 @@ final class CheckCommandTest
     {
         $tester = $this->run(store: new InMemoryStore('memory', $this->factory, layout: new FlatSiblingLayout()), json: true);
 
-        $decoded = json_decode($tester->getDisplay(), true, flags: \JSON_THROW_ON_ERROR);
+        $decoded = json_decode($tester->getDisplay(), associative: true, flags: \JSON_THROW_ON_ERROR);
         Assert::true(\is_array($decoded));
         Assert::same($decoded['stores'][0]['layout'] ?? null, FlatSiblingLayout::class);
         Assert::string($this->run(store: new InMemoryStore('memory', $this->factory, layout: new FlatSiblingLayout()))->getDisplay())
@@ -797,7 +797,7 @@ final class CheckCommandTest
             scopedFiles: $scopedFiles,
             contentKeys: $contentKeys,
             paths: $paths,
-            streams: $paths === null ? null : $this->factory,
+            streams: $paths instanceof \Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface ? $this->factory : null,
             references: $references,
         );
 

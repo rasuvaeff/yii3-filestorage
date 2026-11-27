@@ -1108,7 +1108,7 @@ final class OperationsCommandsTest
         $this->store->corrupt($file->relativePath, 'hello!');
 
         $tester = $this->run(new VerifyCommand(new StoreRegistry([$this->store]), $this->repository), ['--deep' => true, '--format' => 'json']);
-        $json = json_decode($tester->getDisplay(), true, flags: \JSON_THROW_ON_ERROR);
+        $json = json_decode($tester->getDisplay(), associative: true, flags: \JSON_THROW_ON_ERROR);
 
         Assert::true(\is_array($json));
         Assert::same([$json['corrupt'], $json['unreadable']], [1, 0]);

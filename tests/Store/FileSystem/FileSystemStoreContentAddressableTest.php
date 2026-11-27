@@ -163,7 +163,7 @@ final class FileSystemStoreContentAddressableTest
     public function aDirectoryAtTheKeyIsAnError(): void
     {
         $key = $this->key('hello');
-        mkdir($this->base . '/root/' . $key->relativePath, 0o777, true);
+        mkdir($this->base . '/root/' . $key->relativePath, 0o777, recursive: true);
 
         Expect::exception(StoreException::class)->withMessageContaining('is not a regular file');
 
@@ -174,7 +174,7 @@ final class FileSystemStoreContentAddressableTest
     {
         $key = $this->key('hello');
         file_put_contents($this->base . '/outside', 'hello');
-        mkdir(\dirname($this->base . '/root/' . $key->relativePath), 0o777, true);
+        mkdir(\dirname($this->base . '/root/' . $key->relativePath), 0o777, recursive: true);
         symlink($this->base . '/outside', $this->base . '/root/' . $key->relativePath);
 
         Expect::exception(StoreException::class)->withMessageContaining('is not a regular file');
@@ -234,7 +234,7 @@ final class FileSystemStoreContentAddressableTest
             ledger: $ledger,
         ));
         $tester->execute(['--apply' => true, '--format' => 'json']);
-        $json = json_decode($tester->getDisplay(), true, flags: \JSON_THROW_ON_ERROR);
+        $json = json_decode($tester->getDisplay(), associative: true, flags: \JSON_THROW_ON_ERROR);
 
         Assert::true(\is_array($json));
         Assert::same($json['quarantine']['restored'] ?? null, 1);

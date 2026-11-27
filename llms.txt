@@ -148,7 +148,7 @@ Optional capabilities, all extending `StoreInterface`:
 | `StoreUrlProviderInterface` | `publicUrl()`, `temporaryUrl(File, DateTimeImmutable, DeliveryOptions)` — both nullable |
 | `RangeReadableStoreInterface` | `streamRange(File, int $offset, int $length)` |
 | `ContentAddressableStoreInterface` | `putIfAbsent(Upload, StoredObjectId, int $maxBytes = 0)` — atomic, immutable |
-| `MaintenanceStoreInterface` | `objects(?string $afterPath, int $limit): iterable<StoredObject>`, `deleteObject(StoredObjectId)`, `quarantine(ObjectSet, DateTimeImmutable $now): ?QuarantinedObject`, `restore(QuarantinedObject)` (put-if-absent per object), `purge(QuarantinedObject)`, `quarantined(?string $afterToken, int $limit)`, `quarantineProblem(): ?string` |
+| `MaintenanceStoreInterface` | `objects(?string $afterPath, int $limit): iterable<StoredObject>`, `quarantine(ObjectSet, DateTimeImmutable $now): ?QuarantinedObject`, `restore(QuarantinedObject)` (put-if-absent per object), `purge(QuarantinedObject)`, `quarantined(?string $afterToken, int $limit)`, `quarantineProblem(): ?string` |
 | `DerivativeAwareStoreInterface` | `hasDerivative()`, `derivativeStream()`, `writeDerivative()` |
 
 A service contract, not a store capability: `Store\DerivativeResolverInterface` —
@@ -160,10 +160,20 @@ A service contract, not a store capability: `Store\DerivativeResolverInterface` 
 | `DerivativeUrlProviderInterface` | `publicDerivativeUrl()`, `temporaryDerivativeUrl()` |
 
 Implementations: `Store\FileSystem\FileSystemStore(name, rootPath, streamFactory,
-directoryMode = 0o775, ?string $quarantinePath = null, ?ObjectLayoutInterface $layout = null)`
-(derivatives, maintenance, range; the quarantine must be outside the root, on
-the same filesystem — without one `gc` cannot delete there), `Store\FileSystem\PublicFileSystemStore` (the above plus public URLs;
-`temporaryUrl()` is always null — a web server has no signature to check),
+directoryMode = 0o775, ?string $quarantinePath = null, ?ObjectLayoutInterface $layout = null,
+list<string> $ownedPrefixes = [])`
+(content-addressable, derivatives, maintenance, range; the quarantine must be
+outside the root, on the same filesystem — without one `gc` cannot delete there;
+`quarantinePath(): ?string`). The inventory (`objects()`, what `gc --orphans`
+sweeps) never lists hidden entries (`.htaccess`), and with `ownedPrefixes` only
+those subtrees — a write outside them is a `StoreException`. **The root belongs
+to the store**: under a shared web root, set `ownedPrefixes`.
+`putIfAbsent()` stages under a random `.part` and publishes with `link()`
+(put-if-absent); reuse needs equal size, and `maxBytes` applies to reuse too.
+`Store\FileSystem\PublicFileSystemStore(FileSystemStore $store, string $baseUrl, ?string $webRoot = null)`
+(the above plus public URLs; `temporaryUrl()` is always null — a web server has
+no signature to check; `webRoot` given → a quarantine under it is
+`InvalidArgumentException`; `ownedPrefixes()`, `webRoot()`),
 `Test\InMemoryStore (base + maintenance only; Test\UrlCapableInMemoryStore adds StoreUrlProviderInterface with publicUrls/temporaryUrls toggles)` (base + maintenance only, deliberately no URL/range).
 
 `StoreRegistry`: `get(?string $name)`, `has()`, `names()`, `defaultName()`.
@@ -173,7 +183,7 @@ Built by core from the one `StoreInterface` a backend binds.
 
 `StoredObjectId(string $relativePath)` — validated path VO; `directory()` like `File::directory()`.
 `StoredObject(StoredObjectId $id, ?DateTimeImmutable $lastModified = null, ?int $size = null)` —
-one inventory entry; `$relativePath` mirrors `$id`. Null time = never an orphan.
+one inventory entry (path: `$id->relativePath`). Null time = never an orphan.
 `QuarantinedObject(string $token, list<StoredObjectId> $objects)` — token
 `<10-digit unix time>-<16 hex>`, `$quarantinedAt` from it; `newToken(DateTimeImmutable)`.
 `Layout\ObjectSet::tree(StoredObjectId)` / `::siblings(?string $dir, string $base)` —
@@ -183,10 +193,26 @@ what one deletion removes; `contains(string $path)`.
 interface ObjectLayoutInterface {
     public function derivativePath(File $file, DerivativeDescriptor $d): string;
     public function ownerOf(StoredObjectId $object): string;   // what a row is matched by in the orphan sweep
-    public function ownerOfFile(File $file): string;
     public function deletion(StoredObjectId $object): ObjectSet;
 }
 ```
+`DirectoryLayout` refuses (`InvalidArgumentException`) `deletion()`/`derivativePath()`
+for a file not named `original` / `original.<ext>` (root objects excepted): a
+flat key's directory is a shared fan-out bucket.
+
+**Check every generator against the store's layout** — they are configured in
+two places, and a mismatch deletes other files' bytes:
+
+```php
+use Rasuvaeff\Yii3Filestorage\Store\Layout\LayoutCompatibility;
+
+LayoutCompatibility::contentKeysProblem(ContentAddressedKeyGeneratorInterface $keys, ObjectLayoutInterface $layout): ?string;
+LayoutCompatibility::assertContentKeys(ContentAddressedKeyGeneratorInterface $keys, StoreInterface $store): void; // InvalidConfigException
+LayoutCompatibility::pathsProblem(PathGeneratorInterface $paths, ObjectLayoutInterface $layout, StreamFactoryInterface $streams): ?string;
+LayoutCompatibility::assertPaths(PathGeneratorInterface $paths, StoreInterface $store, StreamFactoryInterface $streams): void;
+```
+Behavioural probe: two keys sharing the fan-out prefix; deleting one must remove
+it and its derivative and nothing of the other.
 `BlobId::create(string $storeName, string $relativePath)` — physical identity for dedup.
 `DerivativeDescriptor(string $name, string $extension, string $mediaType)` — one named
 preset; `fileName()` gives `<name>.<extension>`. Named presets only: free-form dimensions
@@ -274,7 +300,7 @@ interface PathGeneratorInterface {
 | `RandomPathGenerator` | `<group>/<2 hex>/<2 hex>/<32 hex>/original.<ext>` |
 | `DatePathGenerator` | `<group>/<YYYY>/<MM>/<DD>/<uuidv7>/original.<ext>` |
 | `Sha256KeyGenerator` (`ContentAddressedKeyGeneratorInterface`) | `<scope>/<hash[0:2]>/<hash[2:4]>/<hash>/original` — no extension (the argument is ignored), dedup only |
-| `FlatSha256KeyGenerator` (`ContentAddressedKeyGeneratorInterface`) | `<scope>/<hash[0:2]>/<hash[2:4]>/<hash>.<ext>` — for `FlatSiblingLayout` |
+| `FlatSha256KeyGenerator(?string $prefix = null)` (`ContentAddressedKeyGeneratorInterface`) | `<scope>/<hash[0:2]>/<hash[2:4]>/<hash>.<ext>` — for `FlatSiblingLayout`. With `prefix: 'blobs'`: `blobs/ab/cd/<sha>.<ext>`, scope **ignored** (single-tenant only) |
 
 `ContentAddressedKeyGeneratorInterface::generate(string $scope, string $sha256, ?string $extension = null): string` —
 the extension comes from the detected media type.
@@ -381,10 +407,10 @@ No clock double ships here. Everything takes a PSR-20 clock; use
 
 | Class | Command | Does |
 |---|---|---|
-| `Command\CheckCommand` | `filestorage:check` | Wiring, per-store capabilities, tenancy, per-group rules. Non-zero on an unsafe delivery combination, or on a bound `FileScopeProviderInterface` with no `ScopedFileResolverInterface` |
-| `Command\StatCommand` | `filestorage:stat` | Counts and sizes by group, plus what sharing saved. Physical figures withheld under tenancy. `--limit`/`--after`, JSON `nextCursor` |
-| `Command\VerifyCommand` | `filestorage:verify` | Rows whose object is missing. `--deep` re-reads and compares the hash. Non-zero on any finding |
-| `Command\BackfillHashCommand` | `filestorage:backfill-hash` | Fills `contentHash` on rows written before hashing was on |
+| `Command\CheckCommand` | `filestorage:check` | Wiring, per-store layout and capabilities, tenancy, per-group rules. Non-zero on an unsafe delivery combination, on a bound `FileScopeProviderInterface` with no `ScopedFileResolverInterface`, or on a content-key/path generator its store's layout cannot delete one by one (`LayoutCompatibility`; unbound content keys = `Sha256KeyGenerator`). Warns: public store without `ownedPrefixes` or `webRoot`; application-owned group with no `ReferenceCheckerInterface` |
+| `Command\StatCommand` | `filestorage:stat` | Counts and sizes by group, plus what sharing saved. Physical figures withheld under tenancy. `--limit`/`--after`, JSON `nextCursor`, `windowed` (sharing counted within the window only) |
+| `Command\VerifyCommand` | `filestorage:verify` | Rows whose object is missing. `--deep` re-reads and compares the hash: `corrupt` (wrong bytes or length), `unreadable` (read stopped before EOF; JSON `unreadable`). Non-zero on any finding |
+| `Command\BackfillHashCommand` | `filestorage:backfill-hash` | Fills `contentHash` on rows written before hashing was on; never from a read cut short or of the wrong length |
 | `Command\GcCommand` | `filestorage:gc` | Collects unreferenced blobs; `--orphans` also sweeps objects no row points at |
 `--format=json` on check/stat/verify/gc: stdout = one JSON object (stable keys; human output inside `log`)
 | `Command\ImportCommand` | `filestorage:import <dir>` | Walks a tree, `add()`s every file, records completions in a manifest and skips them next time |
@@ -409,14 +435,22 @@ Rules:
    cannot destroy bytes a writer re-published. Each run first sweeps the
    quarantines: an entry the ledger still knows is restored (unless another
    collector holds a live lease), anything else is purged after `--retention`
-   (default `P7D`). Committed blob deletions are purged at once.
+   (default `P7D`) — unless a row (matched via the layout) or the
+   `ReferenceCheckerInterface` references it again, then it is restored. One
+   failing entry is skipped and counted (`quarantine.failed`); a failed restore
+   is a warning, not the end of the run; a failed quarantine rolls back what it
+   moved. Committed blob deletions are purged at once. Intervals come from params
+   `gc.leaseTtl`/`gracePeriod`/`retention` and must be positive. Under `-db` 0.4,
+   a bound scope provider returning null makes the maintenance commands throw
+   `MissingScopeException` — unbind it or opt in with `-db`'s `allowGlobalAccess`.
 5. `gc --orphans` walks every configured store unless `--store=<name>` limits it,
    and `--limit` is a budget for the whole pass, not per store. References are
    looked up per page *after* listing it
    (`MaintenanceRepositoryInterface::referencedPaths(storeName, directories)`),
    and an object is a candidate only when older than `--min-age` (default `PT1H`)
    from that moment; an object with no timestamp never is. Orphans go to the
-   quarantine for `--retention`.
+   quarantine for `--retention`. The cursor is per store: cron one sweep per
+   `--store`. A `--limit` used up before the sweep → `orphanSweepSkipped: true`.
 6. **`gc --orphans` refuses when a `FileScopeProviderInterface` is bound.** The
    referenced-set is tenant-filtered, the object listing is physical — the
    difference is other tenants' live files. Run the sweep with the provider

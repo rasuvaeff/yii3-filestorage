@@ -37,7 +37,13 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
    (`<base>.<ext>` + `<base>-<name>.<ext>`, with `FlatSha256KeyGenerator`) is an
    opt-in chosen once per store before it holds data — never switch a store's
    layout, and derive derivative paths from `$store->layout()`, never from
-   `File::directory()`.
+   `File::directory()`. **A key generator must fit the layout:** wherever a
+   generator meets a store, call
+   `Store\Layout\LayoutCompatibility::assertContentKeys($keys, $store)` /
+   `assertPaths($paths, $store, $streams)` — flat keys under `DirectoryLayout`
+   delete a whole fan-out bucket (`DirectoryLayout` now refuses names other than
+   `original[.ext]`). `FlatSha256KeyGenerator(prefix: 'blobs')` gives
+   `blobs/ab/cd/<sha>.<ext>` and ignores the scope (single-tenant only).
 
 4. **`urlFor()`, not `url()`.** `url()` is raw and ignores delivery policy;
    `temporaryUrl()` does pass the group's `DeliveryOptions` to the store, so a
@@ -104,7 +110,12 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
    bytes a writer re-published. A store without a quarantine
    (`FileSystemStore`'s `quarantinePath`) cannot be collected from;
    `filestorage:check` warns. A store implementation must keep the quarantine
-   out of `objects()` and out of public reach.
+   out of `objects()` and out of public reach (`PublicFileSystemStore(webRoot:)`
+   checks the document root), and roll back a quarantine that fails half-way.
+   Before purging, `gc` re-asks rows and the reference checker and restores a
+   referenced entry. **The store root belongs to the store:** `gc --orphans`
+   takes every row-less file under it. Hidden entries are never listed; under
+   a shared web root pass `ownedPrefixes` to `FileSystemStore`.
 
 11. **No suppressions.** No `@psalm-suppress`, no baseline. Fix the root cause.
 
@@ -137,7 +148,13 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
   `--store=<name> --after=<path>` resumes (JSON `nextCursor`). An orphan must be
   older than `--min-age` (default `PT1H`) measured from its page's reference
   lookup; an object without a timestamp is never swept. Swept orphans stay in
-  the quarantine for `--retention` (default `P7D`).
+  the quarantine for `--retention` (default `P7D`). The cursor is per store —
+  cron one sweep per `--store`. Intervals come from params `gc.*` and must be
+  positive. With `-db` 0.4, a bound scope provider answering null makes the
+  maintenance commands throw `MissingScopeException` (unbind it, or `-db`'s
+  `allowGlobalAccess`).
+- `FileSystemStore`/`PublicFileSystemStore` are content-addressable
+  (`putIfAbsent()` via `link()`), so `-db` deduplication runs on a local disk.
 - Groups with `referencesOwnedBy: application` need a bound
   `ReferenceCheckerInterface` (by path, batched): `gc` releases their rows that
   are older than `--min-age` and no longer referenced, and re-asks before
