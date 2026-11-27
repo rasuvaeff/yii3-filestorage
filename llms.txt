@@ -349,9 +349,16 @@ Rules:
    interface.
 4. `gc` collects shared blobs only when a `BlobLedgerInterface` is bound; without
    one it still sweeps orphans. It is the only thing here that deletes bytes
-   another request might want, and does so under an expiring lease.
+   another request might want, and does so under an expiring lease. The lease
+   guards the ledger row, not the unlink: a collector paused past it can delete
+   bytes a writer re-published meanwhile. `gc` skips the delete when less than
+   half of the lease is left — a narrower window, not a closed one (fixed in
+   0.9). Keep `leaseTtl` well above any worker pause.
 5. `gc --orphans` walks every configured store unless `--store=<name>` limits it,
-   and `--limit` is a budget for the whole pass, not per store.
+   and `--limit` is a budget for the whole pass, not per store. It has no
+   minimum object age and reads the referenced set once before the walk, so an
+   upload in flight can lose its bytes: **run `gc --orphans --apply` with
+   uploads stopped** (until 0.9).
 6. **`gc --orphans` refuses when a `FileScopeProviderInterface` is bound.** The
    referenced-set is tenant-filtered, the object listing is physical — the
    difference is other tenants' live files. Run the sweep with the provider
