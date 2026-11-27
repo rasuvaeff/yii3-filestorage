@@ -38,10 +38,6 @@ interface ObjectLayoutInterface
      */
     public function ownerOf(StoredObjectId $object): string;
 
-    /**
-     * @return non-empty-string
-     */
-    public function ownerOfFile(File $file): string;
 
     /**
      * Everything deleting the object at `$object` removes: the object and its

@@ -20,6 +20,7 @@ use Rasuvaeff\Yii3Filestorage\Id\Uuid7IdGenerator;
 use Rasuvaeff\Yii3Filestorage\Mime\ExtensionMap;
 use Rasuvaeff\Yii3Filestorage\Mime\FinfoMimeTypeDetector;
 use Rasuvaeff\Yii3Filestorage\Mime\MimeTypeDetectorInterface;
+use Rasuvaeff\Yii3Filestorage\Path\ContentAddressedKeyGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicyRegistry;
@@ -105,8 +106,12 @@ return [
         RepositoryInterface $repository,
         PolicyRegistry $policies,
         DeliveryPolicyRegistry $deliveryPolicies,
+        PathGeneratorInterface $paths,
         ?FileScopeProviderInterface $scopes = null,
         ?ScopedFileResolverInterface $scopedFiles = null,
+        ?ContentAddressedKeyGeneratorInterface $contentKeys = null,
+        ?StreamFactoryInterface $streams = null,
+        ?ReferenceCheckerInterface $references = null,
     ): CheckCommand => new CheckCommand(
         stores: $stores,
         repository: $repository,
@@ -126,6 +131,12 @@ return [
         ))),
         scopes: $scopes,
         scopedFiles: $scopedFiles,
+        // Probed against every store's layout: a generator whose keys the
+        // layout cannot delete one by one is an error (review 1.0 A1).
+        contentKeys: $contentKeys,
+        paths: $paths,
+        streams: $streams,
+        references: $references,
     ),
 
     // The operations commands need a repository that can be walked. That is a

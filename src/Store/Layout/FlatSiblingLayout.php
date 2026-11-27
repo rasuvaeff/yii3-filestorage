@@ -54,11 +54,6 @@ final readonly class FlatSiblingLayout implements ObjectLayoutInterface
         return $owner;
     }
 
-    #[Override]
-    public function ownerOfFile(File $file): string
-    {
-        return $this->ownerOf(new StoredObjectId($file->relativePath));
-    }
 
     #[Override]
     public function deletion(StoredObjectId $object): ObjectSet

@@ -716,6 +716,29 @@ final class GcSafetyTest
     /**
      * @param array<string, mixed> $arguments
      */
+    // ---- review 1.0 ---------------------------------------------------------
+
+    /**
+     * Review 1.0 A1 (probe `layout_mismatch.php`): flat keys under the default
+     * layout made collecting one blob quarantine — and purge — its whole
+     * fan-out bucket, a live neighbour included.
+     */
+    public function aFlatKeyUnderTheDirectoryLayoutIsKeptAndItsNeighbourSurvives(): void
+    {
+        $bucket = 'sha/ab/cd/';
+        $gone = $this->sharedRow('gone', 'docs', 'first', path: $bucket . 'abcd' . str_repeat('0', 60) . '.jpg');
+        $live = $this->sharedRow('live', 'docs', 'second', path: $bucket . 'abcd' . str_repeat('1', 60) . '.jpg');
+        $this->ledger->releaseFile('gone', $this->clock->now());
+        $this->clock->advance(new DateInterval('PT2H'));
+
+        $display = $this->flatten($this->run(['--apply' => true], ledger: $this->ledger)->getDisplay());
+
+        Assert::same($this->store->bytesAt($live->relativePath), 'second');
+        Assert::same($this->store->bytesAt($gone->relativePath), 'first');
+        Assert::false($this->store->isQuarantined($live->relativePath));
+        Assert::string($display)->contains('does not fit the directory layout');
+    }
+
     private function run(
         array $arguments,
         ?BlobLedgerInterface $ledger = null,

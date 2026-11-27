@@ -5,9 +5,15 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Filestorage\Command;
 
 use Override;
+use Psr\Http\Message\StreamFactoryInterface;
 use Rasuvaeff\Yii3Filestorage\Mime\ActiveMediaTypes;
+use Rasuvaeff\Yii3Filestorage\Path\ContentAddressedKeyGeneratorInterface;
+use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
+use Rasuvaeff\Yii3Filestorage\Path\Sha256KeyGenerator;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\PolicyRegistry;
+use Rasuvaeff\Yii3Filestorage\Reference\ReferenceAuthority;
+use Rasuvaeff\Yii3Filestorage\Reference\ReferenceCheckerInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\MaintenanceRepositoryInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\RepositoryInterface;
@@ -15,6 +21,7 @@ use Rasuvaeff\Yii3Filestorage\Repository\ScopedFileResolverInterface;
 use Rasuvaeff\Yii3Filestorage\Store\ContentAddressableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeAwareStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\FileSystem\PublicFileSystemStore;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\LayoutCompatibility;
 use Rasuvaeff\Yii3Filestorage\Store\MaintenanceStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\RangeReadableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
@@ -49,6 +56,14 @@ final class CheckCommand extends Command
      * @param list<non-empty-string> $knownGroups Groups worth reporting on;
      *        `PolicyRegistry` answers for any name, so the command cannot
      *        discover them on its own.
+     * @param ContentAddressedKeyGeneratorInterface|null $contentKeys The
+     *        generator deduplication writes shared keys with; null is
+     *        `Sha256KeyGenerator`, the `-db` default. Probed against the
+     *        layout of every content-addressable store.
+     * @param PathGeneratorInterface|null $paths Probed, with `$streams`,
+     *        against the layout of every store.
+     * @param ReferenceCheckerInterface|null $references Whether groups that
+     *        hand references to the application can be released at all.
      */
     public function __construct(
         private readonly StoreRegistry $stores,
@@ -58,6 +73,10 @@ final class CheckCommand extends Command
         private readonly array $knownGroups = [],
         private readonly ?FileScopeProviderInterface $scopes = null,
         private readonly ?ScopedFileResolverInterface $scopedFiles = null,
+        private readonly ?ContentAddressedKeyGeneratorInterface $contentKeys = null,
+        private readonly ?PathGeneratorInterface $paths = null,
+        private readonly ?StreamFactoryInterface $streams = null,
+        private readonly ?ReferenceCheckerInterface $references = null,
     ) {
         parent::__construct();
         // Formats that execute as the origin. A permanent public URL cannot be
@@ -81,7 +100,7 @@ final class CheckCommand extends Command
         $errors = [];
         $warnings = [];
 
-        /** @var list<array{name: string, class: string, capabilities: list<string>, default: bool}> $storeRows */
+        /** @var list<array{name: string, class: string, layout: string, capabilities: list<string>, default: bool}> $storeRows */
         $storeRows = [];
 
         /** @var list<array{group: string, accepts: list<string>, maxBytes: int, maxPixels: int, directPublicUrl: bool}> $groupRows */
@@ -94,14 +113,23 @@ final class CheckCommand extends Command
             $storeRows[] = [
                 'name' => $name,
                 'class' => $store::class,
+                'layout' => $store->layout()::class,
                 'capabilities' => $this->capabilities($store),
                 'default' => $name === $this->stores->defaultName(),
             ];
             $rows[] = [
                 $name . ($name === $this->stores->defaultName() ? ' (default)' : ''),
                 $store::class,
+                $this->shortName($store->layout()::class),
                 implode(', ', $this->capabilities($store)) ?: 'base only',
             ];
+
+            // An error: a key generator whose keys the layout cannot delete
+            // one by one loses other files' bytes on the first deletion
+            // (review 1.0 A1).
+            foreach ($this->layoutProblems($store) as $problem) {
+                $errors[] = "Store \"{$name}\": {$problem}";
+            }
 
             // A warning, not an error: uploads and reads work without a usable
             // quarantine, only filestorage:gc cannot delete from the store.
@@ -110,7 +138,7 @@ final class CheckCommand extends Command
                 $warnings[] = $quarantineProblem;
             }
         }
-        $io->table(['Name', 'Class', 'Capabilities'], $rows);
+        $io->table(['Name', 'Class', 'Layout', 'Capabilities'], $rows);
         $publicStore = $this->firstPublicStore();
 
         $io->section('Metadata repository');
@@ -183,6 +211,14 @@ final class CheckCommand extends Command
             if ($unsafe !== null) {
                 $errors[] = $unsafe;
             }
+
+            if (
+                $upload->referencesOwnedBy === ReferenceAuthority::Application
+                && !$this->references instanceof ReferenceCheckerInterface
+            ) {
+                $warnings[] = "Group \"{$group}\" hands references to the application, but no "
+                    . ReferenceCheckerInterface::class . ' is bound, so filestorage:gc never releases its files.';
+            }
         }
         $io->table(['Group', 'Accepts', 'Max size', 'Max pixels', 'Delivery'], $rows);
 
@@ -209,7 +245,7 @@ final class CheckCommand extends Command
      * @param array<int, string> $log
      * @param list<string> $errors
      * @param list<string> $warnings
-     * @param list<array{name: string, class: string, capabilities: list<string>, default: bool}> $storeRows
+     * @param list<array{name: string, class: string, layout: string, capabilities: list<string>, default: bool}> $storeRows
      * @param list<array{group: string, accepts: list<string>, maxBytes: int, maxPixels: int, directPublicUrl: bool}> $groupRows
      */
     private function maybeJson(
@@ -328,6 +364,32 @@ final class CheckCommand extends Command
             $allowedMimeTypes,
             $this->activeTypes->contains(...),
         ));
+    }
+
+    /**
+     * @return list<non-empty-string>
+     */
+    private function layoutProblems(StoreInterface $store): array
+    {
+        $problems = [];
+        if ($store instanceof ContentAddressableStoreInterface) {
+            $problems[] = LayoutCompatibility::contentKeysProblem(
+                $this->contentKeys ?? new Sha256KeyGenerator(),
+                $store->layout(),
+            );
+        }
+        if ($this->paths instanceof PathGeneratorInterface && $this->streams instanceof StreamFactoryInterface) {
+            $problems[] = LayoutCompatibility::pathsProblem($this->paths, $store->layout(), $this->streams);
+        }
+
+        return array_values(array_filter($problems, static fn(?string $problem): bool => $problem !== null));
+    }
+
+    private function shortName(string $class): string
+    {
+        $slash = strrpos($class, '\\');
+
+        return $slash === false ? $class : substr($class, $slash + 1);
     }
 
     /**

@@ -5,22 +5,30 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Filestorage\Tests\Command;
 
 use Nyholm\Psr7\Factory\Psr17Factory;
+use Override;
 use Rasuvaeff\Understudy\Understudy;
 use Rasuvaeff\Yii3Filestorage\Command\CheckCommand;
+use Rasuvaeff\Yii3Filestorage\Path\ContentAddressedKeyGeneratorInterface;
+use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
+use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicy;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\PolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\UploadPolicy;
+use Rasuvaeff\Yii3Filestorage\Reference\ReferenceAuthority;
+use Rasuvaeff\Yii3Filestorage\Reference\ReferenceCheckerInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\RepositoryInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\ScopedFileResolverInterface;
 use Rasuvaeff\Yii3Filestorage\Store\FileSystem\FileSystemStore;
 use Rasuvaeff\Yii3Filestorage\Store\FileSystem\PublicFileSystemStore;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\FlatSiblingLayout;
 use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
 use Rasuvaeff\Yii3Filestorage\Test\UrlCapableInMemoryStore;
+use Rasuvaeff\Yii3Filestorage\Upload;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
 use Testo\Assert;
@@ -84,7 +92,7 @@ final class CheckCommandTest
         Assert::string($display)->contains('Max pixels');
         // The whole header row: a dropped column header is what a consumer
         // diffing two reports first stumbles over.
-        Assert::string($this->flatten($display))->contains('Name Class Capabilities');
+        Assert::string($this->flatten($display))->contains('Name Class Layout Capabilities');
     }
 
     /**
@@ -116,6 +124,7 @@ final class CheckCommandTest
             [
                 'name' => 'memory',
                 'class' => InMemoryStore::class,
+                'layout' => \Rasuvaeff\Yii3Filestorage\Store\Layout\DirectoryLayout::class,
                 'capabilities' => ['maintenance'],
                 'default' => true,
             ],
@@ -633,6 +642,70 @@ final class CheckCommandTest
         Assert::false(str_contains($tester->getDisplay(), 'quarantine'));
     }
 
+    // ---- review 1.0 A1, C20 -------------------------------------------------
+
+    public function aPathGeneratorTheLayoutCannotDeleteIsAnError(): void
+    {
+        $paths = new class implements PathGeneratorInterface {
+            #[Override]
+            public function generate(string $groupName, Upload $upload, ?string $mediaType): string
+            {
+                return $groupName . '/' . bin2hex(random_bytes(8)) . '.jpg';
+            }
+        };
+
+        $tester = $this->run(paths: $paths);
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string($this->flatten($tester->getDisplay()))->contains('Store "memory": Path generator');
+    }
+
+    public function theShippedPathGeneratorFitsTheDefaultLayout(): void
+    {
+        Assert::same($this->run(paths: new RandomPathGenerator())->getStatusCode(), Command::SUCCESS);
+    }
+
+    public function everyStoreShowsItsLayout(): void
+    {
+        $tester = $this->run(store: new InMemoryStore('memory', $this->factory, layout: new FlatSiblingLayout()), json: true);
+
+        $decoded = json_decode($tester->getDisplay(), true, flags: \JSON_THROW_ON_ERROR);
+        Assert::true(\is_array($decoded));
+        Assert::same($decoded['stores'][0]['layout'] ?? null, FlatSiblingLayout::class);
+        Assert::string($this->run(store: new InMemoryStore('memory', $this->factory, layout: new FlatSiblingLayout()))->getDisplay())
+            ->contains('FlatSiblingLayout');
+    }
+
+    public function anApplicationOwnedGroupWithoutACheckerIsAWarning(): void
+    {
+        $policies = new PolicyRegistry(['avatars' => new UploadPolicy(
+            allowedMimeTypes: ['image/png'],
+            referencesOwnedBy: ReferenceAuthority::Application,
+        )]);
+
+        $tester = $this->run(policies: $policies, knownGroups: ['avatars']);
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        Assert::string($this->flatten($tester->getDisplay()))
+            ->contains('Group "avatars" hands references to the application, but no');
+    }
+
+    public function anApplicationOwnedGroupWithACheckerIsQuiet(): void
+    {
+        $policies = new PolicyRegistry(['avatars' => new UploadPolicy(
+            allowedMimeTypes: ['image/png'],
+            referencesOwnedBy: ReferenceAuthority::Application,
+        )]);
+
+        $tester = $this->run(
+            policies: $policies,
+            knownGroups: ['avatars'],
+            references: Understudy::for(ReferenceCheckerInterface::class),
+        );
+
+        Assert::false(str_contains($tester->getDisplay(), 'hands references'));
+    }
+
     private function run(
         ?StoreInterface $store = null,
         ?RepositoryInterface $repository = null,
@@ -641,6 +714,10 @@ final class CheckCommandTest
         array $knownGroups = [],
         ?FileScopeProviderInterface $scopes = null,
         ?ScopedFileResolverInterface $scopedFiles = null,
+        ?ContentAddressedKeyGeneratorInterface $contentKeys = null,
+        ?PathGeneratorInterface $paths = null,
+        ?ReferenceCheckerInterface $references = null,
+        bool $json = false,
     ): CommandTester {
         $command = new CheckCommand(
             stores: new StoreRegistry([$store ?? new InMemoryStore('memory', $this->factory)]),
@@ -650,10 +727,14 @@ final class CheckCommandTest
             knownGroups: $knownGroups,
             scopes: $scopes,
             scopedFiles: $scopedFiles,
+            contentKeys: $contentKeys,
+            paths: $paths,
+            streams: $paths === null ? null : $this->factory,
+            references: $references,
         );
 
         $tester = new CommandTester($command);
-        $tester->execute([]);
+        $tester->execute($json ? ['--format' => 'json'] : []);
 
         return $tester;
     }

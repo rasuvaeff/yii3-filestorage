@@ -422,7 +422,10 @@ final class GcCommand extends Command
 
         try {
             $entry = $store->quarantine($store->layout()->deletion(new StoredObjectId($file->relativePath)), $now);
-        } catch (StoreException $e) {
+        } catch (StoreException|\InvalidArgumentException $e) {
+            // InvalidArgumentException: the row's path does not fit the
+            // store's layout (review 1.0 C22) — a configuration mistake, and
+            // one row of it must not end the run.
             $io->warning(sprintf('Could not release "%s": %s', $file->id, $e->getMessage()));
 
             return;
@@ -533,9 +536,12 @@ final class GcCommand extends Command
 
             try {
                 $entry = $store->quarantine($store->layout()->deletion($lease->blob->object), $now);
-            } catch (StoreException $e) {
+            } catch (StoreException|\InvalidArgumentException $e) {
                 // Back to the queue with a delay rather than dropped: the store
                 // being briefly unavailable is not a reason to leak the object.
+                // A key the layout refuses (review 1.0 A1/C22: a flat key under
+                // DirectoryLayout) is kept the same way, never deleted with its
+                // fan-out neighbours.
                 $this->ledger->abandonDeletion($lease, $this->clock->now()->add($this->gracePeriod));
                 $io->warning(sprintf('Could not delete "%s": %s', $lease->blob->key(), $e->getMessage()));
 
