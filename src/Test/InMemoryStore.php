@@ -140,7 +140,7 @@ final class InMemoryStore implements MaintenanceStoreInterface
     public function delete(File $file): void
     {
         $set = $this->layout->deletion(new StoredObjectId($file->relativePath));
-        foreach (array_keys($this->objects) as $path) {
+        foreach (array_map(strval(...), array_keys($this->objects)) as $path) {
             if ($set->contains($path)) {
                 unset($this->objects[$path], $this->timestamps[$path]);
             }
@@ -178,8 +178,11 @@ final class InMemoryStore implements MaintenanceStoreInterface
     #[Override]
     public function objects(?string $afterPath = null, int $limit = 1000): iterable
     {
-        $paths = array_keys($this->objects);
-        sort($paths);
+        // strval: PHP turns a numeric string key such as "123" into an int
+        // (review 1.0 C21), and the order must be the strcmp() order of the
+        // cursor, not a numeric one.
+        $paths = $this->storedPaths();
+        sort($paths, SORT_STRING);
 
         $yielded = 0;
         foreach ($paths as $path) {
@@ -288,7 +291,18 @@ final class InMemoryStore implements MaintenanceStoreInterface
      */
     public function paths(): array
     {
-        return array_keys($this->objects);
+        return $this->storedPaths();
+    }
+
+    /**
+     * @return list<non-empty-string>
+     */
+    private function storedPaths(): array
+    {
+        return array_map(
+            static fn(int|string $path): string => (new StoredObjectId(strval($path)))->relativePath,
+            array_keys($this->objects),
+        );
     }
 
     /**

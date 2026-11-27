@@ -232,6 +232,54 @@ final class PublicFileSystemStoreTest
         return $this->file($result->relativePath);
     }
 
+    /**
+     * Review 1.0 B12: with the store root at `public/uploads`, a quarantine at
+     * `public/uploads-quarantine` passed every check and was served.
+     */
+    public function aQuarantineInsideTheWebRootIsRefused(): void
+    {
+        Expect::exception(InvalidArgumentException::class)->withMessageContaining('is inside the web root');
+
+        new PublicFileSystemStore(
+            new FileSystemStore(
+                'assets',
+                $this->root . '/public/uploads',
+                $this->factory,
+                quarantinePath: $this->root . '/public/uploads-quarantine',
+            ),
+            'https://cdn.example.com/uploads',
+            webRoot: $this->root . '/public',
+        );
+    }
+
+    public function aQuarantineOutsideTheWebRootIsAccepted(): void
+    {
+        $store = new PublicFileSystemStore(
+            new FileSystemStore(
+                'assets',
+                $this->root . '/public/uploads',
+                $this->factory,
+                quarantinePath: $this->root . '/var/quarantine',
+            ),
+            'https://cdn.example.com/uploads',
+            webRoot: $this->root . '/public/../public',
+        );
+
+        Assert::same($store->webRoot(), realpath($this->root . '/public'));
+        Assert::null($store->quarantineProblem());
+    }
+
+    public function aMissingWebRootIsRefused(): void
+    {
+        Expect::exception(InvalidArgumentException::class)->withMessageContaining('is not an existing directory');
+
+        new PublicFileSystemStore(
+            new FileSystemStore('assets', $this->root . '/public/uploads', $this->factory),
+            'https://cdn.example.com/uploads',
+            webRoot: $this->root . '/nowhere',
+        );
+    }
+
     private function file(string $relativePath): File
     {
         return File::create(

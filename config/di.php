@@ -171,8 +171,11 @@ return [
         clock: $clock,
         ledger: $ledger,
         scopes: $scopes,
+        leaseTtl: new DateInterval($params['rasuvaeff/yii3-filestorage']['gc']['leaseTtl']),
+        gracePeriod: new DateInterval($params['rasuvaeff/yii3-filestorage']['gc']['gracePeriod']),
         references: $references,
         policies: $policies,
+        retention: new DateInterval($params['rasuvaeff/yii3-filestorage']['gc']['retention']),
     ),
 
     VerifyCommand::class => static fn (

@@ -52,7 +52,9 @@ use Yiisoft\Files\FileHelper;
  * Garbage collection deletes through a quarantine directory: objects are
  * `rename()`d to `<quarantine>/<token>/<relative path>` and purged or restored
  * once the decision is committed. The quarantine must be outside the root —
- * so it is never listed, never served when the root is a web root — and on
+ * so it is never listed — and outside anything the web server serves, which
+ * this class cannot see: it checks the root only, and
+ * {@see PublicFileSystemStore} checks its `webRoot` when given one. And on
  * the same filesystem, or the move is a copy. Without one, garbage collection
  * cannot delete from this store, and `filestorage:check` says so.
  *
@@ -172,6 +174,16 @@ final readonly class FileSystemStore implements
     public function layout(): ObjectLayoutInterface
     {
         return $this->layout;
+    }
+
+    /**
+     * The resolved quarantine directory, or null when none is configured.
+     *
+     * @return non-empty-string|null
+     */
+    public function quarantinePath(): ?string
+    {
+        return $this->quarantinePath;
     }
 
     /**

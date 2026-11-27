@@ -135,6 +135,14 @@ final class CheckCommand extends Command
             // quarantine, only filestorage:gc cannot delete from the store.
             // A web root usually holds the application's own files too, and
             // the orphan sweep would take every one of them (review 1.0 B2).
+            if (
+                $store instanceof PublicFileSystemStore
+                && $store->webRoot() === null
+                && $store->quarantineProblem() === null
+            ) {
+                $warnings[] = "Store \"{$name}\": nothing checks that its quarantine is outside the web server's "
+                    . 'document root, only outside the store root. Pass webRoot to PublicFileSystemStore.';
+            }
             if ($store instanceof PublicFileSystemStore && $store->ownedPrefixes() === []) {
                 $warnings[] = "Store \"{$name}\" serves its root publicly and owns all of it: filestorage:gc "
                     . '--orphans quarantines, then purges, every file under it that has no row. If anything else '

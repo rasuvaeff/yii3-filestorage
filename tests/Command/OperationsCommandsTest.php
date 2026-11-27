@@ -1419,6 +1419,38 @@ final class OperationsCommandsTest
         Assert::false(str_contains($this->run(new StatCommand($this->repository), ['--limit' => '2'])->getDisplay(), 'Resume'));
     }
 
+    /**
+     * Review 1.0 C15: exactly --limit rows printed "Stopped at --limit" with a
+     * cursor that resumed into nothing.
+     */
+    public function statHasNoCursorWhenTheLimitIsExactlyTheRowCount(): void
+    {
+        $this->storeFile('a');
+        $this->storeFile('b');
+
+        $tester = $this->run(new StatCommand($this->repository), ['--limit' => '2', '--format' => 'json']);
+        $decoded = json_decode($tester->getDisplay(), associative: true, flags: \JSON_THROW_ON_ERROR);
+
+        Assert::same($decoded['total']['files'], 2);
+        Assert::null($decoded['nextCursor']);
+        Assert::false($decoded['windowed']);
+    }
+
+    public function statSaysWhenItsSharingFiguresCoverOnlyAWindow(): void
+    {
+        $this->storeFile('a');
+        $this->storeFile('b');
+        $this->storeFile('c');
+
+        $limited = $this->run(new StatCommand($this->repository), ['--limit' => '2']);
+        $resumed = $this->run(new StatCommand($this->repository), ['--after' => 'a', '--format' => 'json']);
+        $decoded = json_decode($resumed->getDisplay(), associative: true, flags: \JSON_THROW_ON_ERROR);
+
+        Assert::string($limited->getDisplay())->contains('for this --after/--limit window only');
+        Assert::true($decoded['windowed']);
+        Assert::false(str_contains($this->run(new StatCommand($this->repository))->getDisplay(), 'window only'));
+    }
+
     public function statPagesPastTheLimitOfOnePage(): void
     {
         for ($i = 0; $i < 3; ++$i) {

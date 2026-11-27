@@ -56,11 +56,21 @@ final readonly class PublicFileSystemStore implements
     /** @var non-empty-string Without a trailing slash. */
     private string $baseUrl;
 
+    /** @var non-empty-string|null Absolute, symlink-resolved. */
+    private ?string $webRoot;
+
     /**
      * @param non-empty-string $baseUrl Public prefix the root is served under,
      *        e.g. `https://cdn.example.com/uploads`.
+     * @param string|null $webRoot The directory the web server serves — for
+     *        a root of `public/uploads` usually `public`. Given, a quarantine
+     *        under it is refused: a deleted public file would stay
+     *        downloadable for the whole retention. The inner store only
+     *        knows its own root, so without this nothing checks it.
+     *
+     * @throws InvalidArgumentException
      */
-    public function __construct(private FileSystemStore $store, string $baseUrl)
+    public function __construct(private FileSystemStore $store, string $baseUrl, ?string $webRoot = null)
     {
         $trimmed = rtrim($baseUrl, '/');
         if ($trimmed === '') {
@@ -68,6 +78,15 @@ final readonly class PublicFileSystemStore implements
         }
 
         $this->baseUrl = $trimmed;
+        $this->webRoot = $webRoot === null ? null : $this->resolveWebRoot($webRoot);
+    }
+
+    /**
+     * @return non-empty-string|null
+     */
+    public function webRoot(): ?string
+    {
+        return $this->webRoot;
     }
 
     #[Override]
@@ -229,14 +248,38 @@ final readonly class PublicFileSystemStore implements
     }
 
     /**
-     * The inner store already refuses a quarantine under its root, which is
-     * this store's web root: a deleted public file must not stay downloadable
-     * for the whole retention.
+     * The inner store refuses a quarantine under its root; the constructor
+     * refuses one under `webRoot`. Where the web server's document root is
+     * wider than the store root and no `webRoot` was given, nothing here can
+     * tell — `filestorage:check` says so.
      */
     #[Override]
     public function quarantineProblem(): ?string
     {
         return $this->store->quarantineProblem();
+    }
+
+    /**
+     * @return non-empty-string
+     *
+     * @throws InvalidArgumentException
+     */
+    private function resolveWebRoot(string $webRoot): string
+    {
+        $resolved = realpath($webRoot);
+        if ($resolved === false || $resolved === '' || !is_dir($resolved)) {
+            throw new InvalidArgumentException("webRoot \"{$webRoot}\" is not an existing directory");
+        }
+
+        $quarantine = $this->store->quarantinePath();
+        if ($quarantine !== null && ($quarantine === $resolved || str_starts_with($quarantine, $resolved . \DIRECTORY_SEPARATOR))) {
+            throw new InvalidArgumentException(
+                "Store \"{$this->store->name()}\" quarantine \"{$quarantine}\" is inside the web root \"{$resolved}\": "
+                . 'a deleted public file would stay downloadable for the whole retention. Move it outside',
+            );
+        }
+
+        return $resolved;
     }
 
     /**

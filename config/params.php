@@ -27,6 +27,16 @@ return [
         'delivery' => [
             '*' => ['allowDirectPublicUrl' => false, 'forceDownload' => true],
         ],
+        // ISO 8601 durations for filestorage:gc, all strictly positive.
+        // leaseTtl: how long one collector holds a blob. gracePeriod: how long
+        // a released blob waits, and the default --min-age — keep it at least
+        // -db's deleteGracePeriod. retention: how long quarantined orphans and
+        // released files stay restorable, the default --retention.
+        'gc' => [
+            'leaseTtl' => 'PT5M',
+            'gracePeriod' => 'PT1H',
+            'retention' => 'P7D',
+        ],
     ],
     'yiisoft/yii-console' => [
         'commands' => [

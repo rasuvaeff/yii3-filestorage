@@ -282,6 +282,29 @@ final class InMemoryStoreTest
         new InMemoryStore('bad name', $this->factory);
     }
 
+    /**
+     * Review 1.0 C21: a numeric path at the root became an int array key and
+     * the inventory threw a TypeError.
+     */
+    public function aNumericRootPathIsListedInCursorOrder(): void
+    {
+        $this->store->corrupt('123', 'a');
+        $this->store->corrupt('45', 'b');
+        $this->store->corrupt('a.bin', 'c');
+
+        $paths = array_map(
+            static fn(StoredObject $object): string => $object->id->relativePath,
+            iterator_to_array($this->store->objects(), preserve_keys: false),
+        );
+
+        Assert::same($paths, ['123', '45', 'a.bin']);
+        Assert::same($this->store->paths(), ['123', '45', 'a.bin']);
+        Assert::same(array_map(
+            static fn(StoredObject $object): string => $object->id->relativePath,
+            iterator_to_array($this->store->objects('123'), preserve_keys: false),
+        ), ['45', 'a.bin']);
+    }
+
     public function theInventoryCarriesTimestampAndSize(): void
     {
         $file = $this->write('four');

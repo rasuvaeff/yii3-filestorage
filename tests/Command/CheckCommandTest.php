@@ -697,6 +697,27 @@ final class CheckCommandTest
         Assert::string($this->flatten($tester->getDisplay()))->contains('serves its root publicly and owns all of it');
     }
 
+    public function aPublicStoreWhoseQuarantineCannotBeCheckedAgainstTheWebRootIsAWarning(): void
+    {
+        $store = new PublicFileSystemStore(
+            new FileSystemStore('upload', $this->root . '/public/uploads', $this->factory, quarantinePath: $this->root . '/q'),
+            'https://cdn.example.test',
+        );
+
+        Assert::string($this->flatten($this->run(store: $store)->getDisplay()))->contains('Pass webRoot to PublicFileSystemStore');
+    }
+
+    public function aPublicStoreWithAWebRootIsNotWarnedAbout(): void
+    {
+        $store = new PublicFileSystemStore(
+            new FileSystemStore('upload', $this->root . '/public/uploads', $this->factory, quarantinePath: $this->root . '/q'),
+            'https://cdn.example.test',
+            webRoot: $this->root . '/public',
+        );
+
+        Assert::false(str_contains($this->flatten($this->run(store: $store)->getDisplay()), 'Pass webRoot'));
+    }
+
     public function aPublicStoreWithOwnedPrefixesIsQuiet(): void
     {
         $tester = $this->run(store: new PublicFileSystemStore(

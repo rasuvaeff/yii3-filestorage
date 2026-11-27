@@ -233,6 +233,7 @@ final class ConfigWiringTest
             'extensionOverrides',
             'policies',
             'delivery',
+            'gc',
         ] as $key) {
             Assert::true(\array_key_exists($key, $own), "params is missing \"{$key}\"");
         }
@@ -278,6 +279,42 @@ final class ConfigWiringTest
         $tester->execute([]);
 
         Assert::string($tester->getDisplay())->contains('No blob ledger is bound');
+    }
+
+    /**
+     * Review 1.0 C19: the gc intervals were reachable only by overriding the
+     * whole DI key. A zero retention from params reaching the constructor's
+     * positivity check proves the value is wired through.
+     */
+    #[\Testo\Data\DataProvider('gcIntervalProvider')]
+    public function theGcIntervalsComeFromParams(string $key): void
+    {
+        $params = $this->params();
+        $params['rasuvaeff/yii3-filestorage']['gc'][$key] = 'PT0S';
+        $container = $this->container([
+            MaintenanceRepositoryInterface::class => static fn(
+                RepositoryInterface $repository,
+            ): MaintenanceRepositoryInterface => $repository,
+        ], $params);
+
+        $messages = [];
+
+        try {
+            $container->get(GcCommand::class);
+        } catch (\Throwable $e) {
+            for ($current = $e; $current !== null; $current = $current->getPrevious()) {
+                $messages[] = $current->getMessage();
+            }
+        }
+
+        Assert::string(implode(' | ', $messages))->contains("{$key} must be a positive interval");
+    }
+
+    public static function gcIntervalProvider(): iterable
+    {
+        yield 'lease' => ['leaseTtl'];
+        yield 'grace period' => ['gracePeriod'];
+        yield 'retention' => ['retention'];
     }
 
     public function gcPicksUpALedgerWhenTheBackendBindsOne(): void
