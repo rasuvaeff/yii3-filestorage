@@ -31,6 +31,7 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
 use Testo\Assert;
 use Testo\Codecov\Covers;
+use Testo\Data\DataProvider;
 use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
 use Yiisoft\Test\Support\Clock\StaticClock;
@@ -1731,6 +1732,53 @@ final class OperationsCommandsTest
     /**
      * @param array<string, mixed> $arguments
      */
+    /**
+     * Input built in code reaches a flag as it was written: `ArrayInput` keeps
+     * `1` and `'1'` on an option that takes no value. Read strictly, they would
+     * turn `--apply` into a dry run and `--deep` into a check of presence only.
+     */
+    #[DataProvider('truthyFlagProvider')]
+    public function gcReadsATruthyApplyAndOrphansAsSet(int|string $flag): void
+    {
+        $orphan = $this->storeFile('gone');
+        $this->repository->clear();
+
+        $this->run(
+            new GcCommand($this->registry(), $this->repository, $this->clock()),
+            ['--orphans' => $flag, '--apply' => $flag],
+        );
+
+        Assert::null($this->store->bytesAt($orphan->relativePath));
+    }
+
+    #[DataProvider('truthyFlagProvider')]
+    public function verifyReadsATruthyDeepAsSet(int|string $flag): void
+    {
+        $file = $this->storeFile('a', hash: $this->hash());
+        $this->store->corrupt($file->relativePath, 'tampered');
+
+        $tester = $this->run(new VerifyCommand($this->registry(), $this->repository), ['--deep' => $flag]);
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string($tester->getDisplay())->contains('corrupt: a');
+    }
+
+    #[DataProvider('truthyFlagProvider')]
+    public function backfillReadsATruthyApplyAsSet(int|string $flag): void
+    {
+        $this->storeFile('a');
+
+        $this->run(new BackfillHashCommand($this->registry(), $this->repository), ['--apply' => $flag]);
+
+        Assert::same($this->repository->find('a')?->contentHash, $this->hash());
+    }
+
+    public static function truthyFlagProvider(): iterable
+    {
+        yield 'integer one' => [1];
+        yield 'string one' => ['1'];
+    }
+
     private function run(Command $command, array $arguments = []): CommandTester
     {
         $tester = new CommandTester($command);
