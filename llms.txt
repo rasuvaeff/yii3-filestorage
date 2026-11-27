@@ -341,10 +341,12 @@ Rules:
 
 1. `gc` and `backfill-hash` **report by default; `--apply` acts.** `verify` has
    no `--apply` — what to do about a missing object is not its decision.
-2. All four page by id, take `--after` / `--limit`, and print the last id they
-   reached. Resume with `--after=<that id>`.
-3. They need `MaintenanceRepositoryInterface` (from `-db`). Without it the
-   container simply has no maintenance commands, which beats a runtime error.
+2. `verify` and `backfill-hash` page by id, take `--after` / `--limit`, and
+   print the last id they reached. Resume with `--after=<that id>`. `import`
+   resumes through its manifest; `gc` takes `--limit` as a budget for the pass.
+3. They need `MaintenanceRepositoryInterface` (from `-db`). The commands are
+   always registered; without it running one is a container error naming that
+   interface.
 4. `gc` collects shared blobs only when a `BlobLedgerInterface` is bound; without
    one it still sweeps orphans. It is the only thing here that deletes bytes
    another request might want, and does so under an expiring lease.
