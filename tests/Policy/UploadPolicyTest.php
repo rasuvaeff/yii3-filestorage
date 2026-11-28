@@ -18,6 +18,7 @@ use Rasuvaeff\Yii3Filestorage\Policy\PolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\UploadPolicy;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\Jpeg;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\ShortReadingStream;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\Tiff;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Testo\Assert;
 use Testo\Assert\ExpectNoAssertions;
@@ -390,6 +391,42 @@ final class UploadPolicyTest
 
         Expect::exception(PolicyViolationException::class)->withMessageContaining('Image is 60000x60000');
         $policy->assertAcceptable($this->upload(Jpeg::of([Jpeg::padding(), Jpeg::sof(60_000, 60_000)])), 'image/jpeg');
+    }
+
+    /**
+     * Review 1.0 pass 2, N1: probe q1's Pillow-made GIF — a 1×1 logical
+     * screen around one 8000×8000 frame — passed the shipped wildcard policy
+     * as 1×1. 64 megapixels against the 40 M default.
+     */
+    public function theShippedWildcardPolicyRefusesAGifWhoseFrameOutgrowsItsScreen(): void
+    {
+        $policy = PolicyRegistry::fromArray(['*' => ['maxBytes' => 20_971_520]])->for('anything');
+        $bomb = (string) file_get_contents(__DIR__ . '/../Support/fixtures/screen1x1-64mp.gif');
+
+        Expect::exception(PolicyViolationException::class)->withMessageContaining(
+            'Image dimensions could not be established for image/gif',
+        );
+        $policy->assertAcceptable($this->upload($bomb), 'image/gif');
+    }
+
+    /**
+     * Review 1.0 pass 2, N3: an IFD after the image data, past the old
+     * 256 KiB window — probe q1's 60000×60000 TIFF was accepted unmeasured.
+     */
+    public function theShippedWildcardPolicyMeasuresATiffWhoseIfdSitsLate(): void
+    {
+        $policy = PolicyRegistry::fromArray(['*' => ['maxBytes' => 20_971_520]])->for('anything');
+
+        Expect::exception(PolicyViolationException::class)->withMessageContaining('Image is 60000x60000');
+        $policy->assertAcceptable($this->upload(Tiff::of([[60_000, 60_000]], padding: 300_000)), 'image/tiff');
+    }
+
+    public function anUnmeasurableTiffIsRefusedUnderAPixelLimit(): void
+    {
+        Expect::exception(PolicyViolationException::class)->withMessageContaining(
+            'Image dimensions could not be established for image/tiff',
+        );
+        (new UploadPolicy())->assertAcceptable($this->upload('MM' . pack('n', 43) . str_repeat("\0", 20)), 'image/tiff');
     }
 
     /**

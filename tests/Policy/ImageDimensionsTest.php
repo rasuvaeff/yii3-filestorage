@@ -7,8 +7,10 @@ namespace Rasuvaeff\Yii3Filestorage\Tests\Policy;
 use Nyholm\Psr7\Factory\Psr17Factory;
 use Rasuvaeff\Yii3Filestorage\Policy\ImageDimensions;
 use Rasuvaeff\Yii3Filestorage\Stream\StreamReader;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\Gif;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\Jpeg;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\ShortReadingStream;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\Tiff;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Data\DataProvider;
@@ -98,18 +100,56 @@ final class ImageDimensionsTest
         Assert::same($this->jpeg("\xFF\xD8\xFF\xFF\xFF" . substr(Jpeg::sof(8, 4), 1)), [8, 4]);
     }
 
-    public function aRunOfFillBytesPastTheCapIsUndetermined(): void
+    public function aLongRunOfFillBytesIsSkippedAsLibjpegSkipsIt(): void
     {
-        $fill = str_repeat("\xFF", ImageDimensions::MAX_FILL_BYTES + 1);
-
-        Assert::null($this->jpeg("\xFF\xD8" . $fill . substr(Jpeg::sof(8, 4), 1)));
-    }
-
-    public function fillBytesExactlyAtTheCapAreAccepted(): void
-    {
-        $fill = str_repeat("\xFF", ImageDimensions::MAX_FILL_BYTES);
+        $fill = str_repeat("\xFF", 5000);
 
         Assert::same($this->jpeg("\xFF\xD8" . $fill . substr(Jpeg::sof(8, 4), 1)), [8, 4]);
+    }
+
+    /**
+     * Review 1.0 pass 2, N2: libjpeg warns "Corrupt JPEG data: N extraneous
+     * bytes before marker" and carries on, and so do PHP's getimagesize() and
+     * Pillow. The walk refused such files as malformed. Pillow-made 64×48 with
+     * two zero bytes after APP0 — probe q1's `extraneous.jpg`.
+     */
+    public function extraneousBytesBetweenSegmentsAreSkippedLikeLibjpegSkipsThem(): void
+    {
+        $bytes = (string) file_get_contents(__DIR__ . '/../Support/fixtures/extraneous.jpg');
+
+        Assert::same($this->jpeg($bytes), [64, 48]);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function gapProvider(): iterable
+    {
+        yield 'zeros after SOI' => ["\xFF\xD8\x00\x00" . Jpeg::sof(8, 4)];
+        yield 'a stuffed zero is data, not a marker' => ["\xFF\xD8\xFF\x00" . Jpeg::sof(8, 4)];
+        yield 'a long gap after a segment' => ["\xFF\xD8" . Jpeg::app(0, 20) . str_repeat("\x11", 100_000) . Jpeg::sof(8, 4)];
+        yield 'a gap spanning the scan chunk with FF 00 inside' => [
+            "\xFF\xD8" . Jpeg::app(0, 20) . str_repeat("\x11", 8190) . "\xFF\x00\x22" . Jpeg::sof(8, 4),
+        ];
+    }
+
+    #[DataProvider('gapProvider')]
+    public function garbageBetweenSegmentsIsSkipped(string $bytes): void
+    {
+        Assert::same($this->jpeg($bytes), [8, 4]);
+    }
+
+    /**
+     * What keeps A1 closed with the lenient gap: a segment is still stepped
+     * over by its length, never scanned. A frame header inside a segment — the
+     * EXIF thumbnail, or a decoy inside a comment — stays invisible, exactly
+     * as it is to libjpeg.
+     */
+    public function aDecoyFrameInsideASegmentIsStillNotFoundByTheGapScan(): void
+    {
+        $decoy = Jpeg::segment(0xFE, "\x00" . Jpeg::sof(1, 1));
+
+        Assert::same($this->jpeg("\xFF\xD8" . $decoy . "\x00\x00" . Jpeg::sof(60_000, 60_000)), [60_000, 60_000]);
     }
 
     /**
@@ -130,8 +170,7 @@ final class ImageDimensionsTest
     {
         yield 'not a JPEG at all' => ['raster bytes nothing can parse'];
         yield 'SOI only' => ["\xFF\xD8"];
-        yield 'garbage where a marker belongs' => ["\xFF\xD8\x00\x00" . Jpeg::sof(8, 4)];
-        yield 'stuffed zero as a marker' => ["\xFF\xD8\xFF\x00" . Jpeg::sof(8, 4)];
+        yield 'garbage and no marker after it' => ["\xFF\xD8\x00\x00\x11\xFF\x00"];
         yield 'scan before any frame' => [Jpeg::of([Jpeg::segment(0xDA, "\x01\x01\x00\x00\x3F\x00"), Jpeg::sof(8, 4)])];
         yield 'EOI before any frame' => ["\xFF\xD8\xFF\xD9" . Jpeg::sof(8, 4)];
         yield 'a second SOI' => ["\xFF\xD8\xFF\xD8" . Jpeg::sof(8, 4)];
@@ -191,14 +230,194 @@ final class ImageDimensionsTest
         Assert::null(ImageDimensions::measure($this->factory->createStream('not a png'), 'image/png'));
     }
 
-    public function onlyTheFourCommonRasterFormatsAreParseable(): void
+    public function theWalkedFormatsAreParseable(): void
     {
-        foreach (['image/jpeg', 'image/png', 'image/gif', 'image/webp'] as $type) {
+        foreach (['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/tiff'] as $type) {
             Assert::true(ImageDimensions::isParseable($type), $type);
         }
-        foreach (['image/avif', 'image/heic', 'image/tiff', 'image/svg+xml', 'text/plain'] as $type) {
+        foreach (['image/avif', 'image/heic', 'image/bmp', 'image/svg+xml', 'text/plain'] as $type) {
             Assert::false(ImageDimensions::isParseable($type), $type);
         }
+    }
+
+    /**
+     * Review 1.0 pass 2, N1: getimagesize() reports a GIF's logical screen,
+     * and every frame carries its own size. A 1×1 screen around an
+     * 8000×8000 frame passed as 1×1 — Pillow decodes it at 8000×8000. The
+     * fixture is probe q1's `screen1x1-64mp.gif`, made by Pillow.
+     */
+    public function aGifFrameLargerThanItsScreenIsUndetermined(): void
+    {
+        $bytes = (string) file_get_contents(__DIR__ . '/../Support/fixtures/screen1x1-64mp.gif');
+        Assert::same(getimagesizefromstring($bytes)[0] ?? null, 1, 'the fixture really lies about its screen');
+
+        Assert::null($this->gif($bytes));
+    }
+
+    public function aGifIsMeasuredByItsScreenWhenEveryFrameFits(): void
+    {
+        $gif = Gif::of(300, 200, [
+            Gif::extension(0xF9),
+            Gif::frame(300, 200, subBlocks: [255, 255, 7]),
+            Gif::extension(0xFE, [3, 9]),
+            Gif::frame(100, 50, left: 200, top: 150, localColorTable: true),
+        ]);
+
+        Assert::same($this->gif($gif), [300, 200]);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function gifOutsideTheScreenProvider(): iterable
+    {
+        yield 'wider than the screen' => [Gif::of(10, 10, [Gif::frame(11, 10)])];
+        yield 'taller than the screen' => [Gif::of(10, 10, [Gif::frame(10, 11)])];
+        yield 'offset past the right edge' => [Gif::of(10, 10, [Gif::frame(5, 5, left: 6)])];
+        yield 'offset past the bottom edge' => [Gif::of(10, 10, [Gif::frame(5, 5, top: 6)])];
+        yield 'a later frame only' => [Gif::of(10, 10, [Gif::frame(10, 10), Gif::frame(8000, 8000)])];
+        yield 'behind a comment that hides it from a prefix' => [
+            Gif::of(1, 1, [Gif::extension(0xFE, array_fill(0, 2000, 255)), Gif::frame(8000, 8000)]),
+        ];
+    }
+
+    #[DataProvider('gifOutsideTheScreenProvider')]
+    public function aGifFrameOutsideTheScreenIsUndetermined(string $bytes): void
+    {
+        Assert::null($this->gif($bytes));
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function gifUndeterminedProvider(): iterable
+    {
+        yield 'not a GIF' => ['GIF00a' . str_repeat("\x00", 20)];
+        yield 'header cut short' => ['GIF89a' . "\x0A\x00"];
+        yield 'zero screen' => [Gif::of(0, 10, [Gif::frame(0, 10)])];
+        yield 'no frame at all' => [Gif::of(10, 10, [])];
+        yield 'unknown block' => [Gif::of(10, 10, ["\x99"])];
+        yield 'descriptor cut short' => [substr(Gif::of(10, 10, [Gif::frame(10, 10)]), 0, 19 + 6)];
+        yield 'zero-sized frame' => [Gif::of(10, 10, [Gif::frame(0, 10)])];
+    }
+
+    #[DataProvider('gifUndeterminedProvider')]
+    public function whatTheGifWalkCannotFollowIsUndetermined(string $bytes): void
+    {
+        Assert::null($this->gif($bytes));
+    }
+
+    /**
+     * Truncated frame data or a missing trailer is what decoders tolerate; the
+     * frames read so far all fit, so the screen is the answer.
+     */
+    public function aGifCutShortAfterAFrameIsMeasuredByWhatWasRead(): void
+    {
+        Assert::same($this->gif(Gif::of(10, 10, [Gif::frame(10, 10)], trailer: false)), [10, 10]);
+        Assert::same($this->gif(substr(Gif::of(10, 10, [Gif::frame(10, 10, subBlocks: [200])]), 0, -50)), [10, 10]);
+    }
+
+    public function moreGifFramesThanTheCapAreUndetermined(): void
+    {
+        $frames = array_fill(0, ImageDimensions::MAX_GIF_FRAMES + 1, Gif::frame(2, 2, subBlocks: [1]));
+
+        Assert::null($this->gif(Gif::of(2, 2, $frames)));
+        Assert::same($this->gif(Gif::of(2, 2, \array_slice($frames, 1))), [2, 2]);
+    }
+
+    /**
+     * One-byte sub-blocks are the costliest shape to walk; the cap bounds the
+     * walk, not the file.
+     */
+    public function moreGifSubBlocksThanTheCapAreUndetermined(): void
+    {
+        $atCap = Gif::frame(2, 2, subBlocks: array_fill(0, ImageDimensions::MAX_GIF_SUB_BLOCKS, 1));
+        $pastCap = Gif::frame(2, 2, subBlocks: array_fill(0, ImageDimensions::MAX_GIF_SUB_BLOCKS + 1, 1));
+
+        Assert::same($this->gif(Gif::of(2, 2, [$atCap])), [2, 2]);
+        Assert::null($this->gif(Gif::of(2, 2, [$pastCap])));
+    }
+
+    public function theGifWalkWorksThroughShortReads(): void
+    {
+        $gif = Gif::of(40, 30, [Gif::extension(0xFF, [11, 3]), Gif::frame(40, 30, subBlocks: [255, 255, 255])]);
+        $stream = new ShortReadingStream($this->factory->createStream($gif), 7);
+
+        Assert::same(ImageDimensions::measure($stream, 'image/gif'), [40, 30]);
+    }
+
+    /**
+     * Review 1.0 pass 2, N3: a TIFF writer may put the IFD after the image
+     * data, and the 256 KiB window then saw nothing — so a 60000×60000 TIFF
+     * passed unmeasured.
+     */
+    public function aTiffIfdPastTheOldWindowIsMeasured(): void
+    {
+        Assert::same($this->tiff(Tiff::of([[60_000, 60_000]], padding: 300_000)), [60_000, 60_000]);
+    }
+
+    /**
+     * @return iterable<string, array{string, array{int, int}}>
+     */
+    public static function tiffProvider(): iterable
+    {
+        yield 'big-endian LONG' => [Tiff::of([[640, 480]]), [640, 480]];
+        yield 'little-endian LONG' => [Tiff::of([[640, 480]], bigEndian: false), [640, 480]];
+        yield 'big-endian SHORT' => [Tiff::of([[640, 480]], type: 3), [640, 480]];
+        yield 'little-endian SHORT' => [Tiff::of([[640, 480]], bigEndian: false, type: 3), [640, 480]];
+        yield 'the largest page of several' => [Tiff::of([[10, 10], [5000, 4000], [20, 20]]), [5000, 4000]];
+    }
+
+    /**
+     * @param array{int, int} $expected
+     */
+    #[DataProvider('tiffProvider')]
+    public function aTiffIsMeasuredFromItsIfdChain(string $bytes, array $expected): void
+    {
+        Assert::same($this->tiff($bytes), $expected);
+    }
+
+    public function aRealTiffIsMeasured(): void
+    {
+        $bytes = (string) file_get_contents(__DIR__ . '/../Support/fixtures/real.tif');
+        $expected = getimagesizefromstring($bytes);
+        Assert::true($expected !== false);
+
+        Assert::same($this->tiff($bytes), [$expected[0], $expected[1]]);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function tiffUndeterminedProvider(): iterable
+    {
+        yield 'not a TIFF' => ['XX' . str_repeat("\x00", 20)];
+        yield 'BigTIFF' => ['MM' . pack('n', 43) . str_repeat("\x00", 20)];
+        yield 'IFD offset past the end' => ['MM' . pack('nN', 42, 1_000_000)];
+        yield 'IFD offset inside the header' => ['MM' . pack('nN', 42, 4)];
+        yield 'no width tag' => ['MM' . pack('nN', 42, 8) . pack('n', 1) . pack('nnNN', 257, 4, 1, 10) . pack('N', 0)];
+        yield 'a width of another type' => [
+            'MM' . pack('nN', 42, 8) . pack('n', 2) . pack('nnNN', 256, 5, 1, 10) . pack('nnNN', 257, 4, 1, 10) . pack('N', 0),
+        ];
+        yield 'zero width' => [Tiff::of([[0, 10]])];
+        yield 'entries cut short' => [substr(Tiff::of([[640, 480]]), 0, 20)];
+        yield 'an IFD chain that loops' => [
+            'MM' . pack('nN', 42, 8) . pack('n', 2) . pack('nnNN', 256, 4, 1, 10) . pack('nnNN', 257, 4, 1, 10) . pack('N', 8),
+        ];
+    }
+
+    #[DataProvider('tiffUndeterminedProvider')]
+    public function whatTheTiffWalkCannotFollowIsUndetermined(string $bytes): void
+    {
+        Assert::null($this->tiff($bytes));
+    }
+
+    public function moreTiffPagesThanTheCapAreUndetermined(): void
+    {
+        $pages = array_fill(0, ImageDimensions::MAX_TIFF_IFDS + 1, [2, 2]);
+
+        Assert::null($this->tiff(Tiff::of($pages)));
+        Assert::same($this->tiff(Tiff::of(\array_slice($pages, 1))), [2, 2]);
     }
 
     public function readUpToReadsAcrossShortReadsAndStopsAtEof(): void
@@ -216,5 +435,21 @@ final class ImageDimensionsTest
     private function jpeg(string $bytes): ?array
     {
         return ImageDimensions::measure($this->factory->createStream($bytes), 'image/jpeg');
+    }
+
+    /**
+     * @return array{int, int}|null
+     */
+    private function gif(string $bytes): ?array
+    {
+        return ImageDimensions::measure($this->factory->createStream($bytes), 'image/gif');
+    }
+
+    /**
+     * @return array{int, int}|null
+     */
+    private function tiff(string $bytes): ?array
+    {
+        return ImageDimensions::measure($this->factory->createStream($bytes), 'image/tiff');
     }
 }
