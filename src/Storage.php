@@ -88,6 +88,34 @@ final readonly class Storage implements StorageInterface
         $this->defaultGroup = $defaultGroup;
     }
 
+    /**
+     * The same facade minting proxy URLs through another generator. The
+     * shared one reads the tenant from the current request; a URL minted
+     * outside it — a queue job, a mail — needs one pinned to the tenant the
+     * file belongs to, e.g. `-web`'s `HmacProxyUrlGenerator::forScope()`
+     * (review 1.0 pass 2, flysystem-web-images N10). Null leaves the facade
+     * with no proxy route. Everything else — stores, repository, policies —
+     * is shared with this instance.
+     */
+    public function withProxyUrls(?ProxyUrlGeneratorInterface $proxyUrls): self
+    {
+        return new self(
+            stores: $this->stores,
+            repository: $this->repository,
+            pathGenerator: $this->pathGenerator,
+            mimeTypeDetector: $this->mimeTypeDetector,
+            idGenerator: $this->idGenerator,
+            policies: $this->policies,
+            deliveryPolicies: $this->deliveryPolicies,
+            clock: $this->clock,
+            defaultUrlTtl: $this->defaultUrlTtl,
+            defaultGroup: $this->defaultGroup,
+            maxInlineBytes: $this->maxInlineBytes,
+            integrityHashMaxBytes: $this->integrityHashMaxBytes,
+            proxyUrls: $proxyUrls,
+        );
+    }
+
     #[Override]
     public function add(
         Upload $upload,

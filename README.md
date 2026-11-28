@@ -289,6 +289,19 @@ back when the store cannot honour them. What neither consults is
 Application code and templates should not branch on whether the store happens
 to be public — that is what `urlFor()` is for.
 
+The proxy generator reads the tenant from the current request. A URL minted
+outside one — a queue job, a mail — takes a generator pinned to the file's
+tenant through `Storage::withProxyUrls()`, which returns a copy of the facade
+and leaves the shared one alone:
+
+```php
+$url = $storage->withProxyUrls($proxyUrls->forScope($tenantId))->urlFor($file);
+```
+
+It is a method of the concrete `Storage` (not of `StorageInterface`, so
+decorators keep compiling); where `StorageInterface` is bound to a decorator,
+resolve `Storage::class` for this — URLs do not depend on the decorator.
+
 ### Groups and policies
 
 A group is a use case, not a folder. Give it accept rules once, in `params`,
@@ -864,7 +877,9 @@ unbound, where the repository sees every row. With `-db` 0.4 a provider that is
 bound but answers `null` — a console process with no tenant — no longer means
 "every tenant": `DbRepository` throws `MissingScopeException`, so `gc`, `stat`,
 `verify` and `backfill-hash` fail there unless the entry point leaves the
-provider unbound or opts in with `-db`'s `allowGlobalAccess` (see `-db`'s
+provider unbound or opts in with `-db`'s `globalMaintenanceAccess` parameter — it
+applies only to the `MaintenanceRepositoryInterface` and `BlobLedgerInterface`
+bindings (see `-db`'s
 `UPGRADE.md`). Blob collection is unaffected:
 the ledger is keyed by physical identity, not by tenant, so plain `gc --apply`
 works in either kind of installation.

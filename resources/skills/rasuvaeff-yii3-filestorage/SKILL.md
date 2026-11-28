@@ -53,6 +53,9 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
    `allowDirectPublicUrl`. `urlFor()` applies it: a permanent public URL
    only where the group allows one, otherwise presigned, otherwise the signed
    proxy route. Direct public URLs bypass every response header `-web` enforces.
+   Outside the tenant's request (a job, a mail) mint with a pinned generator:
+   `$storage->withProxyUrls($proxyUrls->forScope($tenantId))->urlFor($file)` —
+   a method of the concrete `Storage`, never a scope field on `File`.
 
 5. **Direct public delivery plus active content is a stored-XSS hole.** HTML,
    SVG, XML, XSLT, JavaScript and feeds served from your own origin execute as
@@ -169,8 +172,8 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
   the quarantine for `--retention` (default `P7D`). The cursor is per store —
   cron one sweep per `--store`. Intervals come from params `gc.*` and must be
   positive. With `-db` 0.4, a bound scope provider answering null makes the
-  maintenance commands throw `MissingScopeException` (unbind it, or `-db`'s
-  `allowGlobalAccess`).
+  maintenance commands throw `MissingScopeException` (unbind it, or set `-db`'s
+  `globalMaintenanceAccess` param).
 - `FileSystemStore`/`PublicFileSystemStore` are content-addressable
   (`putIfAbsent()` via `link()`), so `-db` deduplication runs on a local disk.
 - Groups with `referencesOwnedBy: application` need a bound

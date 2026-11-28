@@ -66,6 +66,9 @@ public function remove(string $id): bool;
 public function exists(File $file): bool;
 public function url(File $file): ?string;                                        // raw permanent
 public function temporaryUrl(File $file, DateTimeImmutable $expiresAt): ?string; // presigned, DeliveryOptions applied
+// concrete Storage only (not the interface): a copy minting proxy URLs through another generator —
+// for links built outside the tenant's request: $storage->withProxyUrls($urls->forScope($tenantId))->urlFor($file)
+public function withProxyUrls(?ProxyUrlGeneratorInterface $proxyUrls): Storage;
 public function urlFor(File $file, ?DateTimeImmutable $expiresAt = null): ?string; // policy-aware; use this
 public function stream(File $file): ?StreamInterface;
 public function content(File $file): ?string;                                    // capped
@@ -474,7 +477,7 @@ Rules:
    moved. Committed blob deletions are purged at once. Intervals come from params
    `gc.leaseTtl`/`gracePeriod`/`retention` and must be positive. Under `-db` 0.4,
    a bound scope provider returning null makes the maintenance commands throw
-   `MissingScopeException` — unbind it or opt in with `-db`'s `allowGlobalAccess`.
+   `MissingScopeException` — unbind it or opt in with `-db`'s `globalMaintenanceAccess` param (it applies to the maintenance repository and ledger bindings only).
 5. `gc --orphans` walks every configured store unless `--store=<name>` limits it,
    and `--limit` is a budget for the whole pass, not per store. References are
    looked up per page *after* listing it

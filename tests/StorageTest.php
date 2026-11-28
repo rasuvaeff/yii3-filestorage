@@ -628,6 +628,32 @@ final class StorageTest
         Assert::same($storage->urlFor($file), "https://cdn.example.com/temp/{$file->relativePath}");
     }
 
+    /**
+     * Review 1.0 pass 2 (flysystem-web-images N10): a URL minted outside the
+     * tenant's request — a queue job, a mail — needs a proxy generator pinned
+     * to the file's tenant, and the facade had no way to take one.
+     */
+    public function withProxyUrlsMintsThroughAnotherGeneratorAndLeavesTheOriginalAlone(): void
+    {
+        $shared = Understudy::for(ProxyUrlGeneratorInterface::class);
+        when(static fn(): string => $shared->url(Arg::any(), Arg::any()))->answers(
+            static fn(Invocation $call): string => "https://app.example.com/shared/{$call->args[0]->id}",
+        );
+        $pinned = Understudy::for(ProxyUrlGeneratorInterface::class);
+        when(static fn(): string => $pinned->url(Arg::any(), Arg::any()))->answers(
+            static fn(Invocation $call): string => "https://app.example.com/tenant-a/{$call->args[0]->id}",
+        );
+
+        $storage = $this->storage(proxyUrls: $shared);
+        $file = $storage->add($this->upload('x'));
+        $forTenant = $storage->withProxyUrls($pinned);
+
+        Assert::same($forTenant->urlFor($file), "https://app.example.com/tenant-a/{$file->id}");
+        Assert::same($storage->urlFor($file), "https://app.example.com/shared/{$file->id}");
+        Assert::null($storage->withProxyUrls(null)->urlFor($file));
+        Assert::same($forTenant->find($file->id)?->id, $file->id, 'everything else is the same facade');
+    }
+
     public function urlForFallsBackToTheProxyGenerator(): void
     {
         $proxy = Understudy::for(ProxyUrlGeneratorInterface::class);
