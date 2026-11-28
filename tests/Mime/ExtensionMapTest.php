@@ -165,4 +165,52 @@ final class ExtensionMapTest
         yield 'over ten characters' => ['abcdefghijk'];
         yield 'NUL byte' => ["png\0"];
     }
+
+    /**
+     * Review 1.0 pass 2, N7: lookups are by the lower-cased type, so a key
+     * written `Image/SVG+xml` never matched and the override silently did
+     * nothing.
+     */
+    public function overrideKeysAreCaseInsensitive(): void
+    {
+        $map = new ExtensionMap(['Image/SVG+xml' => 'svg', 'APPLICATION/X-Custom' => 'cst']);
+
+        Assert::same($map->extensionFor('image/svg+xml'), 'svg');
+        Assert::same($map->extensionFor('Application/x-custom'), 'cst');
+    }
+
+    public function twoOverrideKeysThatDifferOnlyInCaseAreAConflict(): void
+    {
+        Expect::exception(InvalidArgumentException::class)->withMessageContaining(
+            'Media type "image/svg+xml" is overridden twice',
+        );
+
+        new ExtensionMap(['image/svg+xml' => 'svg', 'Image/SVG+XML' => 'bin']);
+    }
+
+    /**
+     * Review 1.0 pass 2, N8: every `+xml` type is XML to a browser, and
+     * XHTML-namespaced script inside it runs.
+     */
+    #[DataProvider('xmlSuffixProvider')]
+    public function anyXmlSuffixTypeIsStoredInert(string $mediaType): void
+    {
+        Assert::same((new ExtensionMap())->extensionFor($mediaType), 'bin');
+    }
+
+    /**
+     * @return iterable<string, array{non-empty-string}>
+     */
+    public static function xmlSuffixProvider(): iterable
+    {
+        yield 'RDF' => ['application/rdf+xml'];
+        yield 'XUL' => ['application/vnd.mozilla.xul+xml'];
+        yield 'XDP' => ['application/vnd.adobe.xdp+xml'];
+        yield 'KML' => ['application/vnd.google-earth.kml+xml'];
+    }
+
+    public function anOverrideStillOpensAnXmlSuffixType(): void
+    {
+        Assert::same((new ExtensionMap(['application/rdf+xml' => 'rdf']))->extensionFor('application/rdf+xml'), 'rdf');
+    }
 }

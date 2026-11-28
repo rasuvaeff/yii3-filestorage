@@ -110,4 +110,26 @@ final class ActiveMediaTypesTest
     {
         Assert::same((new ActiveMediaTypes(['Text/HTML', 'image/SVG+xml']))->types(), ['text/html', 'image/svg+xml']);
     }
+
+    /**
+     * Review 1.0 pass 2, N8: by the WHATWG MIME sniffing standard every type
+     * with the `+xml` suffix is an XML MIME type, rendered as XML with its
+     * XHTML-namespaced scripts. The rule holds for any list, the explicit one
+     * included: it is a property of the type, not a list entry.
+     */
+    public function anyXmlSuffixTypeIsScriptable(): void
+    {
+        foreach (['application/rdf+xml', 'application/vnd.mozilla.xul+xml', 'Application/Vnd.Adobe.XDP+XML; charset=utf-8'] as $type) {
+            Assert::true((new ActiveMediaTypes())->contains($type), $type);
+            Assert::true(ActiveMediaTypes::scriptable()->contains($type), $type);
+            Assert::true((new ActiveMediaTypes([]))->contains($type), $type);
+        }
+    }
+
+    public function otherSuffixesAndLookalikesAreNotActive(): void
+    {
+        foreach (['application/ld+json', 'application/epub+zip', 'application/xml-dtd', 'text/xmlish', 'application/+xml'] as $type) {
+            Assert::false((new ActiveMediaTypes())->contains($type), $type);
+        }
+    }
 }

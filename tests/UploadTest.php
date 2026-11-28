@@ -431,6 +431,64 @@ final class UploadTest
         yield 'invalid UTF-8 is replaced, not dropped' => ["caf\xE9.txt", "caf\u{FFFD}.txt"];
         yield 'multi-byte text survives' => ['отчёт.pdf', 'отчёт.pdf'];
         yield 'emoji with a joiner survive' => ["\u{1F469}\u{200D}\u{1F4BB}.png", "\u{1F469}\u{200D}\u{1F4BB}.png"];
+        // Review 1.0 pass 2, N9: invisible format characters and line or
+        // paragraph separators stayed, so two names that look the same
+        // differed, and a name broke a log line.
+        yield 'zero-width space, BOM, word joiner' => ["a\u{200B}b\u{FEFF}c\u{2060}.txt", 'abc.txt'];
+        yield 'soft hyphen and other format characters' => ["re\u{00AD}port\u{180E}\u{206F}.txt", 'report.txt'];
+        yield 'line and paragraph separators' => ["a\u{2028}b\u{2029}c.txt", 'abc.txt'];
+        yield 'a non-joiner stays, Persian and Indic need it' => ["\u{0645}\u{06CC}\u{200C}\u{062E}\u{0648}\u{0627}\u{0647}\u{0645}.txt", "\u{0645}\u{06CC}\u{200C}\u{062E}\u{0648}\u{0627}\u{0647}\u{0645}.txt"];
+    }
+
+    /**
+     * Review 1.0 pass 2, N6: the per-character work ran over the whole input
+     * before the cut — an 8 MiB name took 278 MB and over a second, and
+     * `fromStream()` takes names from JSON bodies and form fields. The input
+     * is cut to a bounded window first.
+     */
+    public function aHugeNameCostsNoMoreThanASmallOne(): void
+    {
+        $given = str_repeat('я', 4 * 1_048_576) . '.pdf';
+        memory_reset_peak_usage();
+        $before = memory_get_usage();
+
+        $name = Upload::fromStream($this->factory->createStream('x'), $given, $this->factory)->originalName;
+
+        Assert::true(memory_get_peak_usage() - $before < 2 * 1_048_576, 'peak stays near the input already held');
+        Assert::same($name, str_repeat('я', File::MAX_ORIGINAL_NAME_LENGTH - 4) . '.pdf');
+    }
+
+    /**
+     * The cut lands on a character boundary and keeps the extension, even
+     * when the window ends inside a multi-byte character.
+     */
+    public function theInputWindowCutsOnACharacterBoundary(): void
+    {
+        foreach (['', 'a', 'ab', 'abc'] as $shift) {
+            $name = Upload::fromStream(
+                $this->factory->createStream('x'),
+                $shift . str_repeat('€', 20_000) . '.docx',
+                $this->factory,
+            )->originalName;
+
+            Assert::false(str_contains($name, "\u{FFFD}"), $shift);
+            Assert::true(str_ends_with($name, '.docx'), $shift);
+        }
+    }
+
+    /**
+     * Padding past the window costs the padder their own base name — never
+     * memory — and the extension still survives.
+     */
+    public function aNameBehindPaddingLosesItsBaseButKeepsItsExtension(): void
+    {
+        $name = Upload::fromStream(
+            $this->factory->createStream('x'),
+            str_repeat("\u{200B}", 100_000) . 'photo.jpg',
+            $this->factory,
+        )->originalName;
+
+        Assert::same($name, '.jpg');
     }
 
     /**

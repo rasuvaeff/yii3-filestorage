@@ -89,7 +89,21 @@ final readonly class ActiveMediaTypes
      */
     public function contains(string $mediaType): bool
     {
-        return \in_array($this->normalise($mediaType), $this->types, strict: true);
+        $normalised = $this->normalise($mediaType);
+
+        return \in_array($normalised, $this->types, strict: true) || $this->isXml($normalised);
+    }
+
+    /**
+     * Any `+xml` structured-syntax suffix: by the WHATWG MIME sniffing
+     * standard every such type is an XML MIME type, which a browser renders
+     * as XML — and XHTML-namespaced `<script>` in it runs (review 1.0 pass 2,
+     * N8). A property of the type rather than an entry, so it holds for an
+     * explicit list too.
+     */
+    private function isXml(string $mediaType): bool
+    {
+        return preg_match('~^[a-z0-9][a-z0-9!#$&^_.-]*/[a-z0-9][a-z0-9!#$&^_.+-]*\+xml\z~', $mediaType) === 1;
     }
 
     /**

@@ -30,8 +30,8 @@ use Symfony\Component\Mime\MimeTypesInterface;
  * objects by path whatever the delivery policy says, so on such a store the
  * extension *is* the response type: `original.html` or `original.svg` is
  * stored XSS on a computable path, and `original.pl` a CGI script on a
- * misconfigured server. Every {@see ActiveMediaTypes::SCRIPTABLE} type maps to
- * `bin`, and so does every type a table — whichever table — lists with an
+ * misconfigured server. Every scriptable type ({@see ActiveMediaTypes::scriptable()},
+ * which includes any `+xml` type) maps to `bin`, and so does every type a table — whichever table — lists with an
  * extension from {@see self::INERT_EXTENSIONS}. Only new files are affected: an existing object keeps
  * the path stored in `File::$relativePath`. An override is the explicit way
  * back (`'image/svg+xml' => 'svg'` for SVG an application really serves
@@ -69,15 +69,25 @@ final readonly class ExtensionMap
      */
     public function __construct(array $overrides = [], ?MimeTypesInterface $mimeTypes = null)
     {
+        $normalised = [];
         foreach ($overrides as $mediaType => $extension) {
             if (preg_match(self::EXTENSION_PATTERN, $extension) !== 1) {
                 throw new InvalidArgumentException(
                     "Invalid extension \"{$extension}\" for media type \"{$mediaType}\"",
                 );
             }
+
+            // Looked up by the lower-cased type, so a key in any other case
+            // would never match — silently (review 1.0 pass 2, N7).
+            $key = strtolower($mediaType);
+            if (isset($normalised[$key])) {
+                throw new InvalidArgumentException("Media type \"{$key}\" is overridden twice, in different case");
+            }
+
+            $normalised[$key] = $extension;
         }
 
-        $this->overrides = $overrides;
+        $this->overrides = $normalised;
         $this->mimeTypes = $mimeTypes ?? MimeTypes::getDefault();
     }
 
@@ -97,7 +107,7 @@ final readonly class ExtensionMap
             return $this->overrides[$normalised];
         }
 
-        if (\in_array($normalised, ActiveMediaTypes::SCRIPTABLE, strict: true)) {
+        if (ActiveMediaTypes::scriptable()->contains($normalised)) {
             return self::FALLBACK_EXTENSION;
         }
 

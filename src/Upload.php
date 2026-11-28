@@ -32,8 +32,22 @@ final readonly class Upload
     private const string DATA_URL_TYPE_PATTERN = '~^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*\z~';
     private const string DATA_URL_PARAMETER_PATTERN = '~^[A-Za-z0-9!#$&^_.+-]+=[^;,]*\z~';
 
-    /** Cc (C0, DEL, C1) and the bidi controls: embeddings, overrides, isolates, marks. */
-    private const string UNSAFE_NAME_CHARACTERS = '/[\p{Cc}\x{200E}\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{061C}]/u';
+    /**
+     * Cc (C0, DEL, C1), the line and paragraph separators, and every format
+     * character (Cf): the bidi controls — embeddings, overrides, isolates,
+     * marks — and the invisible ones, U+200B, U+FEFF, U+2060, the soft hyphen
+     * (review 1.0 pass 2, N9). Except the zero-width non-joiner and joiner:
+     * Persian and Indic text, and emoji sequences, are spelt with them.
+     */
+    private const string UNSAFE_NAME_CHARACTERS = '/[\p{Cc}\p{Zl}\p{Zp}]|(?![\x{200C}\x{200D}])\p{Cf}/u';
+
+    /**
+     * Bytes of a client name examined at all. Comfortably more than
+     * {@see File::MAX_ORIGINAL_NAME_LENGTH} characters of four bytes each;
+     * the per-character work below costs a multiple of its input, and a name
+     * from a JSON body has no size limit of its own (review 1.0 pass 2, N6).
+     */
+    private const int MAX_NAME_INPUT_BYTES = 4096;
 
     /** One well-formed UTF-8 sequence, or (group 1) a byte that starts none. */
     private const string UTF8_SEQUENCE = '/[\x00-\x7F]|[\xC2-\xDF][\x80-\xBF]|\xE0[\xA0-\xBF][\x80-\xBF]'
@@ -256,6 +270,11 @@ final readonly class Upload
      */
     private static function normaliseName(string $name): string
     {
+        if (\strlen($name) > self::MAX_NAME_INPUT_BYTES) {
+            $extension = preg_match(self::NAME_EXTENSION_PATTERN, $name, $found) === 1 ? $found[0] : '';
+            $name = self::cutOnCharacter(substr($name, 0, self::MAX_NAME_INPUT_BYTES - \strlen($extension))) . $extension;
+        }
+
         $valid = (string) preg_replace_callback(
             self::UTF8_SEQUENCE,
             static fn(array $match): string => isset($match[1]) ? "\u{FFFD}" : $match[0],
@@ -274,6 +293,32 @@ final readonly class Upload
         }
 
         return $clean === '' ? 'file' : $clean;
+    }
+
+    /**
+     * Drops a UTF-8 sequence the cut left incomplete at the end, so it is not
+     * reported as an invalid byte.
+     */
+    private static function cutOnCharacter(string $bytes): string
+    {
+        $end = \strlen($bytes);
+        $lead = $end - 1;
+        while ($lead >= 0 && $end - $lead < 4 && (\ord($bytes[$lead]) & 0xC0) === 0x80) {
+            --$lead;
+        }
+        if ($lead < 0) {
+            return $bytes;
+        }
+
+        $byte = \ord($bytes[$lead]);
+        $length = match (true) {
+            $byte >= 0xF0 => 4,
+            $byte >= 0xE0 => 3,
+            $byte >= 0xC0 => 2,
+            default => 1,
+        };
+
+        return $end - $lead < $length ? substr($bytes, 0, $lead) : $bytes;
     }
 
     /**
