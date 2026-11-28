@@ -507,6 +507,13 @@ final class FileSystemStoreQuarantineTest
      */
     public function aFailedQuarantinePutsBackWhatItAlreadyMoved(): void
     {
+        if (\PHP_OS_FAMILY === 'Windows') {
+            // The failure is a path over PATH_MAX, and on Windows the 260-char
+            // limit already refuses the quarantine directory in the
+            // constructor. The mutation gate runs on Linux.
+            return;
+        }
+
         $deep = $this->base . '/' . implode('/', array_fill(0, 15, str_repeat('q', 200)));
         $store = new FileSystemStore('upload', $this->root, $this->factory, quarantinePath: $deep);
         $long = 'k/' . implode('/', array_fill(0, 8, str_repeat('b', 200))) . '/x.bin';

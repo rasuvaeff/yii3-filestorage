@@ -153,7 +153,7 @@ final class FileSystemStoreInventoryTest
     {
         $result = $this->store(ownedPrefixes: ['docs'])->write($this->upload(), 'docs', new RandomPathGenerator());
 
-        Assert::string($result->relativePath)->startsWith('docs/');
+        Assert::true(str_starts_with($result->relativePath, 'docs/'), $result->relativePath);
     }
 
     public function aContentAddressedPutOutsideTheOwnedPrefixesIsRefused(): void
