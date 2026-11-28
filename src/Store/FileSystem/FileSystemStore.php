@@ -13,6 +13,7 @@ use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
 use Rasuvaeff\Yii3Filestorage\Exception\UploadSizeException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
+use Rasuvaeff\Yii3Filestorage\Store\AbandonedPartialsInterface;
 use Rasuvaeff\Yii3Filestorage\Store\ContentAddressableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeAwareStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeDescriptor;
@@ -62,9 +63,9 @@ use Yiisoft\Files\FileHelper;
  * `rasuvaeff/yii3-filestorage-db` uses) stage under a random `.part` name and
  * publish with `link()`, which refuses an existing target: put-if-absent,
  * atomic on one filesystem. Two writers of the same content both succeed; a
- * crash leaves a `.part` that nothing lists or reuses — under a flat layout it
- * sits in a fan-out directory shared with live blobs, so it is removed by
- * hand, never by `gc`.
+ * crash leaves a `.part` that nothing lists or reuses. `gc --orphans` removes
+ * such leftovers by age alone ({@see self::sweepAbandonedPartials()}): no row
+ * can point at a `.part`, and its owner under a flat layout is a live blob.
  *
  * **The inventory is what the store owns, not everything under the root.**
  * `objects()` — what `gc --orphans` sweeps — never lists a hidden entry (a
@@ -79,6 +80,7 @@ use Yiisoft\Files\FileHelper;
  * @api
  */
 final readonly class FileSystemStore implements
+    AbandonedPartialsInterface,
     ContentAddressableStoreInterface,
     DerivativeAwareStoreInterface,
     MaintenanceStoreInterface,
@@ -95,7 +97,8 @@ final readonly class FileSystemStore implements
      *
      * The cost, recorded so it is a trade rather than an oversight: a crashed
      * write leaves a `.part` that blocks any later write to *that same target*
-     * until `filestorage:gc` removes the directory. The built-in generators
+     * until `filestorage:gc --orphans` removes it, once it is older than
+     * `--min-age` ({@see self::sweepAbandonedPartials()}). The built-in generators
      * never reuse a target, so this only bites a consumer whose own
      * `PathGeneratorInterface` is deterministic — and there, failing loudly on
      * a leftover from a crash is the behaviour you want anyway.
@@ -542,6 +545,7 @@ final readonly class FileSystemStore implements
 
         if ($objects->isTree()) {
             $this->removeEmptyDirectories($this->rootPath . '/' . $objects->path);
+            $this->removeOwnedDirectory($objects->path);
         }
 
         if ($moved === []) {
@@ -672,6 +676,75 @@ final readonly class FileSystemStore implements
 
             if (++$yielded >= $limit) {
                 return;
+            }
+        }
+    }
+
+    /**
+     * A `.part` is never an object, so the inventory skips it; this walk is
+     * the one that looks for nothing else. Hidden entries and symlinks are
+     * skipped as in the inventory, and only the owned prefixes are walked.
+     */
+    #[Override]
+    public function sweepAbandonedPartials(DateTimeImmutable $modifiedBefore, bool $apply, int $limit): array
+    {
+        $roots = $this->ownedPrefixes === [] ? [''] : $this->ownedPrefixes;
+        $found = [];
+        foreach ($roots as $prefix) {
+            $absolute = $prefix === '' ? $this->rootPath : $this->rootPath . '/' . $prefix;
+            if (!is_dir($absolute) || is_link($absolute)) {
+                continue;
+            }
+
+            foreach ($this->partials($absolute, $prefix) as $relative => $modified) {
+                if ($modified < $modifiedBefore->getTimestamp()) {
+                    $found[] = $relative;
+                }
+            }
+        }
+
+        sort($found, SORT_STRING);
+        $found = \array_slice($found, 0, max(1, $limit));
+
+        if ($apply) {
+            foreach ($found as $relative) {
+                $absolute = $this->rootPath . '/' . $relative;
+                if (is_file($absolute) && !is_link($absolute) && !@unlink($absolute) && file_exists($absolute)) {
+                    throw new StoreException("Could not remove \"{$relative}\" from store \"{$this->name}\"");
+                }
+            }
+        }
+
+        return $found;
+    }
+
+    /**
+     * @return iterable<non-empty-string, int> Relative path => modification time.
+     */
+    private function partials(string $absolute, string $prefix): iterable
+    {
+        $entries = @scandir($absolute);
+        if ($entries === false) {
+            return;
+        }
+
+        foreach ($entries as $entry) {
+            if ($entry === '' || $entry[0] === '.') {
+                continue;
+            }
+
+            $path = $absolute . '/' . $entry;
+            $relative = $prefix === '' ? $entry : $prefix . '/' . $entry;
+            if (is_link($path)) {
+                continue;
+            }
+            if (is_dir($path)) {
+                yield from $this->partials($path, $relative);
+            } elseif (str_ends_with($entry, self::PARTIAL_SUFFIX)) {
+                $modified = @filemtime($path);
+                if ($modified !== false) {
+                    yield $relative => $modified;
+                }
             }
         }
     }
@@ -897,6 +970,31 @@ final readonly class FileSystemStore implements
         }
 
         return $members;
+    }
+
+    /**
+     * After a tree rooted at a *file* — what the orphan sweep quarantines —
+     * the file's directory goes too when the layout says that one file owns
+     * it: a `DirectoryLayout` key directory (review 1.0 pass 2, maintenance
+     * N11). Never a fan-out directory: a writer creates one and then opens its
+     * file inside, and removing it in between fails the upload.
+     */
+    private function removeOwnedDirectory(string $path): void
+    {
+        $slash = strrpos($path, '/');
+        if ($slash === false) {
+            return;
+        }
+
+        try {
+            $deletion = $this->layout->deletion(new StoredObjectId($path));
+        } catch (\InvalidArgumentException) {
+            return;
+        }
+
+        if ($deletion->isTree() && $deletion->path === substr($path, 0, $slash)) {
+            $this->removeEmptyDirectories($this->rootPath . '/' . $deletion->path);
+        }
     }
 
     /**

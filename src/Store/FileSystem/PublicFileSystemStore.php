@@ -12,6 +12,7 @@ use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryOptions;
+use Rasuvaeff\Yii3Filestorage\Store\AbandonedPartialsInterface;
 use Rasuvaeff\Yii3Filestorage\Store\ContentAddressableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeDescriptor;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeObject;
@@ -49,6 +50,7 @@ use Rasuvaeff\Yii3Filestorage\Upload;
  * @api
  */
 final readonly class PublicFileSystemStore implements
+    AbandonedPartialsInterface,
     ContentAddressableStoreInterface,
     DerivativeUrlProviderInterface,
     MaintenanceStoreInterface,
@@ -275,6 +277,12 @@ final readonly class PublicFileSystemStore implements
     public function quarantineProblem(): ?string
     {
         return $this->store->quarantineProblem();
+    }
+
+    #[Override]
+    public function sweepAbandonedPartials(DateTimeImmutable $modifiedBefore, bool $apply, int $limit): array
+    {
+        return $this->store->sweepAbandonedPartials($modifiedBefore, $apply, $limit);
     }
 
     /**

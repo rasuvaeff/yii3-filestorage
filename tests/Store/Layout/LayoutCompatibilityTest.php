@@ -243,6 +243,38 @@ final class LayoutCompatibilityTest
             ->contains('refused a probe upload: no');
     }
 
+    /**
+     * Review 1.0 pass 2 (maintenance), N8: two random paths almost never
+     * share a fan-out bucket, so a third-party "delete the directory" layout
+     * with flat random paths passed the probe 255 times in 256. The probe now
+     * looks for a pair that shares a directory among many generated paths.
+     */
+    public function flatRandomPathsUnderALayoutThatDeletesTheDirectoryAreAProblem(): void
+    {
+        $paths = new class implements PathGeneratorInterface {
+            #[Override]
+            public function generate(string $groupName, Upload $upload, ?string $mediaType): string
+            {
+                return $groupName . '/' . bin2hex(random_bytes(1)) . '/' . bin2hex(random_bytes(16)) . '.jpg';
+            }
+        };
+
+        for ($attempt = 0; $attempt < 20; ++$attempt) {
+            Assert::string((string) LayoutCompatibility::pathsProblem($paths, $this->bucketLayout(), new Psr17Factory()))
+                ->contains('another file\'s bytes');
+        }
+    }
+
+    /**
+     * Paths that never share a directory are probed as a plain pair: a key
+     * directory per file is the default, and sound.
+     */
+    public function pathsThatNeverShareADirectoryAreStillProbed(): void
+    {
+        Assert::null(LayoutCompatibility::pathsProblem(new RandomPathGenerator(), new DirectoryLayout(), new Psr17Factory()));
+        Assert::null(LayoutCompatibility::pathsProblem(new RandomPathGenerator(), $this->bucketLayout(), new Psr17Factory()));
+    }
+
     private function bucketLayout(): ObjectLayoutInterface
     {
         return new class implements ObjectLayoutInterface {

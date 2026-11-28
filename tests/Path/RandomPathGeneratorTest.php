@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3Filestorage\Tests\Path;
 
+use InvalidArgumentException;
 use Nyholm\Psr7\Factory\Psr17Factory;
 use Rasuvaeff\PropertyTesting\ArbitraryInterface;
 use Rasuvaeff\PropertyTesting\Gen;
@@ -14,6 +15,8 @@ use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Testo\Assert;
 use Testo\Codecov\Covers;
+use Testo\Data\DataProvider;
+use Testo\Expect;
 use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
 
@@ -44,6 +47,46 @@ final class RandomPathGeneratorTest
             1,
             $path,
         );
+    }
+
+    /**
+     * Review 1.0 pass 2 (maintenance), N2: a store sharing its root with the
+     * application had to list every group in `ownedPrefixes`, and a group
+     * named like one of the application's own directories (cska-one's
+     * `lineups/`) put that directory into the orphan sweep. A prefix puts
+     * every group under one owned subtree.
+     */
+    public function aPrefixPutsEveryGroupUnderOneSubtree(): void
+    {
+        $path = (new RandomPathGenerator(prefix: 'files'))->generate('lineups', $this->upload, 'image/png');
+
+        Assert::same(
+            preg_match('~^files/lineups/[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{32}/original\.png\z~', $path),
+            1,
+            $path,
+        );
+        Assert::true(str_starts_with((new RandomPathGenerator(prefix: 'a/b-c_d'))->generate('g', $this->upload, null), 'a/b-c_d/g/'));
+    }
+
+    #[DataProvider('invalidPrefixProvider')]
+    public function anInvalidPrefixIsRejected(string $prefix): void
+    {
+        Expect::exception(InvalidArgumentException::class)->withMessageContaining("Invalid path prefix \"{$prefix}\"");
+
+        new RandomPathGenerator(prefix: $prefix);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function invalidPrefixProvider(): iterable
+    {
+        yield 'empty' => [''];
+        yield 'leading slash' => ['/files'];
+        yield 'trailing slash' => ['files/'];
+        yield 'traversal' => ['../files'];
+        yield 'hidden' => ['.files'];
+        yield 'trailing newline' => ["files\n"];
     }
 
     public function theExtensionComesFromTheDetectedMediaType(): void

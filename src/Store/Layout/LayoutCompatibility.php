@@ -28,10 +28,16 @@ use Rasuvaeff\Yii3Filestorage\Upload;
  * bucket, and gives every blob in it the same derivative path.
  *
  * The check is behavioural, so it holds for third-party layouts and
- * generators too: it generates two keys that differ only after the fan-out
- * prefix and asks the layout what deleting each would remove and where each
- * one's derivative goes. A pair passes when deleting a key removes that key
- * and its derivative, and nothing of the other.
+ * generators too: it takes two keys that share a directory and asks the
+ * layout what deleting each would remove and where each one's derivative
+ * goes. A pair passes when deleting a key removes that key and its
+ * derivative, and nothing of the other. For content keys the two probe
+ * digests share the fan-out prefix by construction; for a path generator the
+ * probe draws up to 4096 paths looking for two in one directory, and when the
+ * generator never puts two there (a key directory per file) it probes the
+ * first two. What it cannot see: a layout that only misbehaves for some
+ * shapes the generator rarely emits, or a generator whose collisions need
+ * more draws than that.
  *
  * {@see self::tenantProblem()} is a different question about the same
  * generator: whether it keeps the scope in the key at all. A generator that
@@ -49,6 +55,12 @@ final class LayoutCompatibility
     private const string PROBE_SCOPE = 'probe';
     private const string PROBE_EXTENSION = 'jpg';
     private const string PROBE_MEDIA_TYPE = 'image/jpeg';
+    /**
+        * Paths generated while looking for two that share a directory. Enough
+        * for a 65 536-bucket fan-out to collide almost surely (birthday bound),
+        * and still a few milliseconds.
+        */
+    private const int PATH_PROBES = 4096;
     private const string PROBE_DIGEST = 'abcd0000000000000000000000000000000000000000000000000000000000ef';
 
     private function __construct() {}
@@ -94,6 +106,23 @@ final class LayoutCompatibility
         try {
             $first = $paths->generate(self::PROBE_SCOPE, $upload, self::PROBE_MEDIA_TYPE);
             $second = $paths->generate(self::PROBE_SCOPE, $upload, self::PROBE_MEDIA_TYPE);
+
+            // Two random paths rarely land in one fan-out directory, and a
+            // pair in different directories cannot show a layout deleting a
+            // neighbour (review 1.0 pass 2, maintenance N8). Look for a pair
+            // that shares one; a generator giving every path a directory of
+            // its own never produces one, and the first pair stands.
+            $seen = [\dirname($first) => $first, \dirname($second) => $second];
+            for ($probe = 2; \count($seen) === $probe && $probe < self::PATH_PROBES; ++$probe) {
+                $next = $paths->generate(self::PROBE_SCOPE, $upload, self::PROBE_MEDIA_TYPE);
+                if (isset($seen[\dirname($next)])) {
+                    [$first, $second] = [$seen[\dirname($next)], $next];
+
+                    break;
+                }
+
+                $seen[\dirname($next)] = $next;
+            }
         } catch (InvalidArgumentException $e) {
             return "{$source} refused a probe upload: {$e->getMessage()}";
         }

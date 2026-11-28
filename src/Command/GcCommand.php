@@ -16,8 +16,10 @@ use Rasuvaeff\Yii3Filestorage\Reference\ReferenceAuthority;
 use Rasuvaeff\Yii3Filestorage\Reference\ReferenceCheckerInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\MaintenanceRepositoryInterface;
+use Rasuvaeff\Yii3Filestorage\Store\AbandonedPartialsInterface;
 use Rasuvaeff\Yii3Filestorage\Store\BlobId;
 use Rasuvaeff\Yii3Filestorage\Store\BlobLease;
+use Rasuvaeff\Yii3Filestorage\Store\BlobLedgerBatchLookupInterface;
 use Rasuvaeff\Yii3Filestorage\Store\BlobLedgerInterface;
 use Rasuvaeff\Yii3Filestorage\Store\BlobRecord;
 use Rasuvaeff\Yii3Filestorage\Store\BlobState;
@@ -240,6 +242,7 @@ final class GcCommand extends Command
                 'orphansUndated' => $orphans['undated'] ?? null,
                 'nextCursor' => $orphans['nextCursor'] ?? null,
                 'orphanSweepSkipped' => $orphans['skipped'] ?? null,
+                'abandonedPartials' => $orphans['partials'] ?? null,
                 'quarantine' => $quarantine,
                 'log' => $log,
             ]);
@@ -272,11 +275,18 @@ final class GcCommand extends Command
      *
      * An entry the ledger still knows is a blob whose deletion was never
      * committed — its collector crashed or was refused — and goes back, unless
-     * another collector holds a live lease on it right now. Anything else is a
-     * committed decision and is purged once it is older than the retention —
-     * unless a row or the application references one of its objects again
-     * (review 1.0 B5): then it is restored, because the retention exists so a
-     * mistaken release can be undone.
+     * another collector holds a live lease on it right now. Every other entry
+     * is checked against the rows — matched through the layout, as the orphan
+     * sweep matches — and the application's checker: one that something
+     * references is restored on this run, whatever its age (review 1.0 B5, and
+     * pass 2 N1 — a release interrupted between quarantine and row deletion
+     * leaves a live row over quarantined bytes, and waiting for the retention
+     * made that file a 404 for a week). An unreferenced entry is purged once it
+     * is older than the retention.
+     *
+     * Under a bound {@see FileScopeProviderInterface} the rows are one
+     * tenant's: a hit still restores, but a miss proves nothing, so nothing is
+     * purged — purge from an entry point that leaves the provider unbound.
      *
      * One entry that cannot be restored or purged is counted and skipped; it
      * must not stop the entries after it (review 1.0 B6).
@@ -299,31 +309,32 @@ final class GcCommand extends Command
 
             try {
                 while (($page = iterator_to_array($store->quarantined($after, self::PAGE), preserve_keys: false)) !== []) {
-                    // One reference lookup per page, not per entry: the checker
-                    // is documented as batched, and an orphan sweep leaves one
-                    // entry per object.
+                    // One ledger lookup (where the ledger can batch), one row
+                    // lookup and one checker call per page, not per entry: an
+                    // orphan sweep leaves one entry per object (review 1.0
+                    // pass 2, N7).
+                    $records = $this->ledgerRecords($name, $page);
                     $decisions = [];
-                    $purgeable = [];
+                    $unowned = [];
                     foreach ($page as $entry) {
-                        $decisions[$entry->token] = $this->quarantineDecision($name, $entry, $now, $cutoff);
-                        if ($decisions[$entry->token] === 'purged') {
-                            $purgeable[] = $entry;
+                        $decisions[$entry->token] = $this->quarantineDecision($entry, $records, $now);
+                        if ($decisions[$entry->token] === null) {
+                            $unowned[] = $entry;
                         }
                     }
-                    $referenced = $this->referencedEntries($name, $store->layout(), $purgeable);
+                    $referenced = $this->referencedEntries($name, $store->layout(), $unowned);
 
                     foreach ($page as $entry) {
                         $after = $entry->token;
-                        $this->settleQuarantined(
-                            $io,
-                            $apply,
-                            $name,
-                            $store,
-                            $entry,
-                            $decisions[$entry->token],
-                            isset($referenced[$entry->token]),
-                            $counts,
-                        );
+                        $referencedAgain = isset($referenced[$entry->token]);
+                        $decision = $decisions[$entry->token] ?? match (true) {
+                            $referencedAgain => 'restored',
+                            $entry->quarantinedAt > $cutoff => 'kept',
+                            $this->scopes instanceof FileScopeProviderInterface => $this->keptUnderTenancy($io, $name),
+                            default => 'purged',
+                        };
+
+                        $this->settleQuarantined($io, $apply, $name, $store, $entry, $decision, $referencedAgain, $counts);
                     }
                 }
             } catch (StoreException $e) {
@@ -336,6 +347,23 @@ final class GcCommand extends Command
         }
 
         return $counts;
+    }
+
+    /**
+     * @param non-empty-string $storeName
+     *
+     * @return 'kept'
+     */
+    private function keptUnderTenancy(SymfonyStyle $io, string $storeName): string
+    {
+        $this->warnOnce($io, $storeName, 'quarantine-tenancy', sprintf(
+            'Quarantine entries of store "%s" past the retention are not purged: a FileScopeProviderInterface is '
+            . 'bound, so the rows seen here are one tenant\'s and cannot prove an entry unreferenced. Run '
+            . 'filestorage:gc from a maintenance entry point that leaves the provider unbound to purge them.',
+            $storeName,
+        ));
+
+        return 'kept';
     }
 
     /**
@@ -353,19 +381,18 @@ final class GcCommand extends Command
         bool $referencedAgain,
         array &$counts,
     ): void {
-        if ($decision === 'purged' && $referencedAgain) {
-            $decision = 'restored';
+        if ($decision === 'kept') {
+            $counts['kept']++;
+
+            return;
+        }
+
+        if ($referencedAgain) {
             $io->warning(sprintf(
                 'Restoring quarantined "%s" (%s): a row or the application references it again.',
                 $entry->objects[0]->relativePath,
                 $entry->token,
             ));
-        }
-
-        if ($decision === 'kept') {
-            $counts['kept']++;
-
-            return;
         }
 
         $io->text(sprintf(
@@ -399,7 +426,7 @@ final class GcCommand extends Command
      * matches — or the application points at again.
      *
      * Under a tenant-scoped repository the rows are only the current scope's;
-     * run gc from an entry point that sees every row (see `--orphans`).
+     * a hit is still a hit, and {@see self::sweepQuarantine()} purges nothing.
      *
      * @param non-empty-string $storeName
      * @param list<QuarantinedObject> $entries
@@ -417,6 +444,7 @@ final class GcCommand extends Command
             static fn(StoredObjectId $object): string => $object->directory(),
             $objects,
         )));
+        sort($directories, SORT_STRING);
 
         $owners = [];
         foreach ($this->repository->referencedPaths($storeName, $directories) as $path) {
@@ -439,18 +467,17 @@ final class GcCommand extends Command
     }
 
     /**
-     * @param non-empty-string $storeName
+     * What the ledger says about an entry, or null when it knows none of the
+     * entry's objects — then the rows decide.
      *
-     * @return 'restored'|'purged'|'kept'
+     * @param array<string, BlobRecord> $records By relative path.
+     *
+     * @return 'restored'|'kept'|null
      */
-    private function quarantineDecision(
-        string $storeName,
-        QuarantinedObject $entry,
-        DateTimeImmutable $now,
-        DateTimeImmutable $cutoff,
-    ): string {
+    private function quarantineDecision(QuarantinedObject $entry, array $records, DateTimeImmutable $now): ?string
+    {
         foreach ($entry->objects as $object) {
-            $record = $this->ledgerRecord($storeName, $object->relativePath);
+            $record = $records[$object->relativePath] ?? null;
             if (!$record instanceof BlobRecord) {
                 continue;
             }
@@ -463,7 +490,51 @@ final class GcCommand extends Command
             return $busy ? 'kept' : 'restored';
         }
 
-        return $entry->quarantinedAt <= $cutoff ? 'purged' : 'kept';
+        return null;
+    }
+
+    /**
+     * The ledger's records for every object of a page of entries, in one call
+     * when the ledger can batch.
+     *
+     * @param non-empty-string $storeName
+     * @param list<QuarantinedObject> $entries
+     *
+     * @return array<string, BlobRecord> By relative path.
+     */
+    private function ledgerRecords(string $storeName, array $entries): array
+    {
+        if (!$this->ledger instanceof BlobLedgerInterface) {
+            return [];
+        }
+
+        $ids = [];
+        foreach ($entries as $entry) {
+            foreach ($entry->objects as $object) {
+                $ids[$object->relativePath] = BlobId::create($storeName, $object->relativePath);
+            }
+        }
+
+        $records = [];
+        if ($this->ledger instanceof BlobLedgerBatchLookupInterface) {
+            $found = $this->ledger->findMany(array_values($ids));
+            foreach ($ids as $path => $id) {
+                if (isset($found[$id->key()])) {
+                    $records[$path] = $found[$id->key()];
+                }
+            }
+
+            return $records;
+        }
+
+        foreach ($ids as $path => $id) {
+            $record = $this->ledger->find($id);
+            if ($record instanceof BlobRecord) {
+                $records[$path] = $record;
+            }
+        }
+
+        return $records;
     }
 
     /**
@@ -575,13 +646,15 @@ final class GcCommand extends Command
         } catch (\Throwable $e) {
             if ($entry instanceof QuarantinedObject) {
                 // The row still points at these bytes, so the next run's
-                // quarantine sweep restores them even if this fails
-                // (review 1.0 B5/B7). The original failure is what to report.
+                // quarantine sweep sees the row and restores them even if this
+                // fails (review 1.0 B5/B7, pass 2 N1). The original failure is
+                // what to report.
                 try {
                     $store->restore($entry);
                 } catch (StoreException $restore) {
                     $io->warning(sprintf(
-                        'Could not restore "%s" after its row failed to release; the next run restores it: %s',
+                        'Could not restore "%s" after its row failed to release; the next run restores it while the '
+                        . 'row still references it: %s',
                         $file->id,
                         $restore->getMessage(),
                     ));
@@ -756,7 +829,7 @@ final class GcCommand extends Command
      * @param non-empty-string|null $storeName
      * @param non-empty-string|null $after
      *
-     * @return array{found: int, tooNew: int, undated: int, nextCursor: array{store: string, after: string}|null, skipped: bool}
+     * @return array{found: int, tooNew: int, undated: int, nextCursor: array{store: string, after: string}|null, skipped: bool, partials: int}
      */
     private function sweepOrphans(
         SymfonyStyle $io,
@@ -780,6 +853,7 @@ final class GcCommand extends Command
                 'undated' => 0,
                 'nextCursor' => $storeName !== null && $after !== null ? ['store' => $storeName, 'after' => $after] : null,
                 'skipped' => true,
+                'partials' => 0,
             ];
         }
 
@@ -793,9 +867,47 @@ final class GcCommand extends Command
             }
         }
 
+        $partials = $result['nextCursor'] === null && $result['found'] < $limit
+            ? $this->sweepPartials($io, $apply, max(1, $limit - $result['found']), $names, $minAge)
+            : 0;
+
         unset($result['scanned']);
 
-        return $result + ['skipped' => false];
+        return $result + ['skipped' => false, 'partials' => $partials];
+    }
+
+    /**
+     * What crashed writes left: `.part` files no write has touched for
+     * `--min-age` (review 1.0 pass 2, maintenance N4). Once the walk of
+     * objects is complete, and inside what is left of `--limit`.
+     *
+     * @param list<non-empty-string> $names
+     * @param int<1, max> $limit
+     */
+    private function sweepPartials(SymfonyStyle $io, bool $apply, int $limit, array $names, DateInterval $minAge): int
+    {
+        $removed = 0;
+        foreach ($names as $name) {
+            $store = $this->storeFor($name);
+            if (!$store instanceof AbandonedPartialsInterface || $removed >= $limit) {
+                continue;
+            }
+
+            try {
+                $paths = $store->sweepAbandonedPartials($this->clock->now()->sub($minAge), $apply, max(1, $limit - $removed));
+            } catch (StoreException $e) {
+                $io->warning(sprintf('Could not remove abandoned partial writes of store "%s": %s', $name, $e->getMessage()));
+
+                continue;
+            }
+
+            foreach ($paths as $path) {
+                $io->text(sprintf('  %s abandoned partial write %s', $apply ? 'removing' : 'would remove', $path));
+            }
+            $removed += \count($paths);
+        }
+
+        return $removed;
     }
 
     /**

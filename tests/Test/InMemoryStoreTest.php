@@ -286,6 +286,27 @@ final class InMemoryStoreTest
      * Review 1.0 C21: a numeric path at the root became an int array key and
      * the inventory threw a TypeError.
      */
+    /**
+     * Review 1.0 pass 2 (maintenance), N6: PHP turns the key "123" into an
+     * integer, and `quarantine()` handed it to `ObjectSet::contains(string)` —
+     * a TypeError that ended the whole `gc --orphans` run.
+     */
+    public function aNumericRootPathCanBeQuarantinedAndRestored(): void
+    {
+        $this->store->corrupt('123', 'a');
+        $this->store->corrupt('45', 'b');
+
+        $entry = $this->store->quarantine(ObjectSet::tree(new StoredObjectId('123')), $this->clock->now());
+
+        Assert::true($entry instanceof QuarantinedObject);
+        Assert::same($entry->objects[0]->relativePath, '123');
+        Assert::true($this->store->isQuarantined('123'));
+        Assert::same($this->store->paths(), ['45']);
+
+        $this->store->restore($entry);
+        Assert::same($this->store->bytesAt('123'), 'a');
+    }
+
     public function aNumericRootPathIsListedInCursorOrder(): void
     {
         $this->store->corrupt('123', 'a');

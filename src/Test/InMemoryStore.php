@@ -220,9 +220,10 @@ final class InMemoryStore implements MaintenanceStoreInterface
     public function quarantine(ObjectSet $objects, DateTimeImmutable $now): ?QuarantinedObject
     {
         $held = [];
-        foreach ($this->objects as $path => $bytes) {
+        // A numeric path is an integer key of the map (review 1.0 C21, pass 2 N6).
+        foreach ($this->storedPaths() as $path) {
             if ($objects->contains($path)) {
-                $held[$path] = [$bytes, $this->timestamps[$path] ?? $now];
+                $held[$path] = [$this->objects[$path], $this->timestamps[$path] ?? $now];
                 unset($this->objects[$path], $this->timestamps[$path]);
             }
         }

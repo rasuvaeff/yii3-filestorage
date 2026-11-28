@@ -126,21 +126,20 @@ final class CheckCommand extends Command
                 implode(', ', $this->capabilities($store)) ?: 'base only',
             ];
 
-            // An error: a key generator whose keys the layout cannot delete
-            // one by one loses other files' bytes on the first deletion
-            // (review 1.0 A1).
+            // A key generator whose keys the layout cannot delete one by one
+            // loses other files' bytes on the first deletion (review 1.0 A1).
             if ($store instanceof ContentAddressableStoreInterface) {
                 $problem = LayoutCompatibility::contentKeysProblem(
                     $this->contentKeys ?? new Sha256KeyGenerator(),
                     $store->layout(),
                 );
                 // Deduplication writes to one store — the default unless
-                // `-db`'s factory is told otherwise, and it refuses a mismatch
-                // itself. On the default store this is an error; on any other
-                // it only matters if deduplication is pointed there.
-                if ($problem !== null && $name === $this->stores->defaultName()) {
-                    $errors[] = "Store \"{$name}\": {$problem}";
-                } elseif ($problem !== null) {
+                // `-db`'s factory is told otherwise (`storeName`) — and only
+                // `-db` knows which. Its factory refuses a mismatched pair when
+                // it is built, so here it is a warning on every store: an error
+                // on the default one failed a sound configuration that
+                // deduplicates elsewhere (review 1.0 pass 2, N5).
+                if ($problem !== null) {
                     $warnings[] = "Store \"{$name}\": {$problem}. It is only a problem if deduplication writes to "
                         . 'this store; rasuvaeff/yii3-filestorage-db refuses that combination when it is built.';
                 }

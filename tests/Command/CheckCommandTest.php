@@ -686,15 +686,41 @@ final class CheckCommandTest
         Assert::string($this->flatten($tester->getDisplay()))->contains('Store "memory": Path generator');
     }
 
-    public function flatContentKeysOnAStoreWithTheDirectoryLayoutAreAnError(): void
+    /**
+     * Review 1.0 pass 2 (maintenance), N5: an error on the default store
+     * failed a sound configuration — deduplication pointed by `-db`'s factory
+     * (`storeName`) at another store — with no way to say so. The store
+     * deduplication really writes to is only known to `-db`, whose factory
+     * refuses a mismatched pair when it is built; here it is a warning.
+     */
+    public function flatContentKeysOnTheDefaultStoreWithTheDirectoryLayoutAreAWarning(): void
     {
         $tester = $this->run(
             store: new FileSystemStore('upload', $this->root, $this->factory),
             contentKeys: new FlatSha256KeyGenerator(prefix: 'blobs'),
         );
 
-        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
         Assert::string($this->flatten($tester->getDisplay()))->contains('Store "upload": Content-addressed key generator');
+        Assert::string($this->flatten($tester->getDisplay()))->contains('refuses that combination when it is built');
+    }
+
+    public function aDefaultPrivateStoreBesideAFlatDeduplicatedOneIsSound(): void
+    {
+        $command = new CheckCommand(
+            stores: new StoreRegistry([
+                new FileSystemStore('private', $this->root . '/private', $this->factory),
+                new FileSystemStore('public', $this->root . '/public', $this->factory, layout: new FlatSiblingLayout()),
+            ]),
+            repository: new MemoryRepository(),
+            policies: new PolicyRegistry(),
+            deliveryPolicies: new DeliveryPolicyRegistry(),
+            contentKeys: new FlatSha256KeyGenerator(prefix: 'blobs'),
+        );
+        $tester = new CommandTester($command);
+        $tester->execute([]);
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
     }
 
     public function flatContentKeysOnAFlatStoreAreSound(): void

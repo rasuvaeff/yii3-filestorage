@@ -83,6 +83,97 @@ final class FileSystemStoreQuarantineTest
         Assert::same($this->inventory(), ['docs/ab/other/original.jpg']);
     }
 
+    /**
+     * Review 1.0 pass 2 (maintenance), N11: the orphan sweep quarantines the
+     * file itself, and the emptied key directory stayed — one empty
+     * `<group>/ab/cd/<key>/` per swept orphan, for good.
+     */
+    public function quarantiningTheOnlyFileOfAKeyDirectoryRemovesTheDirectory(): void
+    {
+        $this->place('docs/ab/cd/key/original.jpg', 'orphan');
+        $this->place('docs/ab/cd/other/original.jpg', 'neighbour');
+
+        $this->store->quarantine(ObjectSet::tree(new StoredObjectId('docs/ab/cd/key/original.jpg')), $this->now);
+
+        Assert::false(is_dir($this->root . '/docs/ab/cd/key'));
+        Assert::true(is_file($this->root . '/docs/ab/cd/other/original.jpg'));
+    }
+
+    /**
+     * A fan-out directory is never removed for a file: a writer creates it and
+     * then opens its file inside, and removing it between the two fails the
+     * upload. Only a directory one file owns goes.
+     */
+    public function aFanOutDirectoryIsLeftEvenWhenEmptied(): void
+    {
+        $flat = new FileSystemStore('upload', $this->root, $this->factory, quarantinePath: $this->quarantine, layout: new FlatSiblingLayout());
+        $this->place('blobs/ab/cd/abcd.jpg', 'orphan');
+        $this->place('docs/ab/loose.jpg', 'orphan');
+
+        $flat->quarantine(ObjectSet::tree(new StoredObjectId('blobs/ab/cd/abcd.jpg')), $this->now);
+        $this->store->quarantine(ObjectSet::tree(new StoredObjectId('docs/ab/loose.jpg')), $this->now);
+
+        Assert::true(is_dir($this->root . '/blobs/ab/cd'));
+        Assert::true(is_dir($this->root . '/docs/ab'));
+    }
+
+    public function aKeyDirectoryWithSomethingLeftInItStays(): void
+    {
+        $this->place('docs/ab/cd/key/original.jpg', 'orphan');
+        $this->place('docs/ab/cd/key/original.jpg.part', 'a writer');
+
+        $this->store->quarantine(ObjectSet::tree(new StoredObjectId('docs/ab/cd/key/original.jpg')), $this->now);
+
+        Assert::true(is_file($this->root . '/docs/ab/cd/key/original.jpg.part'));
+    }
+
+    /**
+     * Review 1.0 pass 2 (maintenance), N4: a crash mid-write leaves a `.part`
+     * that neither the inventory nor the quarantine lists, so nothing ever
+     * removed it — and under a public root it was served. Removed once it
+     * has not been written to for the minimum age.
+     */
+    public function abandonedPartialsOlderThanTheCutoffAreRemoved(): void
+    {
+        $this->place('docs/ab/cd/key/original.jpg.part', 'stalled');
+        $this->place('blobs/ab/cd/abcd.jpg.0123456789abcdef.part', 'stalled');
+        $this->place('docs/ab/cd/fresh/original.jpg.part', 'writing');
+        $this->place('docs/ab/cd/key/original.jpg', 'live');
+        $this->place('.hidden/x.part', 'not ours');
+        touch($this->root . '/docs/ab/cd/key/original.jpg.part', $this->now->getTimestamp() - 7200);
+        touch($this->root . '/blobs/ab/cd/abcd.jpg.0123456789abcdef.part', $this->now->getTimestamp() - 7200);
+        touch($this->root . '/.hidden/x.part', $this->now->getTimestamp() - 7200);
+        touch($this->root . '/docs/ab/cd/fresh/original.jpg.part', $this->now->getTimestamp());
+        $cutoff = $this->now->modify('-1 hour');
+
+        Assert::same($this->store->sweepAbandonedPartials($cutoff, apply: false, limit: 10), [
+            'blobs/ab/cd/abcd.jpg.0123456789abcdef.part',
+            'docs/ab/cd/key/original.jpg.part',
+        ]);
+        Assert::true(is_file($this->root . '/docs/ab/cd/key/original.jpg.part'), 'a dry run removes nothing');
+
+        Assert::same(\count($this->store->sweepAbandonedPartials($cutoff, apply: true, limit: 1)), 1);
+        Assert::same($this->store->sweepAbandonedPartials($cutoff, apply: true, limit: 10), ['docs/ab/cd/key/original.jpg.part']);
+
+        Assert::false(is_file($this->root . '/docs/ab/cd/key/original.jpg.part'));
+        Assert::false(is_file($this->root . '/blobs/ab/cd/abcd.jpg.0123456789abcdef.part'));
+        Assert::true(is_file($this->root . '/docs/ab/cd/fresh/original.jpg.part'));
+        Assert::true(is_file($this->root . '/docs/ab/cd/key/original.jpg'));
+        Assert::true(is_file($this->root . '/.hidden/x.part'));
+    }
+
+    public function abandonedPartialsOutsideTheOwnedPrefixesAreNotTouched(): void
+    {
+        $owned = new FileSystemStore('upload', $this->root, $this->factory, quarantinePath: $this->quarantine, ownedPrefixes: ['blobs']);
+        $this->place('blobs/ab/x.jpg.part', 'stalled');
+        $this->place('banners/top.png.part', 'the application\'s');
+        touch($this->root . '/blobs/ab/x.jpg.part', $this->now->getTimestamp() - 7200);
+        touch($this->root . '/banners/top.png.part', $this->now->getTimestamp() - 7200);
+
+        Assert::same($owned->sweepAbandonedPartials($this->now, apply: true, limit: 10), ['blobs/ab/x.jpg.part']);
+        Assert::true(is_file($this->root . '/banners/top.png.part'));
+    }
+
     public function aStagingFileKeepsItsDirectory(): void
     {
         $this->place('docs/ab/key/original.jpg', 'original');
