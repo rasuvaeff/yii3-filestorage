@@ -181,5 +181,8 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
   `ReferenceCheckerInterface` (by path, batched): `gc` releases their rows that
   are older than `--min-age` and no longer referenced, and re-asks before
   deleting a blob.
+  A text-column scan must skip the package's own tables (they name every file,
+  so nothing is released) and match every form a reference takes (URL and
+  in-store path).
 - `add()` is all-or-nothing per file. There is no `addMany()`, because an atomic
   batch is impossible over a filesystem or an object store.

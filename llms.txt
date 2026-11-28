@@ -386,6 +386,10 @@ non-empty-list<StoredObjectId> $objects): list<StoredObjectId>` (by path,
 batched per page). `gc` then releases rows of such groups older than
 `--min-age` that the checker does not name, and asks again before quarantining a
 blob and in the orphan sweep.
+A checker that scans text columns must skip this package's own tables
+(`filestorage_file.relative_path` names every file, so nothing is ever
+released) and match every form the application writes (a URL and a path
+inside the store).
 
 ### URLs
 

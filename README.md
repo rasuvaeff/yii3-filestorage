@@ -400,6 +400,18 @@ ledger, a unique object into the store's quarantine, restorable for
 blob is quarantined and during the orphan sweep, so a URL pasted back into a
 text in the meantime keeps its bytes.
 
+Two traps of a checker that scans text columns, both seen on a real
+application:
+
+- **Skip this package's own tables.** `filestorage_file.relative_path` (and
+  the blob tables) name every stored file. A scan over "every text column"
+  that includes them answers "referenced" for every row, and nothing is ever
+  released.
+- **Match every form the application writes.** A URL (`/uploads/blobs/…`) and
+  a path inside the store (`blobs/…`, kept by an image cache column, say) are
+  both references. A checker that looks for one form only releases files the
+  other form still names.
+
 ### Parameters
 
 | Key | Default | Meaning |
