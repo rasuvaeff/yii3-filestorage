@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Pre-1.0 fix wave from the 1.0 review (2026-11-27, #50). The family moves to
 `^0.10` together.
 
+- Fix: on Windows `FileSystemStore` with `ownedPrefixes` listed nothing — `realpath()` answers `\` and the symlink guard compared it with a `/` path — so `gc --orphans` saw no objects there.
+
 - Fix (review A1 / summary A2): `maxPixels` could be bypassed by APPn padding — a 60000×60000 JPEG of 325 KB passed every policy because its frame header sat past the 256 KiB header window and "no dimensions found" meant "skip". A JPEG is now walked marker by marker to its frame header with `seek()`, and a JPEG, PNG, GIF or WebP whose dimensions cannot be established is **refused** while `maxPixels > 0` (other formats still only with `requireImageDimensions`). Legitimate JPEGs with large ICC/XMP blocks before the frame are now measured instead of refused under `requireImageDimensions`.
 - Fix (review A2 / summary A3): `Storage::add()` validated metadata, called the id generator and the clock *after* `store->write()` and outside its compensation — invalid metadata left an object with no row and surfaced as `InvalidArgumentException`. Everything the caller supplies is validated before the write; anything failing after it is an `AddException`.
 - Fix (B1): MIME sniffing and image-header reads loop until the window is full instead of trusting one `read()`; a short-reading stream no longer turns the pixel check off or misdetects the type.

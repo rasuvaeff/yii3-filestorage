@@ -1032,7 +1032,7 @@ final class GcSafetyTest
         Assert::true($this->store->isQuarantined('docs/a/original.bin'));
         Assert::false($this->store->isQuarantined('docs/b/original.bin'));
         Assert::same($json['quarantine'], ['restored' => 0, 'purged' => 1, 'kept' => 0, 'failed' => 1]);
-        Assert::string(implode(' ', $json['log']))->contains('Permission denied on');
+        Assert::string($this->logText($json))->contains('Permission denied on');
     }
 
     /**
@@ -1054,7 +1054,7 @@ final class GcSafetyTest
 
         Assert::same($status, Command::SUCCESS);
         Assert::same($json['blobsCollected'], 0);
-        Assert::string(implode(' ', $json['log']))->contains('the next run restores it');
+        Assert::string($this->logText($json))->contains('the next run restores it');
         Assert::true($this->store->isQuarantined($file->relativePath));
     }
 
@@ -1102,7 +1102,7 @@ final class GcSafetyTest
 
         Assert::same($json['releasedRows'], 1);
         Assert::true($json['orphanSweepSkipped']);
-        Assert::string(implode(' ', $json['log']))->contains('Orphan sweep skipped: --limit was used up');
+        Assert::string($this->logText($json))->contains('Orphan sweep skipped: --limit was used up');
         Assert::same($this->store->bytesAt('docs/z/original.bin'), 'orphan');
     }
 
@@ -1196,6 +1196,19 @@ final class GcSafetyTest
     /**
      * @return array<string, mixed>
      */
+    /**
+     * The JSON log is what text mode would have printed, wrapped at the
+     * terminal width: a phrase can straddle two lines.
+     *
+     * @param array<string, mixed> $json
+     */
+    private function logText(array $json): string
+    {
+        Assert::true(\is_array($json['log']));
+
+        return (string) preg_replace('/\s+/', ' ', implode(' ', array_map(strval(...), $json['log'])));
+    }
+
     private function decode(CommandTester $tester): array
     {
         $decoded = json_decode($tester->getDisplay(), associative: true, flags: \JSON_THROW_ON_ERROR);

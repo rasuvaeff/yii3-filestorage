@@ -791,7 +791,17 @@ final readonly class FileSystemStore implements
             }
 
             $absolute = $this->rootPath . '/' . $prefix;
-            if (is_dir($absolute) && !is_link($absolute) && $this->resolve($prefix) === $absolute) {
+            // A prefix reached through a symlinked parent resolves elsewhere.
+            // Compared with `/` on both sides: realpath() answers `\` on
+            // Windows, where the raw comparison never matched and every owned
+            // subtree looked empty.
+            $resolved = $this->resolve($prefix);
+            if (
+                is_dir($absolute)
+                && !is_link($absolute)
+                && $resolved !== null
+                && str_replace('\\', '/', $resolved) === str_replace('\\', '/', $absolute)
+            ) {
                 yield from $this->walk($absolute, $prefix, $after);
             }
         }

@@ -291,8 +291,12 @@ final class ImageDimensions
 
             /** @var array{x: int, y: int, w: int, h: int, flags: int} $frame */
             $frame = unpack('vx/vy/vw/vh/Cflags', $descriptor);
+            // Counted on its own line: psalm 7.0 (the prefer-lowest job) does
+            // not see an increment inside the condition and calls the
+            // `$frames === 0` check below redundant.
+            ++$frames;
             if (
-                ++$frames > self::MAX_GIF_FRAMES
+                $frames > self::MAX_GIF_FRAMES
                 || $frame['w'] === 0
                 || $frame['h'] === 0
                 || $frame['x'] + $frame['w'] > $screen['w']
