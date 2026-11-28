@@ -356,11 +356,12 @@ try {
 **Pixel limit.** `maxPixels` (40 M by default) is read from the image header;
 pixels are never decoded. A JPEG is walked marker by marker to its frame
 header, however much metadata (ICC, XMP, Photoshop) precedes it, and skips
-stray bytes between segments as libjpeg does. A GIF is walked block by block:
+stray bytes between segments as libjpeg does; a second frame header before the
+scan is refused (Pillow would measure the last one). A GIF is walked block by block:
 every frame carries its own size, and one that does not fit inside the logical
 screen is refused — a 1×1 screen around an 8000×8000 frame is the GIF bomb. A
 TIFF is measured from its directory chain wherever the writer put it (the
-largest page counts; BigTIFF is not measured). A JPEG, PNG, GIF, WebP or TIFF
+largest page counts, a directory without dimensions is skipped; BigTIFF is not measured). A JPEG, PNG, GIF, WebP or TIFF
 whose dimensions cannot be established is **refused** while `maxPixels > 0` —
 a hidden header is how a decompression bomb gets past a fixed window. Every
 other raster format (AVIF, HEIC, BMP, ICO…) is measured from its first 256 KiB
@@ -774,7 +775,7 @@ finishing what earlier runs left there. Without a quarantine
 | Orphans and released application-owned files stay in the quarantine for `--retention` (default `P7D`); blob deletions the ledger committed are purged at once | A mistaken sweep is reversible for a week. The quarantine must be outside anything the web server serves: the store checks its root, `PublicFileSystemStore(webRoot:)` the document root |
 | An entry the ledger still knows is put back, unless another collector holds a live lease on it | Recovery of a collector that crashed between the two phases |
 | Every other entry is checked against the rows (matched through the layout) and the `ReferenceCheckerInterface` on every run, whatever its age; a referenced entry is restored at once, with a warning | A release interrupted between quarantine and row deletion leaves a live row over quarantined bytes — the next run gives them back (and, if nothing references the file, finishes the release); a file released by mistake comes back as soon as it is referenced again |
-| Under a bound `FileScopeProviderInterface` a quarantine entry is restored when a row matches but never purged (warning) | The rows are one tenant's: a miss proves nothing. Purge from an entry point that leaves the provider unbound |
+| Under a bound `FileScopeProviderInterface` that answers a scope, a quarantine entry is restored when a row matches but never purged (warning) | The rows are one tenant's: a miss proves nothing. Purge from an entry point that leaves the provider unbound, or where it answers no scope (`-db`'s `globalMaintenanceAccess`) |
 | One entry that cannot be restored or purged is skipped and counted (JSON `quarantine.failed`); a failed restore after a refused commit or a failed row deletion is a warning, and the next run restores it — the ledger or the row still points at it | One bad entry used to stop the whole quarantine on every run, and one failed restore ended the run |
 | A quarantine that fails half-way puts back what it already moved | A row whose original was half-quarantined would have lost it to the retention |
 | The orphan inventory never contains hidden entries, and only the `ownedPrefixes` subtrees when the store declares them | The root of a public store is often shared with the application's own files |
@@ -787,7 +788,8 @@ lookup, one checker call and one ledger lookup — one call when the ledger
 implements `Store\BlobLedgerBatchLookupInterface` (`Test\MemoryBlobLedger` does),
 otherwise one per object. After `deduplicate --apply` and `gc --orphans --apply`
 the quarantine holds an entry per object for the whole retention, so a
-per-object ledger is that many queries per run.
+per-object ledger is that many queries per run. With `--orphans`, the `.part`
+sweep walks each completed store a second time.
 
 To undo a mistaken sweep by hand within the retention, move the objects back
 from `<quarantinePath>/<token>/<relative path>` to `<rootPath>/<relative path>`;

@@ -125,8 +125,18 @@ final class ImageDimensions
         }
 
         $size = $stream->getSize();
+        $frame = null;
 
-        for ($segment = 0; $segment < self::MAX_JPEG_SEGMENTS; ++$segment) {
+        // The walk goes on past the frame header to the start of scan: a
+        // second frame header is a file libjpeg refuses and Pillow measures by
+        // the *last* one, so a decoy 1×1 frame first would otherwise hide the
+        // real size. The segment cap counts the segments before the frame;
+        // the ones after it (tables) get a budget of their own.
+        for ($segment = 0; $segment < 2 * self::MAX_JPEG_SEGMENTS; ++$segment) {
+            if ($frame === null && $segment >= self::MAX_JPEG_SEGMENTS) {
+                return null;
+            }
+
             $marker = self::nextMarker($stream);
             if ($marker === null) {
                 return null;
@@ -137,9 +147,13 @@ final class ImageDimensions
                 continue;
             }
 
-            // A second SOI, EOI, or the start of scan before any frame header:
-            // there is no frame to measure.
-            if (in_array($marker, [0xD8, 0xD9, 0xDA], strict: true)) {
+            // The start of scan, or the end of the image, after one frame
+            // header: that is the frame. Before any, or a second SOI: there is
+            // no frame to measure.
+            if ($marker === 0xDA || $marker === 0xD9) {
+                return $frame;
+            }
+            if ($marker === 0xD8) {
                 return null;
             }
 
@@ -153,9 +167,11 @@ final class ImageDimensions
                 return null;
             }
 
+            $next = $stream->tell() + $length - 2;
+
             if (self::isFrameHeader($marker)) {
                 $header = StreamReader::readUpTo($stream, 5);
-                if (\strlen($header) !== 5) {
+                if ($frame !== null || \strlen($header) !== 5) {
                     return null;
                 }
 
@@ -163,10 +179,13 @@ final class ImageDimensions
                 $width = (\ord($header[3]) << 8) | \ord($header[4]);
 
                 // Height 0 means "defined later by DNL" — unmeasurable here.
-                return $height === 0 || $width === 0 ? null : [$width, $height];
+                if ($height === 0 || $width === 0) {
+                    return null;
+                }
+
+                $frame = [$width, $height];
             }
 
-            $next = $stream->tell() + $length - 2;
             if ($size !== null && $next > $size) {
                 return null;
             }
@@ -360,10 +379,14 @@ final class ImageDimensions
                 $size[$field['tag']] = $value['v'];
             }
 
-            if ($size[256] === 0 || $size[257] === 0) {
-                return null;
-            }
-            if ($largest === null || $size[256] * $size[257] > $largest[0] * $largest[1]) {
+            // A directory without both tags (a thumbnail table, private
+            // data) is no page a decoder can render; skip it. A chain with no
+            // measured page at all stays undetermined.
+            if (
+                $size[256] > 0
+                && $size[257] > 0
+                && ($largest === null || $size[256] * $size[257] > $largest[0] * $largest[1])
+            ) {
                 $largest = [$size[256], $size[257]];
             }
 

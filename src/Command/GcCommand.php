@@ -284,9 +284,10 @@ final class GcCommand extends Command
      * made that file a 404 for a week). An unreferenced entry is purged once it
      * is older than the retention.
      *
-     * Under a bound {@see FileScopeProviderInterface} the rows are one
-     * tenant's: a hit still restores, but a miss proves nothing, so nothing is
-     * purged — purge from an entry point that leaves the provider unbound.
+     * Under a bound {@see FileScopeProviderInterface} with a current scope the
+     * rows are one tenant's: a hit still restores, but a miss proves nothing,
+     * so nothing is purged — purge from an entry point that leaves the
+     * provider unbound or answers no scope (`-db`'s `globalMaintenanceAccess`).
      *
      * One entry that cannot be restored or purged is counted and skipped; it
      * must not stop the entries after it (review 1.0 B6).
@@ -330,7 +331,7 @@ final class GcCommand extends Command
                         $decision = $decisions[$entry->token] ?? match (true) {
                             $referencedAgain => 'restored',
                             $entry->quarantinedAt > $cutoff => 'kept',
-                            $this->scopes instanceof FileScopeProviderInterface => $this->keptUnderTenancy($io, $name),
+                            $this->scopes?->currentScopeId() !== null => $this->keptUnderTenancy($io, $name),
                             default => 'purged',
                         };
 
@@ -358,8 +359,9 @@ final class GcCommand extends Command
     {
         $this->warnOnce($io, $storeName, 'quarantine-tenancy', sprintf(
             'Quarantine entries of store "%s" past the retention are not purged: a FileScopeProviderInterface is '
-            . 'bound, so the rows seen here are one tenant\'s and cannot prove an entry unreferenced. Run '
-            . 'filestorage:gc from a maintenance entry point that leaves the provider unbound to purge them.',
+            . 'bound and answers a scope, so the rows seen here are one tenant\'s and cannot prove an entry '
+            . 'unreferenced. Run filestorage:gc from a maintenance entry point that leaves the provider unbound '
+            . '(or answering no scope) to purge them.',
             $storeName,
         ));
 

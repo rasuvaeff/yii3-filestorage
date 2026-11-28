@@ -99,14 +99,14 @@ final class ImageDimensionsTest
 
     public function fillBytesBeforeAMarkerAreSkipped(): void
     {
-        Assert::same($this->jpeg("\xFF\xD8\xFF\xFF\xFF" . substr(Jpeg::sof(8, 4), 1)), [8, 4]);
+        Assert::same($this->jpeg("\xFF\xD8\xFF\xFF\xFF" . substr(Jpeg::sof(8, 4), 1) . "\xFF\xD9"), [8, 4]);
     }
 
     public function aLongRunOfFillBytesIsSkippedAsLibjpegSkipsIt(): void
     {
         $fill = str_repeat("\xFF", 5000);
 
-        Assert::same($this->jpeg("\xFF\xD8" . $fill . substr(Jpeg::sof(8, 4), 1)), [8, 4]);
+        Assert::same($this->jpeg("\xFF\xD8" . $fill . substr(Jpeg::sof(8, 4), 1) . "\xFF\xD9"), [8, 4]);
     }
 
     /**
@@ -123,15 +123,40 @@ final class ImageDimensionsTest
     }
 
     /**
+     * Two frame headers: libjpeg refuses the file (`JERR_SOF_DUPLICATE`), but
+     * Pillow reports the *last* one — so a decoy 1×1 frame ahead of a
+     * 60000×60000 one passed as 1×1 (found while fixing pass 2, N2). The walk
+     * goes on to the start of scan, and a second frame header is undetermined.
+     */
+    public function aSecondFrameHeaderIsUndetermined(): void
+    {
+        Assert::null($this->jpeg(Jpeg::of([Jpeg::sof(1, 1), Jpeg::sof(60_000, 60_000)])));
+        Assert::null($this->jpeg(Jpeg::of([Jpeg::sof(1, 1), Jpeg::app(1, 30), Jpeg::sof(60_000, 60_000, 0xC2)])));
+    }
+
+    public function theWalkStopsAtTheStartOfScan(): void
+    {
+        $scan = Jpeg::segment(0xDA, "\x01\x01\x00\x00\x3F\x00") . "\xFF\xC0 entropy-coded data, never walked";
+
+        Assert::same($this->jpeg("\xFF\xD8" . Jpeg::sof(64, 48) . Jpeg::segment(0xC4, str_repeat("\0", 20)) . $scan), [64, 48]);
+    }
+
+    public function aWalkThatBreaksAfterTheFrameIsUndetermined(): void
+    {
+        Assert::null($this->jpeg(Jpeg::of([Jpeg::sof(8, 4)], withEoi: false)));
+        Assert::null($this->jpeg("\xFF\xD8" . Jpeg::sof(8, 4) . "\xFF\xE0\xFF\xF0"));
+    }
+
+    /**
      * @return iterable<string, array{string}>
      */
     public static function gapProvider(): iterable
     {
-        yield 'zeros after SOI' => ["\xFF\xD8\x00\x00" . Jpeg::sof(8, 4)];
-        yield 'a stuffed zero is data, not a marker' => ["\xFF\xD8\xFF\x00" . Jpeg::sof(8, 4)];
-        yield 'a long gap after a segment' => ["\xFF\xD8" . Jpeg::app(0, 20) . str_repeat("\x11", 100_000) . Jpeg::sof(8, 4)];
+        yield 'zeros after SOI' => ["\xFF\xD8\x00\x00" . Jpeg::sof(8, 4) . "\xFF\xD9"];
+        yield 'a stuffed zero is data, not a marker' => ["\xFF\xD8\xFF\x00" . Jpeg::sof(8, 4) . "\xFF\xD9"];
+        yield 'a long gap after a segment' => ["\xFF\xD8" . Jpeg::app(0, 20) . str_repeat("\x11", 100_000) . Jpeg::sof(8, 4) . "\xFF\xD9"];
         yield 'a gap spanning the scan chunk with FF 00 inside' => [
-            "\xFF\xD8" . Jpeg::app(0, 20) . str_repeat("\x11", 8190) . "\xFF\x00\x22" . Jpeg::sof(8, 4),
+            "\xFF\xD8" . Jpeg::app(0, 20) . str_repeat("\x11", 8190) . "\xFF\x00\x22" . Jpeg::sof(8, 4) . "\xFF\xD9",
         ];
     }
 
@@ -151,7 +176,7 @@ final class ImageDimensionsTest
     {
         $decoy = Jpeg::segment(0xFE, "\x00" . Jpeg::sof(1, 1));
 
-        Assert::same($this->jpeg("\xFF\xD8" . $decoy . "\x00\x00" . Jpeg::sof(60_000, 60_000)), [60_000, 60_000]);
+        Assert::same($this->jpeg("\xFF\xD8" . $decoy . "\x00\x00" . Jpeg::sof(60_000, 60_000) . "\xFF\xD9"), [60_000, 60_000]);
     }
 
     /**
@@ -162,7 +187,7 @@ final class ImageDimensionsTest
     {
         $standalone = "\xFF\x01\xFF\xD0\xFF\xD7";
 
-        Assert::same($this->jpeg("\xFF\xD8" . $standalone . Jpeg::sof(12, 9)), [12, 9]);
+        Assert::same($this->jpeg("\xFF\xD8" . $standalone . Jpeg::sof(12, 9) . "\xFF\xD9"), [12, 9]);
     }
 
     /**
@@ -377,6 +402,18 @@ final class ImageDimensionsTest
     public function aTiffIsMeasuredFromItsIfdChain(string $bytes, array $expected): void
     {
         Assert::same($this->tiff($bytes), $expected);
+    }
+
+    /**
+     * A directory without dimensions in the chain — a thumbnail table, EXIF
+     * or private data — is skipped, not taken for a malformed file.
+     */
+    public function aTiffDirectoryWithoutDimensionsIsSkipped(): void
+    {
+        $first = pack('n', 2) . pack('nnNN', 256, 4, 1, 640) . pack('nnNN', 257, 4, 1, 480) . pack('N', 8 + 2 + 24 + 4);
+        $second = pack('n', 1) . pack('nnNN', 305, 2, 4, 0) . pack('N', 0);
+
+        Assert::same($this->tiff('MM' . pack('nN', 42, 8) . $first . $second), [640, 480]);
     }
 
     public function aRealTiffIsMeasured(): void

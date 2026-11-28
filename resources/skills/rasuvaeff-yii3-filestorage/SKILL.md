@@ -83,7 +83,7 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
 6a. **The pixel guard fails closed.** `maxPixels` walks a JPEG marker by marker
    (seek by segment length, never scan for `FFC0` — the EXIF thumbnail has its
    own frame header; stray bytes *between* segments are skipped as libjpeg
-   does), walks a GIF block by block (a frame larger than the logical screen is
+   does; it walks on to the scan and refuses a second frame header), walks a GIF block by block (a frame larger than the logical screen is
    undetermined — the screen alone is a 1×1 lie), walks a TIFF's IFD chain,
    and refuses a JPEG/PNG/GIF/WebP/TIFF whose dimensions cannot be established.
    Other formats are measured from a 256 KiB prefix only — `requireImageDimensions`
@@ -130,7 +130,8 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
    Every run asks rows and the reference checker about every quarantine entry
    the ledger does not know and restores a referenced one at once — a release
    interrupted before its row was deleted is undone by the next run; under a
-   bound scope provider nothing the ledger does not know is purged.
+   bound scope provider that answers a scope nothing the ledger does not know is
+   purged.
    **The store root belongs to the store:** `gc --orphans` takes every row-less
    file under it (and stale `.part` leftovers). Hidden entries are never listed;
    under a shared web root pass `ownedPrefixes` to `FileSystemStore` — with

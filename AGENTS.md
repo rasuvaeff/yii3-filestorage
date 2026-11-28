@@ -185,7 +185,8 @@ asserting only one half lets the operands be swapped undetected.
   policy. `Policy\ImageDimensions` (`@internal`) follows JPEG segment lengths
   with `seek()` — never a scan for `FFC0` inside a segment, which finds the EXIF
   thumbnail's frame header; between segments it skips stray bytes exactly as
-  libjpeg's `next_marker()` does (pass 2, N2). GIF is walked block by block
+  libjpeg's `next_marker()` does (pass 2, N2), and walks on to SOS: a second
+  frame header is undetermined (Pillow measures the last one). GIF is walked block by block
   through `Policy\GifReader` (buffered: one stream call per sub-block would be a
   CPU DoS), and a frame outside the logical screen is undetermined (pass 2,
   N1). TIFF is walked IFD by IFD (N3). While `maxPixels > 0` a
@@ -282,7 +283,8 @@ asserting only one half lets the operands be swapped undetected.
   one is restored at once (pass 2, N1 — a release interrupted between quarantine
   and row deletion). Only ledger-unknown entries are row-checked: restoring an
   entry another collector holds a live lease on would race its commit. Under a
-  bound scope provider such entries are never purged. Entries are settled one
+  bound scope provider that answers a scope such entries are never purged (one
+  answering null is a global maintenance entry point and purges). Entries are settled one
   by one (B6), a failed restore is a warning (B7), and a failed quarantine rolls
   back what it moved (B8). A row must never outlive its bytes because of gc.
   `GcSafetyTest::aRowStillPointingAtQuarantinedBytesGetsThemBackOnTheNextRun`

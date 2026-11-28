@@ -912,6 +912,34 @@ final class GcSafetyTest
     }
 
     /**
+     * A bound provider answering null is a maintenance entry point that sees
+     * every row — `-db`'s `globalMaintenanceAccess` — and purges as usual.
+     */
+    public function aScopeProviderWithNoCurrentScopeStillPurges(): void
+    {
+        $this->oldOrphans('docs/k1/original.bin');
+        $this->run(['--orphans' => true, '--apply' => true]);
+        $this->clock->advance(new DateInterval('P8D'));
+
+        $tester = new CommandTester(new GcCommand(
+            stores: new StoreRegistry([$this->store]),
+            repository: $this->repository,
+            clock: $this->clock,
+            scopes: new class implements FileScopeProviderInterface {
+                #[\Override]
+                public function currentScopeId(): ?string
+                {
+                    return null;
+                }
+            },
+        ));
+        $tester->execute(['--apply' => true, '--format' => 'json']);
+
+        Assert::false($this->store->isQuarantined('docs/k1/original.bin'));
+        Assert::same($this->decode($tester)['quarantine']['purged'], 1);
+    }
+
+    /**
      * Review 1.0 pass 2 (maintenance), N7: every run asked the ledger about
      * every object of every entry, one query each, for the whole retention.
      * A ledger that can batch is asked once per page of the quarantine.

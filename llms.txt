@@ -362,7 +362,7 @@ bind one explicitly, nothing auto-detects.
 ```php
 new UploadPolicy(array $allowedMimeTypes = [], int $maxBytes = 0, int $maxPixels = 40_000_000, bool $requireImageDimensions = false, ?ReferenceAuthority $referencesOwnedBy = null);
 $policy->assertAcceptable(Upload $upload, ?string $detectedMimeType): void;  // throws PolicyViolationException
-// maxPixels: JPEG walked marker by marker (gaps skipped as libjpeg does), GIF block by block
+// maxPixels: JPEG walked marker by marker to SOS (gaps skipped as libjpeg does, a 2nd SOF refused), GIF block by block
 // (a frame outside the screen is undetermined), TIFF IFD by IFD; JPEG/PNG/GIF/WebP/TIFF with
 // undeterminable dimensions are refused while maxPixels > 0; other formats are measured from a
 // 256 KiB prefix and pass unmeasured unless requireImageDimensions
@@ -469,7 +469,7 @@ Rules:
    (matched via the layout) and the `ReferenceCheckerInterface` on every run and
    restored at once when referenced (a release interrupted before its row was
    deleted is undone by the next run), otherwise purged after `--retention`
-   (default `P7D`). Under a bound scope provider such an entry is never purged
+   (default `P7D`). Under a bound scope provider that answers a scope such an entry is never purged
    (warning). A ledger implementing `Store\BlobLedgerBatchLookupInterface`
    (`findMany(list<BlobId>): array<key, BlobRecord>`) is asked once per page. One
    failing entry is skipped and counted (`quarantine.failed`); a failed restore
