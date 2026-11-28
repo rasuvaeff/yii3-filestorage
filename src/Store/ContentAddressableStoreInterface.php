@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3Filestorage\Store;
 
+use Rasuvaeff\Yii3Filestorage\Exception\SizeLimitExceededException;
 use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
-use Rasuvaeff\Yii3Filestorage\Exception\UploadTooLargeException;
 use Rasuvaeff\Yii3Filestorage\Upload;
 
 /**
@@ -44,7 +44,7 @@ interface ContentAddressableStoreInterface extends StoreInterface
      * @param int $maxBytes Zero means no cap.
      *
      * @throws StoreException
-     * @throws UploadTooLargeException
+     * @throws SizeLimitExceededException
      */
     public function putIfAbsent(Upload $upload, StoredObjectId $object, int $maxBytes = 0): StoreResult;
 }

@@ -83,6 +83,123 @@ final class FileSystemStoreQuarantineTest
         Assert::same($this->inventory(), ['docs/ab/other/original.jpg']);
     }
 
+    /**
+     * Review 1.0 pass 2 (maintenance), N11: the orphan sweep quarantines the
+     * file itself, and the emptied key directory stayed — one empty
+     * `<group>/ab/cd/<key>/` per swept orphan, for good.
+     */
+    public function quarantiningTheOnlyFileOfAKeyDirectoryRemovesTheDirectory(): void
+    {
+        $this->place('docs/ab/cd/key/original.jpg', 'orphan');
+        $this->place('docs/ab/cd/other/original.jpg', 'neighbour');
+
+        $this->store->quarantine(ObjectSet::tree(new StoredObjectId('docs/ab/cd/key/original.jpg')), $this->now);
+
+        Assert::false(is_dir($this->root . '/docs/ab/cd/key'));
+        Assert::true(is_file($this->root . '/docs/ab/cd/other/original.jpg'));
+    }
+
+    /**
+     * A fan-out directory is never removed for a file: a writer creates it and
+     * then opens its file inside, and removing it between the two fails the
+     * upload. Only a directory one file owns goes.
+     */
+    public function aFanOutDirectoryIsLeftEvenWhenEmptied(): void
+    {
+        $flat = new FileSystemStore('upload', $this->root, $this->factory, quarantinePath: $this->quarantine, layout: new FlatSiblingLayout());
+        $this->place('blobs/ab/cd/abcd.jpg', 'orphan');
+        $this->place('docs/ab/loose.jpg', 'orphan');
+
+        $flat->quarantine(ObjectSet::tree(new StoredObjectId('blobs/ab/cd/abcd.jpg')), $this->now);
+        $this->store->quarantine(ObjectSet::tree(new StoredObjectId('docs/ab/loose.jpg')), $this->now);
+
+        Assert::true(is_dir($this->root . '/blobs/ab/cd'));
+        Assert::true(is_dir($this->root . '/docs/ab'));
+    }
+
+    public function aKeyDirectoryWithSomethingLeftInItStays(): void
+    {
+        $this->place('docs/ab/cd/key/original.jpg', 'orphan');
+        $this->place('docs/ab/cd/key/original.jpg.part', 'a writer');
+
+        $this->store->quarantine(ObjectSet::tree(new StoredObjectId('docs/ab/cd/key/original.jpg')), $this->now);
+
+        Assert::true(is_file($this->root . '/docs/ab/cd/key/original.jpg.part'));
+    }
+
+    /**
+     * Review 1.0 pass 2 (maintenance), N4: a crash mid-write leaves a `.part`
+     * that neither the inventory nor the quarantine lists, so nothing ever
+     * removed it — and under a public root it was served. Removed once it
+     * has not been written to for the minimum age.
+     */
+    public function abandonedPartialsOlderThanTheCutoffAreRemoved(): void
+    {
+        $this->place('docs/ab/cd/key/original.jpg.part', 'stalled');
+        $this->place('blobs/ab/cd/abcd.jpg.0123456789abcdef.part', 'stalled');
+        $this->place('docs/ab/cd/fresh/original.jpg.part', 'writing');
+        $this->place('docs/ab/cd/key/original.jpg', 'live');
+        $this->place('.hidden/x.part', 'not ours');
+        touch($this->root . '/docs/ab/cd/key/original.jpg.part', $this->now->getTimestamp() - 7200);
+        touch($this->root . '/blobs/ab/cd/abcd.jpg.0123456789abcdef.part', $this->now->getTimestamp() - 7200);
+        touch($this->root . '/.hidden/x.part', $this->now->getTimestamp() - 7200);
+        touch($this->root . '/docs/ab/cd/fresh/original.jpg.part', $this->now->getTimestamp());
+        $cutoff = $this->now->modify('-1 hour');
+
+        Assert::same($this->store->sweepAbandonedPartials($cutoff, apply: false, limit: 10), [
+            'blobs/ab/cd/abcd.jpg.0123456789abcdef.part',
+            'docs/ab/cd/key/original.jpg.part',
+        ]);
+        Assert::true(is_file($this->root . '/docs/ab/cd/key/original.jpg.part'), 'a dry run removes nothing');
+
+        Assert::same(\count($this->store->sweepAbandonedPartials($cutoff, apply: true, limit: 1)), 1);
+        Assert::same($this->store->sweepAbandonedPartials($cutoff, apply: true, limit: 10), ['docs/ab/cd/key/original.jpg.part']);
+
+        Assert::false(is_file($this->root . '/docs/ab/cd/key/original.jpg.part'));
+        Assert::false(is_file($this->root . '/blobs/ab/cd/abcd.jpg.0123456789abcdef.part'));
+        Assert::true(is_file($this->root . '/docs/ab/cd/fresh/original.jpg.part'));
+        Assert::true(is_file($this->root . '/docs/ab/cd/key/original.jpg'));
+        Assert::true(is_file($this->root . '/.hidden/x.part'));
+    }
+
+    public function abandonedPartialsOutsideTheOwnedPrefixesAreNotTouched(): void
+    {
+        $owned = new FileSystemStore('upload', $this->root, $this->factory, quarantinePath: $this->quarantine, ownedPrefixes: ['blobs']);
+        $this->place('blobs/ab/x.jpg.part', 'stalled');
+        $this->place('banners/top.png.part', 'the application\'s');
+        touch($this->root . '/blobs/ab/x.jpg.part', $this->now->getTimestamp() - 7200);
+        touch($this->root . '/banners/top.png.part', $this->now->getTimestamp() - 7200);
+
+        Assert::same($owned->sweepAbandonedPartials($this->now, apply: true, limit: 10), ['blobs/ab/x.jpg.part']);
+        Assert::true(is_file($this->root . '/banners/top.png.part'));
+    }
+
+    /**
+     * "Oldest path first" is string order over the whole relative path, not
+     * the order a directory walk meets them: `a-b/` sorts before `a/`, though
+     * the directory `a` is listed first.
+     */
+    public function abandonedPartialsComeInPathOrderAndTheLimitTakesTheFirst(): void
+    {
+        $this->place('a/x.jpg.part', 'stalled');
+        $this->place('a-b/y.jpg.part', 'stalled');
+        touch($this->root . '/a/x.jpg.part', $this->now->getTimestamp() - 7200);
+        touch($this->root . '/a-b/y.jpg.part', $this->now->getTimestamp() - 7200);
+
+        Assert::same($this->store->sweepAbandonedPartials($this->now, apply: false, limit: 10), ['a-b/y.jpg.part', 'a/x.jpg.part']);
+        Assert::same($this->store->sweepAbandonedPartials($this->now, apply: false, limit: 1), ['a-b/y.jpg.part']);
+    }
+
+    public function aPartialModifiedExactlyAtTheCutoffIsKept(): void
+    {
+        $this->place('docs/k/original.jpg.part', 'writing');
+        touch($this->root . '/docs/k/original.jpg.part', $this->now->getTimestamp());
+
+        Assert::same($this->store->sweepAbandonedPartials($this->now, apply: true, limit: 10), []);
+        Assert::same($this->store->sweepAbandonedPartials($this->now->modify('+1 second'), apply: true, limit: 10), ['docs/k/original.jpg.part']);
+        Assert::false(is_file($this->root . '/docs/k/original.jpg.part'));
+    }
+
     public function aStagingFileKeepsItsDirectory(): void
     {
         $this->place('docs/ab/key/original.jpg', 'original');
@@ -408,6 +525,71 @@ final class FileSystemStoreQuarantineTest
         Assert::same($objects[0]->size, 0);
     }
 
+    /**
+     * Review 1.0 B8: a quarantine that failed on its second member left the
+     * first one moved; the row stayed, and the retention purged its original.
+     * The failure here is a target path over PATH_MAX — the quarantine is
+     * deeper than the root — which fails for root too, unlike permissions.
+     */
+    public function aFailedQuarantinePutsBackWhatItAlreadyMoved(): void
+    {
+        if (\PHP_OS_FAMILY === 'Windows') {
+            // The failure is a path over PATH_MAX, and on Windows the 260-char
+            // limit already refuses the quarantine directory in the
+            // constructor. The mutation gate runs on Linux.
+            return;
+        }
+
+        $deep = $this->base . '/' . implode('/', array_fill(0, 15, str_repeat('q', 200)));
+        $store = new FileSystemStore('upload', $this->root, $this->factory, quarantinePath: $deep);
+        $long = 'k/' . implode('/', array_fill(0, 8, str_repeat('b', 200))) . '/x.bin';
+        $this->place('k/a.bin', 'first');
+        $this->place($long, 'second');
+
+        try {
+            $store->quarantine(ObjectSet::tree(new StoredObjectId('k')), $this->now);
+            Assert::fail('expected the second move to fail');
+        } catch (StoreException $e) {
+            Assert::string($e->getMessage())->contains('nothing was moved');
+        }
+
+        Assert::same(file_get_contents($this->root . '/k/a.bin'), 'first');
+        Assert::same(file_get_contents($this->root . '/' . $long), 'second');
+        Assert::same([...$store->quarantined()], []);
+    }
+
+    /**
+     * A legacy row that does not fit the layout is a StoreException at the
+     * store boundary — what download actions and derivative generators catch —
+     * never the layout's InvalidArgumentException.
+     */
+    public function aRowTheLayoutRefusesIsAStoreError(): void
+    {
+        $this->place('docs/x.bin', 'legacy');
+        $file = $this->file('docs/x.bin');
+        $thumb = new DerivativeDescriptor('s', 'webp', 'image/webp');
+        $public = new \Rasuvaeff\Yii3Filestorage\Store\FileSystem\PublicFileSystemStore($this->store, 'https://x.test');
+        $memory = new \Rasuvaeff\Yii3Filestorage\Test\InMemoryStore('m', $this->factory);
+
+        foreach ([
+            'delete' => fn() => $this->store->delete($file),
+            'hasDerivative' => fn() => $this->store->hasDerivative($file, $thumb),
+            'derivativeStream' => fn() => $this->store->derivativeStream($file, $thumb),
+            'writeDerivative' => fn() => $this->store->writeDerivative($file, $thumb, $this->factory->createStream('x')),
+            'publicDerivativeUrl' => static fn() => $public->publicDerivativeUrl($file, $thumb),
+            'in-memory delete' => static fn() => $memory->delete($file),
+        ] as $call => $run) {
+            try {
+                $run();
+                Assert::fail("{$call} did not refuse");
+            } catch (StoreException $e) {
+                Assert::string($e->getMessage())->contains('does not fit the directory layout');
+            }
+        }
+
+        Assert::same(file_get_contents($this->root . '/docs/x.bin'), 'legacy');
+    }
+
     private function place(string $relativePath, string $bytes): void
     {
         $absolute = $this->root . '/' . $relativePath;
@@ -431,7 +613,7 @@ final class FileSystemStoreQuarantineTest
     private function inventory(?FileSystemStore $store = null): array
     {
         return array_map(
-            static fn(StoredObject $o): string => $o->relativePath,
+            static fn(StoredObject $o): string => $o->id->relativePath,
             iterator_to_array(($store ?? $this->store)->objects(), preserve_keys: false),
         );
     }

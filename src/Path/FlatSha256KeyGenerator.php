@@ -16,6 +16,13 @@ use Override;
  * bytes detected as two different types get two keys. Without an extension the
  * key is `<hash>` alone. Derivatives sit beside it as `<hash>-<name>.<ext>`.
  *
+ * With a `prefix` the key is `<prefix>/<hash[0:2]>/<hash[2:4]>/<hash>.<ext>`
+ * and the scope is **ignored** — the form for adopting an existing tree such
+ * as `blobs/ab/cd/<sha>.jpg` without rewriting a single URL. The scope is the
+ * isolation boundary between tenants and groups, so a prefixed generator is
+ * for a single-tenant installation whose deduplication scope is global
+ * anyway; under tenancy one tenant could learn that another stored a file.
+ *
  * @api
  */
 final readonly class FlatSha256KeyGenerator implements ContentAddressedKeyGeneratorInterface
@@ -23,6 +30,24 @@ final readonly class FlatSha256KeyGenerator implements ContentAddressedKeyGenera
     private const string SCOPE_PATTERN = '~^[A-Za-z0-9][A-Za-z0-9_-]{0,63}(?:/[A-Za-z0-9][A-Za-z0-9_-]{0,63})*\z~';
     private const string SHA256_PATTERN = '/^[a-f0-9]{64}\z/';
     private const string EXTENSION_PATTERN = '/^[a-z0-9]{1,16}\z/';
+
+    /** @var non-empty-string|null */
+    private ?string $prefix;
+
+    /**
+     * @param string|null $prefix Replaces the scope in every key — see the
+     *        class docblock. Segments of letters, digits, `_` and `-`.
+     *
+     * @throws InvalidArgumentException
+     */
+    public function __construct(?string $prefix = null)
+    {
+        if ($prefix !== null && ($prefix === '' || preg_match(self::SCOPE_PATTERN, $prefix) !== 1)) {
+            throw new InvalidArgumentException("Invalid key prefix \"{$prefix}\"");
+        }
+
+        $this->prefix = $prefix;
+    }
 
     #[Override]
     public function generate(string $scope, string $sha256, ?string $extension = null): string
@@ -37,7 +62,7 @@ final readonly class FlatSha256KeyGenerator implements ContentAddressedKeyGenera
             throw new InvalidArgumentException("Invalid extension \"{$extension}\"");
         }
 
-        return $scope
+        return ($this->prefix ?? $scope)
             . '/' . substr($sha256, 0, 2)
             . '/' . substr($sha256, 2, 2)
             . '/' . $sha256

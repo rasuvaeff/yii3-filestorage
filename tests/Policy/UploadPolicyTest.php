@@ -10,19 +10,27 @@ use Rasuvaeff\PropertyTesting\ArbitraryInterface;
 use Rasuvaeff\PropertyTesting\Gen;
 use Rasuvaeff\PropertyTesting\Property;
 use Rasuvaeff\Yii3Filestorage\Exception\PolicyViolationException;
+use Rasuvaeff\Yii3Filestorage\Exception\SizeLimitExceededException;
 use Rasuvaeff\Yii3Filestorage\Exception\UnsupportedMediaTypeException;
 use Rasuvaeff\Yii3Filestorage\Exception\UploadSizeException;
+use Rasuvaeff\Yii3Filestorage\Policy\ImageDimensions;
+use Rasuvaeff\Yii3Filestorage\Policy\PolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\UploadPolicy;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\Jpeg;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\ShortReadingStream;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\Tiff;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Testo\Assert;
 use Testo\Assert\ExpectNoAssertions;
 use Testo\Codecov\Covers;
+use Testo\Data\DataProvider;
 use Testo\Expect;
 use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
 
 #[Test]
 #[Covers(UploadPolicy::class)]
+#[Covers(ImageDimensions::class)]
 final class UploadPolicyTest
 {
     private Psr17Factory $factory;
@@ -49,7 +57,7 @@ final class UploadPolicyTest
     public function anAllowedTypePasses(): void
     {
         (new UploadPolicy(allowedMimeTypes: ['image/png', 'image/jpeg']))
-            ->assertAcceptable($this->upload('x'), 'image/png');
+            ->assertAcceptable($this->upload($this->png(1, 1)), 'image/png');
     }
 
     public function aTypeOutsideTheAllowListIsRefusedAndTheMessageListsWhatIsAllowed(): void
@@ -183,7 +191,9 @@ final class UploadPolicyTest
     {
         $policy = new UploadPolicy(maxPixels: 10, requireImageDimensions: true);
 
-        Expect::exception(PolicyViolationException::class)->withMessageContaining('could not be established');
+        Expect::exception(PolicyViolationException::class)->withMessageContaining(
+            'Image dimensions could not be established for image/x-exotic, and this group requires them',
+        );
 
         $policy->assertAcceptable($this->upload('not really an image'), 'image/x-exotic');
     }
@@ -276,6 +286,8 @@ final class UploadPolicyTest
             Assert::true(actual: false, message: 'a policy violation was expected');
         } catch (PolicyViolationException $e) {
             Assert::instanceOf($e, UploadSizeException::class);
+            // Review 1.0 B3: and a size refusal, catchable with the spool cap's.
+            Assert::instanceOf($e, SizeLimitExceededException::class);
         }
 
         try {
@@ -318,15 +330,173 @@ final class UploadPolicyTest
     }
 
     /**
-     * Bytes that carry a raster signature but no parsable image are still
-     * storable when the group does not insist on dimensions: the check is
-     * skipped, not treated as a violation.
+     * Review 1.0 A1 (summary A2): for a format the guard can parse, "no
+     * dimensions found" is no longer "nothing to check". Failing open here is
+     * the whole bypass — a crafted file only has to hide its header.
      */
-    #[ExpectNoAssertions]
-    public function aCorruptRasterIsAcceptedWhenDimensionsAreNotRequired(): void
+    #[DataProvider('parseableRasterProvider')]
+    public function aParseableRasterWithoutDimensionsIsRefusedEvenWhenTheyAreNotRequired(string $mediaType): void
     {
         $policy = new UploadPolicy(maxPixels: 1000, requireImageDimensions: false);
-        $policy->assertAcceptable($this->upload('raster bytes nothing can parse'), 'image/png');
+
+        Expect::exception(PolicyViolationException::class)->withMessageContaining(
+            "Image dimensions could not be established for {$mediaType}; a malformed header cannot be checked against the pixel limit",
+        );
+        $policy->assertAcceptable($this->upload('raster bytes nothing can parse'), $mediaType);
+    }
+
+    /**
+     * @return iterable<string, array{non-empty-string}>
+     */
+    public static function parseableRasterProvider(): iterable
+    {
+        yield 'jpeg' => ['image/jpeg'];
+        yield 'png' => ['image/png'];
+        yield 'gif' => ['image/gif'];
+        yield 'webp' => ['image/webp'];
+    }
+
+    /**
+     * The fail-closed rule is bounded by the pixel cap: a group that switched
+     * the cap off asked for no measurement, so a corrupt PNG is its business.
+     */
+    #[ExpectNoAssertions]
+    public function aCorruptParseableRasterPassesWhenThePixelCapIsOff(): void
+    {
+        (new UploadPolicy(maxPixels: 0))->assertAcceptable($this->upload('raster bytes nothing can parse'), 'image/png');
+    }
+
+    /**
+     * Probe p3 of the 1.0 review: five 65 000-byte APP2 segments push a
+     * 60000×60000 frame header past the old 256 KiB window. It used to be
+     * accepted by both the wildcard policy and a JPEG-only one.
+     */
+    public function aJpegPaddedPastTheOldHeaderWindowIsStillMeasured(): void
+    {
+        $bomb = Jpeg::of([Jpeg::padding(), Jpeg::sof(60_000, 60_000)]);
+        Assert::true(\strlen($bomb) > UploadPolicy::MAX_IMAGE_HEADER_BYTES, 'the fixture really is past the window');
+
+        Expect::exception(PolicyViolationException::class)->withMessageContaining(
+            'Image is 60000x60000 = 3600000000 pixels, over the 40000000 pixel limit',
+        );
+        (new UploadPolicy(allowedMimeTypes: ['image/jpeg']))->assertAcceptable($this->upload($bomb), 'image/jpeg');
+    }
+
+    /**
+     * The other half of probe p3: the shipped wildcard policy, built the way
+     * `params.php` builds it, with no pixel setting of its own. It inherits the
+     * class default, so the bomb is refused there too.
+     */
+    public function theShippedWildcardPolicyRefusesThePaddedBomb(): void
+    {
+        $policy = PolicyRegistry::fromArray(['*' => ['maxBytes' => 20_971_520]])->for('anything');
+
+        Expect::exception(PolicyViolationException::class)->withMessageContaining('Image is 60000x60000');
+        $policy->assertAcceptable($this->upload(Jpeg::of([Jpeg::padding(), Jpeg::sof(60_000, 60_000)])), 'image/jpeg');
+    }
+
+    /**
+     * Review 1.0 pass 2, N1: probe q1's Pillow-made GIF — a 1×1 logical
+     * screen around one 8000×8000 frame — passed the shipped wildcard policy
+     * as 1×1. 64 megapixels against the 40 M default.
+     */
+    public function theShippedWildcardPolicyRefusesAGifWhoseFrameOutgrowsItsScreen(): void
+    {
+        $policy = PolicyRegistry::fromArray(['*' => ['maxBytes' => 20_971_520]])->for('anything');
+        $bomb = (string) file_get_contents(__DIR__ . '/../Support/fixtures/screen1x1-64mp.gif');
+
+        Expect::exception(PolicyViolationException::class)->withMessageContaining(
+            'Image dimensions could not be established for image/gif',
+        );
+        $policy->assertAcceptable($this->upload($bomb), 'image/gif');
+    }
+
+    /**
+     * Review 1.0 pass 2, N3: an IFD after the image data, past the old
+     * 256 KiB window — probe q1's 60000×60000 TIFF was accepted unmeasured.
+     */
+    public function theShippedWildcardPolicyMeasuresATiffWhoseIfdSitsLate(): void
+    {
+        $policy = PolicyRegistry::fromArray(['*' => ['maxBytes' => 20_971_520]])->for('anything');
+
+        Expect::exception(PolicyViolationException::class)->withMessageContaining('Image is 60000x60000');
+        $policy->assertAcceptable($this->upload(Tiff::of([[60_000, 60_000]], padding: 300_000)), 'image/tiff');
+    }
+
+    public function anUnmeasurableTiffIsRefusedUnderAPixelLimit(): void
+    {
+        Expect::exception(PolicyViolationException::class)->withMessageContaining(
+            'Image dimensions could not be established for image/tiff',
+        );
+        (new UploadPolicy())->assertAcceptable($this->upload('MM' . pack('n', 43) . str_repeat("\0", 20)), 'image/tiff');
+    }
+
+    /**
+     * The other side of A1: a real JPEG with a fat ICC or Photoshop block before
+     * its frame header must be measured and accepted, not refused because the
+     * header sits late. Measured, because 101×100 against a 10 000 cap fails.
+     */
+    public function aLegitimateJpegWithLargeMetadataBeforeTheFrameIsMeasured(): void
+    {
+        $policy = new UploadPolicy(maxPixels: 10_000, requireImageDimensions: true);
+        $policy->assertAcceptable(
+            $this->upload(Jpeg::of([Jpeg::app(0, 14), Jpeg::padding(), Jpeg::sof(100, 100)])),
+            'image/jpeg',
+        );
+
+        Expect::exception(PolicyViolationException::class)->withMessageContaining('Image is 101x100');
+        $policy->assertAcceptable(
+            $this->upload(Jpeg::of([Jpeg::app(0, 14), Jpeg::padding(), Jpeg::sof(101, 100)])),
+            'image/jpeg',
+        );
+    }
+
+    /**
+     * Probe p1 of the 1.0 review (B1): a seekable stream that hands out at
+     * most 100 bytes per read used to turn the pixel check off — a one-read
+     * prefix had no frame header in it.
+     */
+    public function shortReadsDoNotSwitchThePixelCheckOff(): void
+    {
+        $bomb = Jpeg::of([Jpeg::app(0, 300), Jpeg::sof(60_000, 60_000)]);
+        $upload = Upload::fromStream(
+            new ShortReadingStream($this->factory->createStream($bomb), 100),
+            'bomb.jpg',
+            $this->factory,
+        );
+
+        Expect::exception(PolicyViolationException::class)->withMessageContaining('Image is 60000x60000');
+        (new UploadPolicy())->assertAcceptable($upload, 'image/jpeg');
+    }
+
+    /**
+     * The same for the formats whose header sits at the start: the prefix for
+     * `getimagesizefromstring()` is read in full, not in one call.
+     */
+    public function shortReadsStillMeasureAPng(): void
+    {
+        $upload = Upload::fromStream(
+            new ShortReadingStream($this->factory->createStream($this->png(9_000, 9_000)), 3),
+            'big.png',
+            $this->factory,
+        );
+
+        Expect::exception(PolicyViolationException::class)->withMessageContaining('Image is 9000x9000');
+        (new UploadPolicy())->assertAcceptable($upload, 'image/png');
+    }
+
+    #[ExpectNoAssertions]
+    public function anUnparseableExoticRasterStillPassesWhenDimensionsAreNotRequired(): void
+    {
+        (new UploadPolicy(maxPixels: 10))->assertAcceptable($this->upload('ftypavif...'), 'image/avif');
+    }
+
+    public function theJpegWalkRewindsTheStream(): void
+    {
+        $upload = $this->upload(Jpeg::of([Jpeg::sof(10, 10)]));
+        (new UploadPolicy())->assertAcceptable($upload, 'image/jpeg');
+
+        Assert::same($upload->stream()->tell(), 0);
     }
 
     /**

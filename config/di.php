@@ -17,9 +17,11 @@ use Rasuvaeff\Yii3Filestorage\Repository\ScopedFileResolverInterface;
 use Rasuvaeff\Yii3Filestorage\Store\BlobLedgerInterface;
 use Rasuvaeff\Yii3Filestorage\Id\IdGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Id\Uuid7IdGenerator;
+use Rasuvaeff\Yii3Filestorage\Mime\ActiveMediaTypes;
 use Rasuvaeff\Yii3Filestorage\Mime\ExtensionMap;
 use Rasuvaeff\Yii3Filestorage\Mime\FinfoMimeTypeDetector;
 use Rasuvaeff\Yii3Filestorage\Mime\MimeTypeDetectorInterface;
+use Rasuvaeff\Yii3Filestorage\Path\ContentAddressedKeyGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicyRegistry;
@@ -55,8 +57,16 @@ return [
         $params['rasuvaeff/yii3-filestorage']['policies'],
     ),
 
-    DeliveryPolicyRegistry::class => static fn (): DeliveryPolicyRegistry => DeliveryPolicyRegistry::fromArray(
+    // One instance for the family: `-web`'s proxy and a presigning store take
+    // it from the container, the delivery registry carries it to the facade
+    // and to `check` (review 1.0 pass 2, N4).
+    ActiveMediaTypes::class => static fn (): ActiveMediaTypes => ActiveMediaTypes::fromConfig(
+        $params['rasuvaeff/yii3-filestorage']['activeMediaTypes'],
+    ),
+
+    DeliveryPolicyRegistry::class => static fn (ActiveMediaTypes $activeMediaTypes): DeliveryPolicyRegistry => DeliveryPolicyRegistry::fromArray(
         $params['rasuvaeff/yii3-filestorage']['delivery'],
+        $activeMediaTypes,
     ),
 
     // One store in, one registry out. An application that genuinely runs
@@ -105,8 +115,12 @@ return [
         RepositoryInterface $repository,
         PolicyRegistry $policies,
         DeliveryPolicyRegistry $deliveryPolicies,
+        PathGeneratorInterface $paths,
         ?FileScopeProviderInterface $scopes = null,
         ?ScopedFileResolverInterface $scopedFiles = null,
+        ?ContentAddressedKeyGeneratorInterface $contentKeys = null,
+        ?StreamFactoryInterface $streams = null,
+        ?ReferenceCheckerInterface $references = null,
     ): CheckCommand => new CheckCommand(
         stores: $stores,
         repository: $repository,
@@ -126,6 +140,12 @@ return [
         ))),
         scopes: $scopes,
         scopedFiles: $scopedFiles,
+        // Probed against every store's layout: a generator whose keys the
+        // layout cannot delete one by one is an error (review 1.0 A1).
+        contentKeys: $contentKeys,
+        paths: $paths,
+        streams: $streams,
+        references: $references,
     ),
 
     // The operations commands need a repository that can be walked. That is a
@@ -160,8 +180,11 @@ return [
         clock: $clock,
         ledger: $ledger,
         scopes: $scopes,
+        leaseTtl: new DateInterval($params['rasuvaeff/yii3-filestorage']['gc']['leaseTtl']),
+        gracePeriod: new DateInterval($params['rasuvaeff/yii3-filestorage']['gc']['gracePeriod']),
         references: $references,
         policies: $policies,
+        retention: new DateInterval($params['rasuvaeff/yii3-filestorage']['gc']['retention']),
     ),
 
     VerifyCommand::class => static fn (

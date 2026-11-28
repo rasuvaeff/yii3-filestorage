@@ -12,6 +12,9 @@ namespace Rasuvaeff\Yii3Filestorage\Exception;
  * tell them apart when the two are different classes rather than different
  * messages.
  *
+ * Thrown by the policy when the size is known up front, and by a store's
+ * `write()` when an unknown-length body crosses the same limit mid-copy.
+ *
  * @api
  */
-final class UploadSizeException extends PolicyViolationException {}
+final class UploadSizeException extends PolicyViolationException implements SizeLimitExceededException {}

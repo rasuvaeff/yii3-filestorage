@@ -8,6 +8,7 @@ use Closure;
 use DateTimeImmutable;
 use Override;
 use Psr\Http\Message\StreamInterface;
+use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectLayoutInterface;
@@ -15,7 +16,6 @@ use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectSet;
 use Rasuvaeff\Yii3Filestorage\Store\MaintenanceStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\QuarantinedObject;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObject;
-use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
 use Rasuvaeff\Yii3Filestorage\Store\StoreResult;
 use Rasuvaeff\Yii3Filestorage\Upload;
 
@@ -31,17 +31,19 @@ use Rasuvaeff\Yii3Filestorage\Upload;
  */
 final class InterleavingStore implements MaintenanceStoreInterface
 {
-    private ?Closure $beforeDeleteObject = null;
     private ?Closure $beforeQuarantine = null;
     private ?Closure $beforeObjects = null;
     private bool $undated = false;
 
-    public function __construct(private readonly MaintenanceStoreInterface $store) {}
+    /** @var array<string, true> Entries holding one of these paths cannot be restored or purged. */
+    private array $stuck = [];
 
-    public function onFirstDeleteObject(Closure $hook): void
+    public function refuseEntriesHolding(string $relativePath): void
     {
-        $this->beforeDeleteObject = $hook;
+        $this->stuck[$relativePath] = true;
     }
+
+    public function __construct(private readonly MaintenanceStoreInterface $store) {}
 
     public function onFirstQuarantine(Closure $hook): void
     {
@@ -136,18 +138,6 @@ final class InterleavingStore implements MaintenanceStoreInterface
     }
 
     #[Override]
-    public function deleteObject(StoredObjectId $object): void
-    {
-        $hook = $this->beforeDeleteObject;
-        $this->beforeDeleteObject = null;
-        if ($hook instanceof \Closure) {
-            $hook($object);
-        }
-
-        $this->store->deleteObject($object);
-    }
-
-    #[Override]
     public function quarantine(ObjectSet $objects, DateTimeImmutable $now): ?QuarantinedObject
     {
         $hook = $this->beforeQuarantine;
@@ -162,13 +152,24 @@ final class InterleavingStore implements MaintenanceStoreInterface
     #[Override]
     public function restore(QuarantinedObject $entry): void
     {
+        $this->refuseStuck($entry);
         $this->store->restore($entry);
     }
 
     #[Override]
     public function purge(QuarantinedObject $entry): void
     {
+        $this->refuseStuck($entry);
         $this->store->purge($entry);
+    }
+
+    private function refuseStuck(QuarantinedObject $entry): void
+    {
+        foreach ($entry->objects as $object) {
+            if (isset($this->stuck[$object->relativePath])) {
+                throw new StoreException("Permission denied on \"{$object->relativePath}\"");
+            }
+        }
     }
 
     #[Override]

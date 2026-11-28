@@ -5,15 +5,25 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Filestorage\Command;
 
 use Override;
+use Psr\Http\Message\StreamFactoryInterface;
+use Rasuvaeff\Yii3Filestorage\Mime\ActiveMediaTypes;
+use Rasuvaeff\Yii3Filestorage\Path\ContentAddressedKeyGeneratorInterface;
+use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
+use Rasuvaeff\Yii3Filestorage\Path\Sha256KeyGenerator;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\PolicyRegistry;
+use Rasuvaeff\Yii3Filestorage\Reference\ReferenceAuthority;
+use Rasuvaeff\Yii3Filestorage\Reference\ReferenceCheckerInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\MaintenanceRepositoryInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\RepositoryInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\ScopedFileResolverInterface;
 use Rasuvaeff\Yii3Filestorage\Store\ContentAddressableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeAwareStoreInterface;
+use Rasuvaeff\Yii3Filestorage\Store\FileSystem\PublicFileSystemStore;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\LayoutCompatibility;
 use Rasuvaeff\Yii3Filestorage\Store\MaintenanceStoreInterface;
+use Rasuvaeff\Yii3Filestorage\Store\PubliclyReadableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\RangeReadableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
@@ -41,23 +51,20 @@ use Symfony\Component\Console\Output\OutputInterface;
 #[AsCommand(name: 'filestorage:check', description: 'Verify file storage wiring, capabilities and delivery safety')]
 final class CheckCommand extends Command
 {
-    /**
-     * Formats that execute in a browser. A permanent public URL cannot be
-     * combined with any of them, because nothing on that path can force a
-     * download or send `X-Content-Type-Options`.
-     */
-    private const array ACTIVE_MEDIA_TYPES = [
-        'application/xhtml+xml',
-        'application/xml',
-        'image/svg+xml',
-        'text/html',
-        'text/xml',
-    ];
+    private readonly ActiveMediaTypes $activeTypes;
 
     /**
      * @param list<non-empty-string> $knownGroups Groups worth reporting on;
      *        `PolicyRegistry` answers for any name, so the command cannot
      *        discover them on its own.
+     * @param ContentAddressedKeyGeneratorInterface|null $contentKeys The
+     *        generator deduplication writes shared keys with; null is
+     *        `Sha256KeyGenerator`, the `-db` default. Probed against the
+     *        layout of every content-addressable store.
+     * @param PathGeneratorInterface|null $paths Probed, with `$streams`,
+     *        against the layout of every store.
+     * @param ReferenceCheckerInterface|null $references Whether groups that
+     *        hand references to the application can be released at all.
      */
     public function __construct(
         private readonly StoreRegistry $stores,
@@ -67,8 +74,18 @@ final class CheckCommand extends Command
         private readonly array $knownGroups = [],
         private readonly ?FileScopeProviderInterface $scopes = null,
         private readonly ?ScopedFileResolverInterface $scopedFiles = null,
+        private readonly ?ContentAddressedKeyGeneratorInterface $contentKeys = null,
+        private readonly ?PathGeneratorInterface $paths = null,
+        private readonly ?StreamFactoryInterface $streams = null,
+        private readonly ?ReferenceCheckerInterface $references = null,
     ) {
         parent::__construct();
+        // Formats that execute as the origin. A permanent public URL cannot be
+        // combined with any of them, because nothing on that path can force a
+        // download or send `X-Content-Type-Options`. The plugin tier (PDF) is
+        // not refused: a public PDF is a legitimate publication. The configured
+        // list, so an application's extra types count too (review 1.0 pass 2, N4).
+        $this->activeTypes = $deliveryPolicies->activeMediaTypes()->withoutPlugins();
     }
 
     #[Override]
@@ -85,7 +102,7 @@ final class CheckCommand extends Command
         $errors = [];
         $warnings = [];
 
-        /** @var list<array{name: string, class: string, capabilities: list<string>, default: bool}> $storeRows */
+        /** @var list<array{name: string, class: string, layout: string, capabilities: list<string>, default: bool}> $storeRows */
         $storeRows = [];
 
         /** @var list<array{group: string, accepts: list<string>, maxBytes: int, maxPixels: int, directPublicUrl: bool}> $groupRows */
@@ -98,23 +115,67 @@ final class CheckCommand extends Command
             $storeRows[] = [
                 'name' => $name,
                 'class' => $store::class,
+                'layout' => $store->layout()::class,
                 'capabilities' => $this->capabilities($store),
                 'default' => $name === $this->stores->defaultName(),
             ];
             $rows[] = [
                 $name . ($name === $this->stores->defaultName() ? ' (default)' : ''),
                 $store::class,
+                $this->shortName($store->layout()::class),
                 implode(', ', $this->capabilities($store)) ?: 'base only',
             ];
 
+            // A key generator whose keys the layout cannot delete one by one
+            // loses other files' bytes on the first deletion (review 1.0 A1).
+            if ($store instanceof ContentAddressableStoreInterface) {
+                $problem = LayoutCompatibility::contentKeysProblem(
+                    $this->contentKeys ?? new Sha256KeyGenerator(),
+                    $store->layout(),
+                );
+                // Deduplication writes to one store — the default unless
+                // `-db`'s factory is told otherwise (`storeName`) — and only
+                // `-db` knows which. Its factory refuses a mismatched pair when
+                // it is built, so here it is a warning on every store: an error
+                // on the default one failed a sound configuration that
+                // deduplicates elsewhere (review 1.0 pass 2, N5).
+                if ($problem !== null) {
+                    $warnings[] = "Store \"{$name}\": {$problem}. It is only a problem if deduplication writes to "
+                        . 'this store; rasuvaeff/yii3-filestorage-db refuses that combination when it is built.';
+                }
+            }
+            if ($this->paths instanceof PathGeneratorInterface && $this->streams instanceof StreamFactoryInterface) {
+                $problem = LayoutCompatibility::pathsProblem($this->paths, $store->layout(), $this->streams);
+                if ($problem !== null) {
+                    $errors[] = "Store \"{$name}\": {$problem}";
+                }
+            }
+
             // A warning, not an error: uploads and reads work without a usable
             // quarantine, only filestorage:gc cannot delete from the store.
+            // A web root usually holds the application's own files too, and
+            // the orphan sweep would take every one of them (review 1.0 B2).
+            if (
+                $store instanceof PublicFileSystemStore
+                && $store->webRoot() === null
+                && $store->quarantineProblem() === null
+            ) {
+                $warnings[] = "Store \"{$name}\": nothing checks that its quarantine is outside the web server's "
+                    . 'document root, only outside the store root. Pass webRoot to PublicFileSystemStore.';
+            }
+            if ($store instanceof PublicFileSystemStore && $store->ownedPrefixes() === []) {
+                $warnings[] = "Store \"{$name}\" serves its root publicly and owns all of it: filestorage:gc "
+                    . '--orphans quarantines, then purges, every file under it that has no row. If anything else '
+                    . 'lives there, pass ownedPrefixes to the FileSystemStore.';
+            }
+
             $quarantineProblem = $store instanceof MaintenanceStoreInterface ? $store->quarantineProblem() : null;
             if ($quarantineProblem !== null) {
                 $warnings[] = $quarantineProblem;
             }
         }
-        $io->table(['Name', 'Class', 'Capabilities'], $rows);
+        $io->table(['Name', 'Class', 'Layout', 'Capabilities'], $rows);
+        $publicStore = $this->firstPublicStore();
 
         $io->section('Metadata repository');
         $io->writeln($this->repository::class);
@@ -152,6 +213,17 @@ final class CheckCommand extends Command
                 );
             }
 
+            // A warning, not an error: `-db`'s global deduplication scope
+            // shares across tenants on purpose, and that scope is not visible
+            // from here. `-db` refuses the pair itself under the other scopes.
+            $tenantProblem = LayoutCompatibility::tenantProblem($this->contentKeys ?? new Sha256KeyGenerator());
+            if ($tenantProblem !== null) {
+                $warnings[] = "{$tenantProblem}. A FileScopeProviderInterface is bound, so this is right only with "
+                    . 'the "global" deduplication scope; rasuvaeff/yii3-filestorage-db refuses the generator under '
+                    . 'the "tenant" and "tenant-group" scopes when it is built. Use a generator that keeps the scope '
+                    . 'in the key.';
+            }
+
             $warnings[] = 'Tenancy is on, so `filestorage:gc --orphans` refuses and `filestorage:stat` withholds its '
                 . 'physical figures: both compare tenant-filtered rows against unfiltered objects. Run them from a '
                 . 'maintenance entry point that leaves the scope provider unbound.';
@@ -181,9 +253,18 @@ final class CheckCommand extends Command
                 $delivery->allowDirectPublicUrl ? 'direct public URL' : 'signed only',
             ];
 
-            $unsafe = $this->unsafeDirectDelivery($group, $upload->allowedMimeTypes, $delivery->allowDirectPublicUrl);
+            $unsafe = $this->unsafeDirectDelivery($group, $upload->allowedMimeTypes, $delivery->allowDirectPublicUrl)
+                ?? $this->unsafePublicStore($group, $upload->allowedMimeTypes, $publicStore);
             if ($unsafe !== null) {
                 $errors[] = $unsafe;
+            }
+
+            if (
+                $upload->referencesOwnedBy === ReferenceAuthority::Application
+                && !$this->references instanceof ReferenceCheckerInterface
+            ) {
+                $warnings[] = "Group \"{$group}\" hands references to the application, but no "
+                    . ReferenceCheckerInterface::class . ' is bound, so filestorage:gc never releases its files.';
             }
         }
         $io->table(['Group', 'Accepts', 'Max size', 'Max pixels', 'Delivery'], $rows);
@@ -211,7 +292,7 @@ final class CheckCommand extends Command
      * @param array<int, string> $log
      * @param list<string> $errors
      * @param list<string> $warnings
-     * @param list<array{name: string, class: string, capabilities: list<string>, default: bool}> $storeRows
+     * @param list<array{name: string, class: string, layout: string, capabilities: list<string>, default: bool}> $storeRows
      * @param list<array{group: string, accepts: list<string>, maxBytes: int, maxPixels: int, directPublicUrl: bool}> $groupRows
      */
     private function maybeJson(
@@ -253,7 +334,7 @@ final class CheckCommand extends Command
                 . 'allowDirectPublicUrl to false.';
         }
 
-        $active = array_values(array_intersect($allowedMimeTypes, self::ACTIVE_MEDIA_TYPES));
+        $active = $this->active($allowedMimeTypes);
         if ($active !== []) {
             return "Group \"{$group}\" allows direct public URLs and accepts " . implode(', ', $active)
                 . '. Served from your own origin these execute as your site. Remove them from allowedMimeTypes, '
@@ -261,6 +342,86 @@ final class CheckCommand extends Command
         }
 
         return null;
+    }
+
+    /**
+     * A store that serves objects at public URLs serves them by path whatever
+     * `allowDirectPublicUrl` says — that flag only chooses which URL the
+     * application prints — and a content-addressed path is computable by
+     * whoever uploaded the bytes (review 1.0 B5). Groups are not bound to
+     * stores, so every group counts as reachable through such a store.
+     *
+     * @param list<non-empty-string> $allowedMimeTypes
+     * @param non-empty-string|null $publicStore
+     */
+    private function unsafePublicStore(string $group, array $allowedMimeTypes, ?string $publicStore): ?string
+    {
+        if ($publicStore === null) {
+            return null;
+        }
+
+        $reach = "store \"{$publicStore}\" serves every object it holds at a public URL whatever the delivery "
+            . 'policy says.';
+
+        if ($allowedMimeTypes === []) {
+            return "Group \"{$group}\" accepts any media type, and {$reach} Set an explicit allowedMimeTypes list "
+                . 'that excludes active content, or keep this group out of public stores.';
+        }
+
+        $active = $this->active($allowedMimeTypes);
+        if ($active !== []) {
+            return "Group \"{$group}\" accepts " . implode(', ', $active) . ", and {$reach} Served from your own "
+                . 'origin these execute as your site. Remove them from allowedMimeTypes, or keep this group out of '
+                . 'public stores.';
+        }
+
+        return null;
+    }
+
+    /**
+     * The first registered store that serves every object it holds publicly.
+     *
+     * Only the store can say so ({@see PubliclyReadableStoreInterface}):
+     * `StoreUrlProviderInterface::publicUrl()` answering is not evidence — a
+     * Flysystem S3 adapter builds an object URL for a private bucket too, and
+     * that URL answers 403.
+     *
+     * @return non-empty-string|null
+     */
+    private function firstPublicStore(): ?string
+    {
+        foreach ($this->stores->names() as $name) {
+            if ($this->isPublic($this->stores->get($name))) {
+                return $name;
+            }
+        }
+
+        return null;
+    }
+
+    private function isPublic(StoreInterface $store): bool
+    {
+        return $store instanceof PubliclyReadableStoreInterface && $store->isPubliclyReadable();
+    }
+
+    /**
+     * @param list<non-empty-string> $allowedMimeTypes
+     *
+     * @return list<non-empty-string>
+     */
+    private function active(array $allowedMimeTypes): array
+    {
+        return array_values(array_filter(
+            $allowedMimeTypes,
+            $this->activeTypes->contains(...),
+        ));
+    }
+
+    private function shortName(string $class): string
+    {
+        $slash = strrpos($class, '\\');
+
+        return $slash === false ? $class : substr($class, $slash + 1);
     }
 
     /**
@@ -283,6 +444,9 @@ final class CheckCommand extends Command
         }
         if ($store instanceof DerivativeAwareStoreInterface) {
             $capabilities[] = 'derivatives';
+        }
+        if ($this->isPublic($store)) {
+            $capabilities[] = 'public';
         }
 
         return $capabilities;

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 use Nyholm\Psr7\Factory\Psr17Factory;
 use Rasuvaeff\Yii3Filestorage\Exception\PolicyViolationException;
-use Rasuvaeff\Yii3Filestorage\Exception\UploadTooLargeException;
+use Rasuvaeff\Yii3Filestorage\Exception\SizeLimitExceededException;
 use Rasuvaeff\Yii3Filestorage\Id\Uuid7IdGenerator;
 use Rasuvaeff\Yii3Filestorage\Mime\FinfoMimeTypeDetector;
 use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
@@ -57,7 +57,7 @@ function attempt(Storage $storage, InMemoryStore $store, string $label, string $
     try {
         $file = $storage->add($upload, groupName: $group);
         echo "  OK      {$label} -> {$file->relativePath}\n";
-    } catch (PolicyViolationException|UploadTooLargeException $e) {
+    } catch (PolicyViolationException|SizeLimitExceededException $e) {
         $written = $store->writeCount() - $before;
         echo '  REJECT  ' . $label . ' -> ' . $e->getMessage() . "\n";
         echo "          objects written: {$written}\n";

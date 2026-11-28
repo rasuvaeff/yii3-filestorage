@@ -12,12 +12,14 @@ use Rasuvaeff\Yii3Filestorage\Policy\PolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\UploadPolicy;
 use Rasuvaeff\Yii3Filestorage\Reference\ReferenceAuthority;
 use Rasuvaeff\Yii3Filestorage\Reference\ReferenceCheckerInterface;
+use Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\MaintenanceRepositoryInterface;
 use Rasuvaeff\Yii3Filestorage\Store\BlobId;
 use Rasuvaeff\Yii3Filestorage\Store\BlobLease;
 use Rasuvaeff\Yii3Filestorage\Store\BlobLedgerInterface;
 use Rasuvaeff\Yii3Filestorage\Store\BlobRecord;
 use Rasuvaeff\Yii3Filestorage\Store\BlobState;
+use Rasuvaeff\Yii3Filestorage\Store\FileSystem\FileSystemStore;
 use Rasuvaeff\Yii3Filestorage\Store\Layout\FlatSiblingLayout;
 use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectSet;
 use Rasuvaeff\Yii3Filestorage\Store\QuarantinedObject;
@@ -26,6 +28,7 @@ use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryBlobLedger;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\CountingLedger;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\InterleavingLedger;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\InterleavingRepository;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\InterleavingStore;
@@ -37,6 +40,7 @@ use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
+use Yiisoft\Files\FileHelper;
 
 /**
  * The 0.9 safety rules of `filestorage:gc`: minimum age, quarantine and
@@ -156,7 +160,7 @@ final class GcSafetyTest
         $this->clock->advance(new DateInterval('P7D'));
         $this->clock->advanceSeconds(-1);
         $kept = $this->json(['--apply' => true]);
-        Assert::same($kept['quarantine'], ['restored' => 0, 'purged' => 0, 'kept' => 1]);
+        Assert::same($kept['quarantine'], ['restored' => 0, 'purged' => 0, 'kept' => 1, 'failed' => 0]);
         Assert::true($this->store->isQuarantined('docs/a/old.bin'));
 
         $this->clock->advanceSeconds(1);
@@ -165,7 +169,7 @@ final class GcSafetyTest
         Assert::true($this->store->isQuarantined('docs/a/old.bin'), 'a dry run purges nothing');
 
         $purged = $this->json(['--apply' => true]);
-        Assert::same($purged['quarantine'], ['restored' => 0, 'purged' => 1, 'kept' => 0]);
+        Assert::same($purged['quarantine'], ['restored' => 0, 'purged' => 1, 'kept' => 0, 'failed' => 0]);
         Assert::false($this->store->isQuarantined('docs/a/old.bin'));
     }
 
@@ -186,9 +190,10 @@ final class GcSafetyTest
     {
         $this->store->corrupt('docs/a/old.bin', 'old');
         $this->clock->advance(new DateInterval('PT2H'));
-        $this->run(['--orphans' => true, '--apply' => true], retention: new DateInterval('PT0S'));
+        $this->run(['--orphans' => true, '--apply' => true], retention: new DateInterval('PT1M'));
+        $this->clock->advance(new DateInterval('PT61S'));
 
-        $this->run(['--apply' => true], retention: new DateInterval('PT0S'));
+        $this->run(['--apply' => true], retention: new DateInterval('PT1M'));
 
         Assert::false($this->store->isQuarantined('docs/a/old.bin'));
     }
@@ -244,7 +249,7 @@ final class GcSafetyTest
 
         $json = $this->json(['--apply' => true], ledger: $this->ledger);
 
-        Assert::same($json['quarantine'], ['restored' => 0, 'purged' => 0, 'kept' => 1]);
+        Assert::same($json['quarantine'], ['restored' => 0, 'purged' => 0, 'kept' => 1, 'failed' => 0]);
         Assert::null($this->store->bytesAt($file->relativePath));
         Assert::true($this->store->isQuarantined($file->relativePath));
     }
@@ -257,7 +262,7 @@ final class GcSafetyTest
 
         $json = $this->json(['--apply' => true], ledger: $this->ledger, withBlobs: false);
 
-        Assert::same($json['quarantine'], ['restored' => 1, 'purged' => 0, 'kept' => 0]);
+        Assert::same($json['quarantine'], ['restored' => 1, 'purged' => 0, 'kept' => 0, 'failed' => 0]);
         Assert::same($this->store->bytesAt($file->relativePath), 'shared bytes');
     }
 
@@ -649,7 +654,7 @@ final class GcSafetyTest
 
         $json = $this->json(['--apply' => true, '--retention' => 'PT0S'], ledger: $this->ledger, withBlobs: false);
 
-        Assert::same($json['quarantine'], ['restored' => 0, 'purged' => 1, 'kept' => 1]);
+        Assert::same($json['quarantine'], ['restored' => 0, 'purged' => 1, 'kept' => 1, 'failed' => 0]);
     }
 
     public function aStoreThatCannotQuarantineDoesNotStopTheSweepOfTheNext(): void
@@ -716,6 +721,517 @@ final class GcSafetyTest
     /**
      * @param array<string, mixed> $arguments
      */
+    // ---- review 1.0 ---------------------------------------------------------
+
+    /**
+     * Review 1.0 A1 (probe `layout_mismatch.php`): flat keys under the default
+     * layout made collecting one blob quarantine — and purge — its whole
+     * fan-out bucket, a live neighbour included.
+     */
+    public function aFlatKeyUnderTheDirectoryLayoutIsKeptAndItsNeighbourSurvives(): void
+    {
+        $bucket = 'sha/ab/cd/';
+        $gone = $this->sharedRow('gone', 'docs', 'first', path: $bucket . 'abcd' . str_repeat('0', 60) . '.jpg');
+        $live = $this->sharedRow('live', 'docs', 'second', path: $bucket . 'abcd' . str_repeat('1', 60) . '.jpg');
+        $this->ledger->releaseFile('gone', $this->clock->now());
+        $this->clock->advance(new DateInterval('PT2H'));
+
+        $display = $this->flatten($this->run(['--apply' => true], ledger: $this->ledger)->getDisplay());
+
+        Assert::same($this->store->bytesAt($live->relativePath), 'second');
+        Assert::same($this->store->bytesAt($gone->relativePath), 'first');
+        Assert::false($this->store->isQuarantined($live->relativePath));
+        Assert::string($display)->contains('does not fit the directory layout');
+    }
+
+    /**
+     * Review 1.0 B5: purging asked only the ledger, so a released file that a
+     * row (or the application) points at again was lost after the retention.
+     */
+    public function aQuarantinedObjectARowReferencesAgainIsRestoredNotPurged(): void
+    {
+        $this->oldOrphans('docs/k1/original.bin');
+        $this->run(['--orphans' => true, '--apply' => true]);
+        Assert::true($this->store->isQuarantined('docs/k1/original.bin'));
+        $this->repository->save($this->row('back', 'docs/k1/original.bin'));
+        $this->clock->advance(new DateInterval('P8D'));
+
+        $json = $this->json(['--apply' => true]);
+
+        Assert::same($this->store->bytesAt('docs/k1/original.bin'), 'orphan');
+        Assert::same($json['quarantine']['restored'], 1);
+        Assert::same($json['quarantine']['purged'], 0);
+    }
+
+    public function aQuarantinedObjectTheApplicationReferencesAgainIsRestored(): void
+    {
+        $this->oldOrphans('docs/k1/original.bin');
+        $this->run(['--orphans' => true, '--apply' => true]);
+        $this->clock->advance(new DateInterval('P8D'));
+
+        $display = $this->flatten($this->run(
+            ['--apply' => true],
+            references: new ListReferenceChecker(['memory:docs/k1/original.bin']),
+        )->getDisplay());
+
+        Assert::same($this->store->bytesAt('docs/k1/original.bin'), 'orphan');
+        Assert::string($display)->contains('a row or the application references it again');
+    }
+
+    public function theCheckerIsAskedOncePerQuarantinePage(): void
+    {
+        $this->oldOrphans('docs/k1/original.bin', 'docs/k2/original.bin');
+        $this->run(['--orphans' => true, '--apply' => true]);
+        $this->clock->advance(new DateInterval('P8D'));
+        $checker = new ListReferenceChecker();
+
+        $this->run(['--apply' => true], references: $checker);
+
+        Assert::same($checker->asked, [['docs/k1/original.bin', 'docs/k2/original.bin']]);
+    }
+
+    /**
+     * Review 1.0 pass 2 (maintenance), N1: a crash between quarantining a
+     * released row's bytes and deleting the row left a live row over
+     * quarantined bytes. The warning promised "the next run restores it";
+     * the next run only looked at rows for entries past the retention, so the
+     * file was a 404 for a week. Probe `stuck_restore.php`, without the
+     * `P8D` jump the B5 test needs.
+     */
+    public function aRowStillPointingAtQuarantinedBytesGetsThemBackOnTheNextRun(): void
+    {
+        $this->stuckRelease('docs', 'docs/k1/original.bin');
+        $this->clock->advance(new DateInterval('PT10M'));
+
+        $json = $this->json(['--apply' => true]);
+
+        Assert::same($this->store->bytesAt('docs/k1/original.bin'), 'live bytes');
+        Assert::false($this->store->isQuarantined('docs/k1/original.bin'));
+        Assert::same($json['quarantine']['restored'], 1);
+        Assert::same($json['quarantine']['kept'], 0);
+    }
+
+    /**
+     * Probe `stuck_restore_checker.php`, second half: the application points
+     * at the file again. Restored at once, and the row stays.
+     */
+    public function anApplicationOwnedRowTheCheckerStillNamesGetsItsBytesBackOnTheNextRun(): void
+    {
+        $this->stuckRelease('avatars', 'avatars/k1/original.bin');
+        $this->clock->advance(new DateInterval('PT10M'));
+
+        $json = $this->json(['--apply' => true], references: new ListReferenceChecker(['memory:avatars/k1/original.bin']));
+
+        Assert::same($this->store->bytesAt('avatars/k1/original.bin'), 'live bytes');
+        Assert::true($this->repository->find('f-stuck') instanceof File);
+        Assert::same($json['quarantine']['restored'], 1);
+        Assert::same($json['releasedRows'], 0);
+    }
+
+    /**
+     * First half of the same probe: nothing references the file, so the next
+     * run puts the bytes back and then finishes the release it interrupted —
+     * the row goes and the bytes are quarantined again, a fresh retention.
+     */
+    public function anInterruptedReleaseIsFinishedByTheNextRun(): void
+    {
+        $this->stuckRelease('avatars', 'avatars/k1/original.bin');
+        $this->clock->advance(new DateInterval('PT10M'));
+
+        $json = $this->json(['--apply' => true], references: new ListReferenceChecker());
+
+        Assert::null($this->repository->find('f-stuck'));
+        Assert::true($this->store->isQuarantined('avatars/k1/original.bin'));
+        Assert::same($json['quarantine']['restored'], 1);
+        Assert::same($json['releasedRows'], 1);
+    }
+
+    public function aDryRunOnlySaysItWouldRestore(): void
+    {
+        $this->stuckRelease('docs', 'docs/k1/original.bin');
+        $this->clock->advance(new DateInterval('PT10M'));
+
+        $display = $this->flatten($this->run([])->getDisplay());
+
+        Assert::true($this->store->isQuarantined('docs/k1/original.bin'));
+        Assert::string($display)->contains('would restore quarantined docs/k1/original.bin');
+    }
+
+    /**
+     * A young entry nothing references is left for the retention, as before:
+     * the restore-early rule is for a row that still points at it.
+     */
+    public function aYoungUnreferencedEntryIsKept(): void
+    {
+        $this->oldOrphans('docs/k1/original.bin');
+        $this->run(['--orphans' => true, '--apply' => true]);
+        $this->clock->advance(new DateInterval('PT10M'));
+
+        $json = $this->json(['--apply' => true]);
+
+        Assert::true($this->store->isQuarantined('docs/k1/original.bin'));
+        Assert::same($json['quarantine']['kept'], 1);
+        Assert::same($json['quarantine']['restored'], 0);
+    }
+
+    /**
+     * Under a bound scope provider the rows are one tenant's: a row of
+     * another tenant can point at an entry and stay invisible here. A hit
+     * still restores; a miss proves nothing, so nothing is purged.
+     */
+    public function underTenancyAQuarantineEntryIsNeverPurgedButStillRestored(): void
+    {
+        $this->oldOrphans('docs/k1/original.bin', 'docs/k2/original.bin');
+        $this->run(['--orphans' => true, '--apply' => true]);
+        $this->repository->save($this->row('back', 'docs/k2/original.bin'));
+        $this->clock->advance(new DateInterval('P8D'));
+
+        $tester = new CommandTester(new GcCommand(
+            stores: new StoreRegistry([$this->store]),
+            repository: $this->repository,
+            clock: $this->clock,
+            scopes: new class implements FileScopeProviderInterface {
+                #[\Override]
+                public function currentScopeId(): string
+                {
+                    return 'tenant-a';
+                }
+            },
+        ));
+        $tester->execute(['--apply' => true, '--format' => 'json']);
+        $json = $this->decode($tester);
+
+        Assert::true($this->store->isQuarantined('docs/k1/original.bin'));
+        Assert::same($this->store->bytesAt('docs/k2/original.bin'), 'orphan');
+        Assert::same($json['quarantine']['purged'], 0);
+        Assert::same($json['quarantine']['restored'], 1);
+        Assert::same($json['quarantine']['kept'], 1);
+        /** @var list<string> $log */
+        $log = $json['log'];
+        Assert::string($this->flatten(implode(' ', $log)))->contains('are not purged: a FileScopeProviderInterface is bound');
+    }
+
+    /**
+     * A bound provider answering null is a maintenance entry point that sees
+     * every row — `-db`'s `globalMaintenanceAccess` — and purges as usual.
+     */
+    public function aScopeProviderWithNoCurrentScopeStillPurges(): void
+    {
+        $this->oldOrphans('docs/k1/original.bin');
+        $this->run(['--orphans' => true, '--apply' => true]);
+        $this->clock->advance(new DateInterval('P8D'));
+
+        $tester = new CommandTester(new GcCommand(
+            stores: new StoreRegistry([$this->store]),
+            repository: $this->repository,
+            clock: $this->clock,
+            scopes: new class implements FileScopeProviderInterface {
+                #[\Override]
+                public function currentScopeId(): ?string
+                {
+                    return null;
+                }
+            },
+        ));
+        $tester->execute(['--apply' => true, '--format' => 'json']);
+
+        Assert::false($this->store->isQuarantined('docs/k1/original.bin'));
+        Assert::same($this->decode($tester)['quarantine']['purged'], 1);
+    }
+
+    /**
+     * Review 1.0 pass 2 (maintenance), N7: every run asked the ledger about
+     * every object of every entry, one query each, for the whole retention.
+     * A ledger that can batch is asked once per page of the quarantine.
+     */
+    public function aBatchingLedgerIsAskedOncePerQuarantinePage(): void
+    {
+        $this->oldOrphans('docs/k1/original.bin', 'docs/k2/original.bin', 'docs/k3/original.bin');
+        $this->run(['--orphans' => true, '--apply' => true]);
+        $this->clock->advance(new DateInterval('PT10M'));
+        $ledger = new CountingLedger(new MemoryBlobLedger($this->repository));
+
+        $this->run(['--apply' => true], ledger: $ledger);
+
+        Assert::same($ledger->batches, [3]);
+        Assert::same($ledger->finds, 0);
+    }
+
+    /**
+     * Review 1.0 pass 2 (maintenance), N6, probe `inmem_numeric.php`.
+     */
+    public function aNumericRootOrphanIsSweptWithoutEndingTheRun(): void
+    {
+        $this->oldOrphans('123', 'docs/k1/original.bin');
+
+        $json = $this->json(['--orphans' => true, '--apply' => true]);
+
+        Assert::same($json['orphanObjects'], 2);
+        Assert::true($this->store->isQuarantined('123'));
+        Assert::true($this->store->isQuarantined('docs/k1/original.bin'));
+    }
+
+    /**
+     * Review 1.0 pass 2 (maintenance), N4, end to end: the orphan sweep of a
+     * local store removes the `.part` a crashed write left, once it is older
+     * than `--min-age`, and counts it against `--limit`.
+     */
+    public function theOrphanSweepRemovesAbandonedPartialWrites(): void
+    {
+        $base = sys_get_temp_dir() . '/gc-partials-' . bin2hex(random_bytes(6));
+        $store = new FileSystemStore('local', $base . '/root', $this->factory, quarantinePath: $base . '/q');
+
+        try {
+            mkdir($base . '/root/docs/ab/cd/key', 0o777, recursive: true);
+            file_put_contents($base . '/root/docs/ab/cd/key/original.jpg.part', 'stalled');
+            touch($base . '/root/docs/ab/cd/key/original.jpg.part', $this->clock->now()->getTimestamp() - 7200);
+            $stores = new StoreRegistry([$store]);
+
+            $dry = $this->json(['--orphans' => true], stores: $stores);
+            Assert::same($dry['abandonedPartials'], 1);
+            Assert::string($this->logText($dry))->contains('would remove abandoned partial write docs/ab/cd/key/original.jpg.part');
+            Assert::true(is_file($base . '/root/docs/ab/cd/key/original.jpg.part'));
+
+            $json = $this->json(['--orphans' => true, '--apply' => true], stores: $stores);
+            Assert::same($json['abandonedPartials'], 1);
+            Assert::string($this->logText($json))->contains('removing abandoned partial write docs/ab/cd/key/original.jpg.part');
+            Assert::false(is_file($base . '/root/docs/ab/cd/key/original.jpg.part'));
+            Assert::same($this->json([], stores: $stores)['abandonedPartials'], null);
+        } finally {
+            FileHelper::removeDirectory($base);
+        }
+    }
+
+    /**
+     * The partial sweep spends what is left of `--limit` across every store:
+     * a store reached with the budget used up is not asked, and one reached
+     * with some left is asked for no more than that.
+     */
+    public function abandonedPartialsShareTheLimitAcrossStores(): void
+    {
+        $base = sys_get_temp_dir() . '/gc-partials-' . bin2hex(random_bytes(6));
+
+        try {
+            $stores = new StoreRegistry([
+                $this->localStore($base, 'first', 'docs/a/original.jpg.part', 'docs/b/original.jpg.part'),
+                $this->localStore($base, 'second', 'docs/c/original.jpg.part', 'docs/d/original.jpg.part'),
+            ]);
+
+            Assert::same($this->json(['--orphans' => true, '--limit' => '2'], stores: $stores)['abandonedPartials'], 2);
+            Assert::same($this->json(['--orphans' => true, '--limit' => '3'], stores: $stores)['abandonedPartials'], 3);
+
+            $this->json(['--orphans' => true, '--apply' => true, '--limit' => '3'], stores: $stores);
+
+            Assert::false(is_file($base . '/first/docs/b/original.jpg.part'));
+            Assert::false(is_file($base . '/second/docs/c/original.jpg.part'));
+            Assert::true(is_file($base . '/second/docs/d/original.jpg.part'), 'the fourth was over the limit');
+        } finally {
+            FileHelper::removeDirectory($base);
+        }
+    }
+
+    /**
+     * Orphans come first; partial writes get only what they left of `--limit`,
+     * and nothing once they used it all.
+     */
+    public function abandonedPartialsGetWhatTheOrphansLeftOfTheLimit(): void
+    {
+        $base = sys_get_temp_dir() . '/gc-partials-' . bin2hex(random_bytes(6));
+
+        try {
+            $store = $this->localStore($base, 'local', 'docs/a/original.jpg.part', 'docs/b/original.jpg.part');
+            mkdir($base . '/local/docs/c', 0o777, recursive: true);
+            file_put_contents($base . '/local/docs/c/original.bin', 'orphan');
+            touch($base . '/local/docs/c/original.bin', $this->clock->now()->getTimestamp() - 7200);
+            $stores = new StoreRegistry([$store]);
+
+            $two = $this->json(['--orphans' => true, '--limit' => '2'], stores: $stores);
+            Assert::same($two['orphanObjects'], 1);
+            Assert::same($two['abandonedPartials'], 1);
+
+            $one = $this->json(['--orphans' => true, '--limit' => '1'], stores: $stores);
+            Assert::same($one['orphanObjects'], 1);
+            Assert::same($one['abandonedPartials'], 0);
+        } finally {
+            FileHelper::removeDirectory($base);
+        }
+    }
+
+    public function anUnreferencedQuarantinedObjectIsStillPurged(): void
+    {
+        $this->oldOrphans('docs/k1/original.bin');
+        $this->run(['--orphans' => true, '--apply' => true]);
+        $this->repository->save($this->row('neighbour', 'docs/k2/original.bin'));
+        $this->clock->advance(new DateInterval('P8D'));
+
+        $json = $this->json(['--apply' => true], references: new ListReferenceChecker(['memory:docs/k2/original.bin']));
+
+        Assert::false($this->store->isQuarantined('docs/k1/original.bin'));
+        Assert::same($json['quarantine']['purged'], 1);
+    }
+
+    /**
+     * Review 1.0 B6: one entry that could not be purged stopped the sweep of
+     * every entry after it, on every run.
+     */
+    public function oneStuckQuarantineEntryDoesNotStopTheOthers(): void
+    {
+        $this->oldOrphans('docs/a/original.bin', 'docs/b/original.bin');
+        $this->run(['--orphans' => true, '--apply' => true]);
+        $this->clock->advance(new DateInterval('P8D'));
+        $store = new InterleavingStore($this->store);
+        $store->refuseEntriesHolding('docs/a/original.bin');
+
+        $tester = $this->tester(stores: new StoreRegistry([$store]));
+        $tester->execute(['--apply' => true, '--format' => 'json']);
+        $json = $this->decode($tester);
+
+        Assert::true($this->store->isQuarantined('docs/a/original.bin'));
+        Assert::false($this->store->isQuarantined('docs/b/original.bin'));
+        Assert::same($json['quarantine'], ['restored' => 0, 'purged' => 1, 'kept' => 0, 'failed' => 1]);
+        Assert::string($this->logText($json))->contains('Permission denied on');
+    }
+
+    /**
+     * Review 1.0 B7: a restore that failed after a refused commit ended the
+     * whole run with a trace and no report.
+     */
+    public function aFailedRestoreAfterARefusedCommitDoesNotEndTheRun(): void
+    {
+        [$file] = $this->scheduledBlob();
+        $this->clock->advance(new DateInterval('PT2H'));
+        $store = new InterleavingStore($this->store);
+        $store->refuseEntriesHolding($file->relativePath);
+        $ledger = new InterleavingLedger($this->ledger);
+        $ledger->refusingCompletion();
+
+        $tester = $this->tester(ledger: $ledger, stores: new StoreRegistry([$store]));
+        $status = $tester->execute(['--apply' => true, '--format' => 'json']);
+        $json = $this->decode($tester);
+
+        Assert::same($status, Command::SUCCESS);
+        Assert::same($json['blobsCollected'], 0);
+        Assert::string($this->logText($json))->contains('the next run restores it');
+        Assert::true($this->store->isQuarantined($file->relativePath));
+    }
+
+    /**
+     * Review 1.0 C16: a row the store could not release still counted.
+     */
+    public function aRowThatCouldNotBeReleasedIsNotCounted(): void
+    {
+        $this->repository->save($this->row('elsewhere', 'avatars/aa/x/original.jpg', group: 'avatars', store: 'gone'));
+        $this->clock->advance(new DateInterval('PT2H'));
+
+        $json = $this->json(['--apply' => true], references: new ListReferenceChecker());
+
+        Assert::same($json['releasedRows'], 0);
+        Assert::instanceOf($this->repository->find('elsewhere'), File::class);
+    }
+
+    /**
+     * Review 1.0 C17: the first warning about a store silenced every later one
+     * of a different kind for the same store.
+     */
+    public function warningsOfDifferentKindsForOneStoreAreAllShown(): void
+    {
+        $this->repository->save($this->row('elsewhere', 'avatars/aa/x/original.jpg', group: 'avatars', store: 'gone'));
+        $this->sharedRow('blob', 'docs', 'gone bytes', new InMemoryStore('gone', $this->factory, $this->clock));
+        $this->ledger->releaseFile('blob', $this->clock->now());
+        $this->clock->advance(new DateInterval('PT2H'));
+
+        $display = $this->flatten($this->run(['--apply' => true], ledger: $this->ledger, references: new ListReferenceChecker())->getDisplay());
+
+        Assert::string($display)->contains('so its rows are not released');
+        Assert::string($display)->contains('so its blobs cannot be collected');
+    }
+
+    /**
+     * Once per store and kind: the same warning about a second store is not
+     * swallowed by the first.
+     */
+    public function oneWarningKindIsShownForEveryStoreItConcerns(): void
+    {
+        $this->repository->save($this->row('a', 'avatars/aa/a/original.jpg', group: 'avatars', store: 'gone'));
+        $this->repository->save($this->row('b', 'avatars/aa/b/original.jpg', group: 'avatars', store: 'lost'));
+        $this->clock->advance(new DateInterval('PT2H'));
+
+        $display = $this->flatten($this->run(['--apply' => true], references: new ListReferenceChecker())->getDisplay());
+
+        Assert::string($display)->contains('Store "gone" cannot quarantine objects');
+        Assert::string($display)->contains('Store "lost" cannot quarantine objects');
+    }
+
+    /**
+     * Review 1.0 C14: a budget used up before the sweep printed "found 0
+     * orphaned objects" about objects nobody looked at.
+     */
+    public function anExhaustedLimitSaysTheOrphanSweepWasSkipped(): void
+    {
+        $this->stored('old', 'avatars', 'avatars/aa/old/original.jpg');
+        $this->oldOrphans('docs/z/original.bin');
+
+        $json = $this->json(['--apply' => true, '--orphans' => true, '--limit' => '1'], references: new ListReferenceChecker());
+
+        Assert::same($json['releasedRows'], 1);
+        Assert::true($json['orphanSweepSkipped']);
+        Assert::string($this->logText($json))->contains('Orphan sweep skipped: --limit was used up');
+        Assert::same($this->store->bytesAt('docs/z/original.bin'), 'orphan');
+        Assert::same(
+            [$json['orphanObjects'], $json['orphansTooNew'], $json['orphansUndated'], $json['abandonedPartials'], $json['nextCursor']],
+            [0, 0, 0, 0, null],
+        );
+    }
+
+    /**
+     * A skipped sweep resumed nothing, so the cursor it was given is the one
+     * to resume from next time — and without one there is nothing to resume.
+     */
+    public function aSkippedSweepHandsBackTheCursorItWasGiven(): void
+    {
+        $this->stored('old', 'avatars', 'avatars/aa/old/original.jpg');
+        $this->oldOrphans('docs/z/original.bin');
+        $arguments = ['--orphans' => true, '--limit' => '1', '--store' => 'memory'];
+        $references = new ListReferenceChecker();
+
+        $resumed = $this->json($arguments + ['--after' => 'docs/a'], references: $references);
+        $fresh = $this->json($arguments, references: $references);
+
+        Assert::true($resumed['orphanSweepSkipped']);
+        Assert::same($resumed['nextCursor'], ['store' => 'memory', 'after' => 'docs/a']);
+        Assert::true($fresh['orphanSweepSkipped']);
+        Assert::null($fresh['nextCursor']);
+    }
+
+    public function aSweepThatRanSaysItWasNotSkipped(): void
+    {
+        Assert::false($this->json(['--orphans' => true])['orphanSweepSkipped']);
+    }
+
+    #[\Testo\Data\DataProvider('nonPositiveIntervalProvider')]
+    public function aNonPositiveIntervalIsRefused(string $name, DateInterval $interval): void
+    {
+        \Testo\Expect::exception(\InvalidArgumentException::class)->withMessageContaining("{$name} must be a positive interval");
+
+        new GcCommand(...[
+            'stores' => new StoreRegistry([$this->store]),
+            'repository' => $this->repository,
+            'clock' => $this->clock,
+            $name => $interval,
+        ]);
+    }
+
+    public static function nonPositiveIntervalProvider(): iterable
+    {
+        $negative = new DateInterval('PT1H');
+        $negative->invert = 1;
+
+        yield 'zero grace period' => ['gracePeriod', new DateInterval('PT0S')];
+        yield 'negative grace period' => ['gracePeriod', $negative];
+        yield 'zero lease' => ['leaseTtl', new DateInterval('PT0S')];
+        yield 'zero retention' => ['retention', new DateInterval('P0D')];
+    }
+
     private function run(
         array $arguments,
         ?BlobLedgerInterface $ledger = null,
@@ -777,6 +1293,19 @@ final class GcSafetyTest
     /**
      * @return array<string, mixed>
      */
+    /**
+     * The JSON log is what text mode would have printed, wrapped at the
+     * terminal width: a phrase can straddle two lines.
+     *
+     * @param array<string, mixed> $json
+     */
+    private function logText(array $json): string
+    {
+        Assert::true(\is_array($json['log']));
+
+        return (string) preg_replace('/\s+/', ' ', implode(' ', array_map(strval(...), $json['log'])));
+    }
+
     private function decode(CommandTester $tester): array
     {
         $decoded = json_decode($tester->getDisplay(), associative: true, flags: \JSON_THROW_ON_ERROR);
@@ -792,6 +1321,17 @@ final class GcSafetyTest
             $this->store->corrupt($path, 'orphan');
         }
         $this->clock->advance(new DateInterval('PT2H'));
+    }
+
+    /**
+     * A row whose bytes a crashed release left in the quarantine.
+     */
+    private function stuckRelease(string $group, string $path): void
+    {
+        $this->store->corrupt($path, 'live bytes');
+        $this->repository->save($this->row('f-stuck', $path, group: $group));
+        $this->clock->advance(new DateInterval('PT2H'));
+        $this->store->quarantine(ObjectSet::tree(new StoredObjectId(\dirname($path))), $this->clock->now());
     }
 
     private function stored(string $id, string $group, string $path): File
@@ -853,6 +1393,19 @@ final class GcSafetyTest
         Assert::instanceOf($lease, BlobLease::class);
         $entry = $this->store->quarantine(ObjectSet::tree(new StoredObjectId($blob->relativePath())), $this->clock->now());
         Assert::instanceOf($entry, QuarantinedObject::class);
+    }
+
+    private function localStore(string $base, string $name, string ...$partials): FileSystemStore
+    {
+        $store = new FileSystemStore($name, $base . '/' . $name, $this->factory, quarantinePath: $base . '/' . $name . '-q');
+        foreach ($partials as $partial) {
+            $path = $base . '/' . $name . '/' . $partial;
+            mkdir(\dirname($path), 0o777, recursive: true);
+            file_put_contents($path, 'stalled');
+            touch($path, $this->clock->now()->getTimestamp() - 7200);
+        }
+
+        return $store;
     }
 
     private function flatten(string $display): string

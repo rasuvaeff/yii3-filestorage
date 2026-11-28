@@ -12,7 +12,7 @@ use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Repository\RepositoryInterface;
 use Rasuvaeff\Yii3Filestorage\Store\BlobId;
 use Rasuvaeff\Yii3Filestorage\Store\BlobLease;
-use Rasuvaeff\Yii3Filestorage\Store\BlobLedgerInterface;
+use Rasuvaeff\Yii3Filestorage\Store\BlobLedgerBatchLookupInterface;
 use Rasuvaeff\Yii3Filestorage\Store\BlobRecord;
 use Rasuvaeff\Yii3Filestorage\Store\BlobReservation;
 use Rasuvaeff\Yii3Filestorage\Store\BlobState;
@@ -42,7 +42,7 @@ use Rasuvaeff\Yii3Filestorage\Store\BlobToken;
  *
  * @api
  */
-final class MemoryBlobLedger implements BlobLedgerInterface
+final class MemoryBlobLedger implements BlobLedgerBatchLookupInterface
 {
     /**
      * @var array<non-empty-string, BlobRow>
@@ -170,6 +170,20 @@ final class MemoryBlobLedger implements BlobLedgerInterface
         $row = $this->blobs[$blob->key()] ?? null;
 
         return $row === null ? null : $this->toRecord($row);
+    }
+
+    #[Override]
+    public function findMany(array $blobs): array
+    {
+        $records = [];
+        foreach ($blobs as $blob) {
+            $row = $this->blobs[$blob->key()] ?? null;
+            if ($row !== null) {
+                $records[$blob->key()] = $this->toRecord($row);
+            }
+        }
+
+        return $records;
     }
 
     #[Override]

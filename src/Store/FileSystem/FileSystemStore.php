@@ -10,9 +10,11 @@ use Override;
 use Psr\Http\Message\StreamFactoryInterface;
 use Psr\Http\Message\StreamInterface;
 use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
-use Rasuvaeff\Yii3Filestorage\Exception\UploadTooLargeException;
+use Rasuvaeff\Yii3Filestorage\Exception\UploadSizeException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
+use Rasuvaeff\Yii3Filestorage\Store\AbandonedPartialsInterface;
+use Rasuvaeff\Yii3Filestorage\Store\ContentAddressableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeAwareStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeDescriptor;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeObject;
@@ -51,18 +53,41 @@ use Yiisoft\Files\FileHelper;
  * Garbage collection deletes through a quarantine directory: objects are
  * `rename()`d to `<quarantine>/<token>/<relative path>` and purged or restored
  * once the decision is committed. The quarantine must be outside the root —
- * so it is never listed, never served when the root is a web root — and on
+ * so it is never listed — and outside anything the web server serves, which
+ * this class cannot see: it checks the root only, and
+ * {@see PublicFileSystemStore} checks its `webRoot` when given one. And on
  * the same filesystem, or the move is a copy. Without one, garbage collection
  * cannot delete from this store, and `filestorage:check` says so.
+ *
+ * Content-addressed writes ({@see self::putIfAbsent()}, what deduplication in
+ * `rasuvaeff/yii3-filestorage-db` uses) stage under a random `.part` name and
+ * publish with `link()`, which refuses an existing target: put-if-absent,
+ * atomic on one filesystem. Two writers of the same content both succeed; a
+ * crash leaves a `.part` that nothing lists or reuses. `gc --orphans` removes
+ * such leftovers by age alone ({@see self::sweepAbandonedPartials()}): no row
+ * can point at a `.part`, and its owner under a flat layout is a live blob.
+ *
+ * **The inventory is what the store owns, not everything under the root.**
+ * `objects()` — what `gc --orphans` sweeps — never lists a hidden entry (a
+ * name starting with `.`: `.htaccess`, `.well-known/`), which no generator
+ * emits. Beyond that, the root belongs to the store: a directory the
+ * application keeps there (`banners/`, generated cards) has no rows, so the
+ * orphan sweep would quarantine and then purge it. When the root is shared —
+ * typically a web root such as `public/uploads` — pass `ownedPrefixes`: the
+ * inventory is then the listed top-level subtrees only, and a write outside
+ * them is refused, so nothing the store creates escapes its own sweep.
  *
  * @api
  */
 final readonly class FileSystemStore implements
+    AbandonedPartialsInterface,
+    ContentAddressableStoreInterface,
     DerivativeAwareStoreInterface,
     MaintenanceStoreInterface,
     RangeReadableStoreInterface
 {
     private const string NAME_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\z/';
+    private const string PREFIX_PATTERN = '~^[A-Za-z0-9][A-Za-z0-9_-]{0,63}(?:/[A-Za-z0-9][A-Za-z0-9_-]{0,63})*\z~';
     /**
      * The staging name is derived from the target, not randomised. Two writers
      * racing for one target would otherwise each stage under their own name and
@@ -72,7 +97,8 @@ final readonly class FileSystemStore implements
      *
      * The cost, recorded so it is a trade rather than an oversight: a crashed
      * write leaves a `.part` that blocks any later write to *that same target*
-     * until `filestorage:gc` removes the directory. The built-in generators
+     * until `filestorage:gc --orphans` removes it, once it is older than
+     * `--min-age` ({@see self::sweepAbandonedPartials()}). The built-in generators
      * never reuse a target, so this only bites a consumer whose own
      * `PathGeneratorInterface` is deterministic — and there, failing loudly on
      * a leftover from a crash is the behaviour you want anyway.
@@ -91,6 +117,9 @@ final readonly class FileSystemStore implements
 
     private ObjectLayoutInterface $layout;
 
+    /** @var list<non-empty-string> Sorted as directories, none inside another. */
+    private array $ownedPrefixes;
+
     /**
      * @param string $rootPath Created when missing.
      * @param string|null $quarantinePath Created when missing. Outside the root,
@@ -98,6 +127,10 @@ final readonly class FileSystemStore implements
      *        which garbage collection refuses to delete from.
      * @param ObjectLayoutInterface|null $layout Null is {@see DirectoryLayout},
      *        the default. Chosen once for the lifetime of the data.
+     * @param list<string> $ownedPrefixes The subtrees of the root this store
+     *        owns — the first segments its path and key generators produce
+     *        (group names, `blobs`). Empty: the whole root. See the class
+     *        docblock.
      *
      * @throws StoreException
      * @throws InvalidArgumentException
@@ -109,6 +142,7 @@ final readonly class FileSystemStore implements
         private int $directoryMode = 0o775,
         ?string $quarantinePath = null,
         ?ObjectLayoutInterface $layout = null,
+        array $ownedPrefixes = [],
     ) {
         if ($name === '' || preg_match(self::NAME_PATTERN, $name) !== 1) {
             throw new InvalidArgumentException("Invalid store name \"{$name}\"");
@@ -135,6 +169,7 @@ final readonly class FileSystemStore implements
         $this->name = $name;
         $this->rootPath = $resolved;
         $this->layout = $layout ?? new DirectoryLayout();
+        $this->ownedPrefixes = $this->validatePrefixes($name, $ownedPrefixes);
         $this->quarantinePath = $quarantinePath === null ? null : $this->resolveQuarantine($quarantinePath);
     }
 
@@ -142,6 +177,27 @@ final readonly class FileSystemStore implements
     public function layout(): ObjectLayoutInterface
     {
         return $this->layout;
+    }
+
+    /**
+     * The resolved quarantine directory, or null when none is configured.
+     *
+     * @return non-empty-string|null
+     */
+    public function quarantinePath(): ?string
+    {
+        return $this->quarantinePath;
+    }
+
+    /**
+     * The subtrees the inventory is limited to; empty when the store owns
+     * its whole root.
+     *
+     * @return list<non-empty-string>
+     */
+    public function ownedPrefixes(): array
+    {
+        return $this->ownedPrefixes;
     }
 
     #[Override]
@@ -160,6 +216,7 @@ final readonly class FileSystemStore implements
     ): StoreResult {
         $relativePath = $pathGenerator->generate($groupName, $upload, $mediaType);
         $object = new StoredObjectId($relativePath);
+        $this->assertOwned($object);
         $target = $this->rootPath . '/' . $object->relativePath;
 
         if (file_exists($target)) {
@@ -194,10 +251,73 @@ final readonly class FileSystemStore implements
         return new StoreResult(relativePath: $object->relativePath, size: $written);
     }
 
+    /**
+     * Publishes the upload at a content-addressed key, or reuses the bytes
+     * already there after a size check — the key is the content hash, so a
+     * matching length is the same content, and a different one means
+     * something outside this convention wrote the key: a hard error.
+     */
+    #[Override]
+    public function putIfAbsent(Upload $upload, StoredObjectId $object, int $maxBytes = 0): StoreResult
+    {
+        $this->assertOwned($object);
+        $target = $this->rootPath . '/' . $object->relativePath;
+        $declared = $upload->size();
+        if ($maxBytes > 0 && $declared !== null && $declared > $maxBytes) {
+            throw new UploadSizeException("Upload of {$declared} bytes exceeds the {$maxBytes} byte limit");
+        }
+
+        if (file_exists($target) || is_link($target)) {
+            return $this->reuse($upload, $object, $maxBytes);
+        }
+
+        $directory = \dirname($target);
+
+        try {
+            FileHelper::ensureDirectory($directory, $this->directoryMode);
+        } catch (\Throwable $e) {
+            throw new StoreException("Could not create \"{$directory}\" in store \"{$this->name}\"", 0, $e);
+        }
+        $this->assertContained($directory);
+
+        // A random staging name, unlike write(): two writers of the same
+        // content must both succeed, and link() below decides which copy wins.
+        $partial = $target . '.' . bin2hex(random_bytes(8)) . self::PARTIAL_SUFFIX;
+        $written = $this->copy($upload->stream(), $partial, $maxBytes, $object->relativePath);
+
+        if (@link($partial, $target)) {
+            @unlink($partial);
+
+            return new StoreResult(relativePath: $object->relativePath, size: $written);
+        }
+
+        if (file_exists($target)) {
+            @unlink($partial);
+
+            return $this->reuse($upload, $object, $maxBytes);
+        }
+
+        // No hard links on this filesystem. rename() replaces a target that
+        // appeared meanwhile, which for a content-addressed key is the same
+        // bytes — still atomic for a reader.
+        if (!@rename($partial, $target)) {
+            @unlink($partial);
+
+            throw new StoreException("Could not publish \"{$object->relativePath}\" in store \"{$this->name}\"");
+        }
+
+        return new StoreResult(relativePath: $object->relativePath, size: $written);
+    }
+
     #[Override]
     public function delete(File $file): void
     {
-        $set = $this->layout->deletion(new StoredObjectId($file->relativePath));
+        try {
+            $set = $this->layout->deletion(new StoredObjectId($file->relativePath));
+        } catch (InvalidArgumentException $e) {
+            throw new StoreException($e->getMessage(), 0, $e);
+        }
+
         if (!$set->isTree()) {
             foreach ($this->members($set) as $member) {
                 $this->deleteObject(new StoredObjectId($member));
@@ -339,7 +459,7 @@ final readonly class FileSystemStore implements
     public function objects(?string $afterPath = null, int $limit = 1000): iterable
     {
         $yielded = 0;
-        foreach ($this->walk($this->rootPath, '') as $relativePath) {
+        foreach ($this->inventory($afterPath) as $relativePath) {
             if ($afterPath !== null && strcmp($relativePath, $afterPath) <= 0) {
                 continue;
             }
@@ -360,8 +480,12 @@ final readonly class FileSystemStore implements
         }
     }
 
-    #[Override]
-    public function deleteObject(StoredObjectId $object): void
+    /**
+     * Idempotent: an object already gone is a success.
+     *
+     * @throws StoreException
+     */
+    private function deleteObject(StoredObjectId $object): void
     {
         $path = $this->resolve($object->relativePath);
         if ($path === null) {
@@ -402,12 +526,18 @@ final readonly class FileSystemStore implements
 
             try {
                 FileHelper::ensureDirectory(\dirname($target), $this->directoryMode);
+                if (!@rename($source, $target)) {
+                    throw new StoreException("Could not quarantine \"{$member}\" in store \"{$this->name}\"");
+                }
             } catch (\Throwable $e) {
-                throw new StoreException("Could not quarantine \"{$member}\" in store \"{$this->name}\"", 0, $e);
-            }
-
-            if (!@rename($source, $target)) {
-                throw new StoreException("Could not quarantine \"{$member}\" in store \"{$this->name}\"");
+                // All or nothing (review 1.0 B8): a half-moved set whose row
+                // stays would have its original purged by the retention.
+                throw new StoreException(
+                    "Could not quarantine \"{$member}\" in store \"{$this->name}\""
+                    . $this->rollBack($quarantine . '/' . $token, $moved),
+                    0,
+                    $e,
+                );
             }
 
             $moved[] = new StoredObjectId($member);
@@ -415,6 +545,7 @@ final readonly class FileSystemStore implements
 
         if ($objects->isTree()) {
             $this->removeEmptyDirectories($this->rootPath . '/' . $objects->path);
+            $this->removeOwnedDirectory($objects->path);
         }
 
         if ($moved === []) {
@@ -424,6 +555,37 @@ final readonly class FileSystemStore implements
         }
 
         return new QuarantinedObject($token, $moved);
+    }
+
+    /**
+     * Puts already moved members back after a failed quarantine.
+     *
+     * @param list<StoredObjectId> $moved
+     *
+     * @return string Appended to the failure message: what could not go back.
+     */
+    private function rollBack(string $entry, array $moved): string
+    {
+        $stuck = [];
+        foreach ($moved as $object) {
+            $target = $this->rootPath . '/' . $object->relativePath;
+            if (!is_dir(\dirname($target))) {
+                @mkdir(\dirname($target), $this->directoryMode, recursive: true);
+            }
+            if (file_exists($target) || !@rename($entry . '/' . $object->relativePath, $target)) {
+                $stuck[] = $object->relativePath;
+            }
+        }
+
+        if ($stuck === []) {
+            if (is_dir($entry)) {
+                FileHelper::removeDirectory($entry);
+            }
+
+            return '; nothing was moved';
+        }
+
+        return '; left in the quarantine, restored by the next gc run while a row references them: ' . implode(', ', $stuck);
     }
 
     #[Override]
@@ -518,6 +680,75 @@ final readonly class FileSystemStore implements
         }
     }
 
+    /**
+     * A `.part` is never an object, so the inventory skips it; this walk is
+     * the one that looks for nothing else. Hidden entries and symlinks are
+     * skipped as in the inventory, and only the owned prefixes are walked.
+     */
+    #[Override]
+    public function sweepAbandonedPartials(DateTimeImmutable $modifiedBefore, bool $apply, int $limit): array
+    {
+        $roots = $this->ownedPrefixes === [] ? [''] : $this->ownedPrefixes;
+        $found = [];
+        foreach ($roots as $prefix) {
+            $absolute = $prefix === '' ? $this->rootPath : $this->rootPath . '/' . $prefix;
+            if (!is_dir($absolute) || is_link($absolute)) {
+                continue;
+            }
+
+            foreach ($this->partials($absolute, $prefix) as $relative => $modified) {
+                if ($modified < $modifiedBefore->getTimestamp()) {
+                    $found[] = $relative;
+                }
+            }
+        }
+
+        sort($found, SORT_STRING);
+        $found = \array_slice($found, 0, max(1, $limit));
+
+        if ($apply) {
+            foreach ($found as $relative) {
+                $absolute = $this->rootPath . '/' . $relative;
+                if (is_file($absolute) && !is_link($absolute) && !@unlink($absolute) && file_exists($absolute)) {
+                    throw new StoreException("Could not remove \"{$relative}\" from store \"{$this->name}\"");
+                }
+            }
+        }
+
+        return $found;
+    }
+
+    /**
+     * @return iterable<non-empty-string, int> Relative path => modification time.
+     */
+    private function partials(string $absolute, string $prefix): iterable
+    {
+        $entries = @scandir($absolute);
+        if ($entries === false) {
+            return;
+        }
+
+        foreach ($entries as $entry) {
+            if ($entry === '' || $entry[0] === '.') {
+                continue;
+            }
+
+            $path = $absolute . '/' . $entry;
+            $relative = $prefix === '' ? $entry : $prefix . '/' . $entry;
+            if (is_link($path)) {
+                continue;
+            }
+            if (is_dir($path)) {
+                yield from $this->partials($path, $relative);
+            } elseif (str_ends_with($entry, self::PARTIAL_SUFFIX)) {
+                $modified = @filemtime($path);
+                if ($modified !== false) {
+                    yield $relative => $modified;
+                }
+            }
+        }
+    }
+
     #[Override]
     public function quarantineProblem(): ?string
     {
@@ -540,11 +771,175 @@ final readonly class FileSystemStore implements
     }
 
     /**
+     * The owned subtrees in cursor order — every path under `p/` sorts
+     * between the paths of the prefixes before and after it, because no
+     * prefix lies inside another.
+     *
+     * @return iterable<int, non-empty-string>
+     */
+    private function inventory(?string $after): iterable
+    {
+        if ($this->ownedPrefixes === []) {
+            yield from $this->walk($this->rootPath, '', $after);
+
+            return;
+        }
+
+        foreach ($this->ownedPrefixes as $prefix) {
+            if ($after !== null && $this->wholeSubtreeIsBefore($prefix, $after)) {
+                continue;
+            }
+
+            $absolute = $this->rootPath . '/' . $prefix;
+            // A prefix reached through a symlinked parent resolves elsewhere.
+            // Compared with `/` on both sides: realpath() answers `\` on
+            // Windows, where the raw comparison never matched and every owned
+            // subtree looked empty.
+            $resolved = $this->resolve($prefix);
+            if (
+                is_dir($absolute)
+                && !is_link($absolute)
+                && $resolved !== null
+                && str_replace('\\', '/', $resolved) === str_replace('\\', '/', $absolute)
+            ) {
+                yield from $this->walk($absolute, $prefix, $after);
+            }
+        }
+    }
+
+    /**
+     * True when every path under `$relative/` — and `$relative` itself —
+     * sorts at or before the cursor, so the walk need not look inside.
+     */
+    private function wholeSubtreeIsBefore(string $relative, string $after): bool
+    {
+        return strcmp($relative . '/', $after) < 0 && !str_starts_with($after, $relative . '/');
+    }
+
+    /**
+     * @throws StoreException
+     */
+    private function assertOwned(StoredObjectId $object): void
+    {
+        if ($this->ownedPrefixes === []) {
+            return;
+        }
+
+        foreach ($this->ownedPrefixes as $prefix) {
+            if (str_starts_with($object->relativePath, $prefix . '/')) {
+                return;
+            }
+        }
+
+        throw new StoreException(
+            "Path \"{$object->relativePath}\" is outside the owned prefixes of store \"{$this->name}\" ("
+            . implode(', ', $this->ownedPrefixes) . '): the orphan sweep would never see it. Add its first segment '
+            . 'to ownedPrefixes',
+        );
+    }
+
+    /**
+     * @param array<array-key, mixed> $prefixes
+     *
+     * @return list<non-empty-string>
+     *
+     * @throws InvalidArgumentException
+     */
+    private function validatePrefixes(string $name, array $prefixes): array
+    {
+        /** @var array<string, non-empty-string> $sorted */
+        $sorted = [];
+        foreach ($prefixes as $prefix) {
+            if (!\is_string($prefix) || $prefix === '' || preg_match(self::PREFIX_PATTERN, $prefix) !== 1) {
+                throw new InvalidArgumentException(
+                    "Store \"{$name}\": invalid owned prefix " . var_export($prefix, return: true),
+                );
+            }
+
+            $sorted[$prefix . '/'] = $prefix;
+        }
+
+        ksort($sorted, SORT_STRING);
+        $previous = null;
+        foreach ($sorted as $key => $prefix) {
+            if ($previous !== null && str_starts_with($key, $previous)) {
+                throw new InvalidArgumentException(
+                    "Store \"{$name}\": owned prefix \"{$prefix}\" lies inside \"" . rtrim($previous, '/') . '"',
+                );
+            }
+            $previous = $key;
+        }
+
+        return array_values($sorted);
+    }
+
+    /**
+     * @throws StoreException
+     * @throws UploadSizeException
+     */
+    private function reuse(Upload $upload, StoredObjectId $object, int $maxBytes): StoreResult
+    {
+        $path = $this->resolve($object->relativePath);
+        if ($path === null || !is_file($path)) {
+            throw new StoreException(
+                "Content-addressed key \"{$object->relativePath}\" in store \"{$this->name}\" is not a regular file",
+            );
+        }
+
+        $existing = max(0, (int) @filesize($path));
+        $actual = $upload->size() ?? $this->measure($upload);
+        if ($existing !== $actual) {
+            throw new StoreException(
+                "Content-addressed object \"{$object->relativePath}\" holds {$existing} bytes but the upload is "
+                . "{$actual}. Something outside this package wrote that key",
+            );
+        }
+
+        // The cap is about what this caller may store, however the bytes got
+        // there: reusing past it would bypass a group's limit through a laxer one.
+        if ($maxBytes > 0 && $existing > $maxBytes) {
+            throw new UploadSizeException("Upload of {$existing} bytes exceeds the {$maxBytes} byte limit");
+        }
+
+        return new StoreResult(relativePath: $object->relativePath, size: $existing, created: false);
+    }
+
+    /**
+     * @return int<0, max>
+     */
+    private function measure(Upload $upload): int
+    {
+        $stream = $upload->stream();
+        $counted = 0;
+        while (!$stream->eof()) {
+            $chunk = $stream->read(self::CHUNK);
+            if ($chunk === '') {
+                break;
+            }
+
+            $counted += \strlen($chunk);
+        }
+        $stream->rewind();
+
+        return $counted;
+    }
+
+    /**
+     * A path the layout refuses is a store error, so callers that handle
+     * {@see \Rasuvaeff\Yii3Filestorage\Exception\FilestorageException} (a
+     * download action answering 404) keep working for such a row.
+     *
      * @return non-empty-string
+     *
+     * @throws StoreException
      */
     private function derivativePath(File $file, DerivativeDescriptor $derivative): string
     {
-        return $this->layout->derivativePath($file, $derivative);
+        try {
+            return $this->layout->derivativePath($file, $derivative);
+        } catch (InvalidArgumentException $e) {
+            throw new StoreException($e->getMessage(), 0, $e);
+        }
     }
 
     /**
@@ -585,6 +980,31 @@ final readonly class FileSystemStore implements
         }
 
         return $members;
+    }
+
+    /**
+     * After a tree rooted at a *file* — what the orphan sweep quarantines —
+     * the file's directory goes too when the layout says that one file owns
+     * it: a `DirectoryLayout` key directory (review 1.0 pass 2, maintenance
+     * N11). Never a fan-out directory: a writer creates one and then opens its
+     * file inside, and removing it in between fails the upload.
+     */
+    private function removeOwnedDirectory(string $path): void
+    {
+        $slash = strrpos($path, '/');
+        if ($slash === false) {
+            return;
+        }
+
+        try {
+            $deletion = $this->layout->deletion(new StoredObjectId($path));
+        } catch (\InvalidArgumentException) {
+            return;
+        }
+
+        if ($deletion->isTree() && $deletion->path === substr($path, 0, $slash)) {
+            $this->removeEmptyDirectories($this->rootPath . '/' . $deletion->path);
+        }
     }
 
     /**
@@ -672,7 +1092,7 @@ final readonly class FileSystemStore implements
      * @return int<0, max>
      *
      * @throws StoreException
-     * @throws UploadTooLargeException
+     * @throws UploadSizeException
      */
     private function copy(StreamInterface $source, string $partial, int $maxBytes, string $relativePath): int
     {
@@ -696,7 +1116,7 @@ final readonly class FileSystemStore implements
 
                 $written += \strlen($chunk);
                 if ($maxBytes > 0 && $written > $maxBytes) {
-                    throw new UploadTooLargeException(
+                    throw new UploadSizeException(
                         "Upload exceeds the {$maxBytes} byte limit for this group",
                     );
                 }
@@ -738,9 +1158,19 @@ final readonly class FileSystemStore implements
      * Stable, resumable, depth-first walk, ordered so that a `strcmp()` cursor
      * over full relative paths can skip forward through it safely.
      *
+     * With a cursor, an entry whose whole subtree sorts before it is skipped
+     * before it is even stat()ed, and only the directories on the cursor's
+     * own path are listed again: resuming a page costs the depth of the tree,
+     * not everything before the cursor (review 1.0 B10). Paths at or before
+     * the cursor may still be yielded; the caller filters them.
+     *
+     * Hidden entries — a name starting with `.` — are never part of a store:
+     * no generator emits one, and `.htaccess` under a web root is the
+     * application's (review 1.0 B2).
+     *
      * @return iterable<int, non-empty-string>
      */
-    private function walk(string $absolute, string $prefix): iterable
+    private function walk(string $absolute, string $prefix, ?string $after = null): iterable
     {
         $entries = @scandir($absolute);
         if ($entries === false) {
@@ -750,7 +1180,12 @@ final readonly class FileSystemStore implements
         /** @var array<string, array{string, string, bool}> $ordered */
         $ordered = [];
         foreach ($entries as $entry) {
-            if ($entry === '.' || $entry === '..' || str_ends_with($entry, self::PARTIAL_SUFFIX)) {
+            if ($entry === '' || $entry[0] === '.' || str_ends_with($entry, self::PARTIAL_SUFFIX)) {
+                continue;
+            }
+
+            $relative = $prefix === '' ? $entry : $prefix . '/' . $entry;
+            if ($after !== null && $this->wholeSubtreeIsBefore($relative, $after)) {
                 continue;
             }
 
@@ -780,7 +1215,7 @@ final readonly class FileSystemStore implements
             \assert($relative !== '');
 
             if ($isDirectory) {
-                yield from $this->walk($path, $relative);
+                yield from $this->walk($path, $relative, $after);
             } else {
                 yield $relative;
             }

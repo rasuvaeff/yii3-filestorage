@@ -5,9 +5,16 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Filestorage\Policy;
 
 use InvalidArgumentException;
+use Rasuvaeff\Yii3Filestorage\File;
+use Rasuvaeff\Yii3Filestorage\Mime\ActiveMediaTypes;
+use Rasuvaeff\Yii3Filestorage\Store\DerivativeDescriptor;
 
 /**
- * Resolves the {@see DeliveryPolicy} of a group, falling back to the wildcard.
+ * Resolves the {@see DeliveryPolicy} of a group, falling back to the wildcard,
+ * and carries the configured {@see ActiveMediaTypes} list: the two together
+ * decide a response's disposition, so whoever builds {@see DeliveryOptions}
+ * — the facade for a presigned URL, `-web` for the proxy — gets both from one
+ * place ({@see self::optionsFor()}).
  *
  * @api
  */
@@ -27,12 +34,17 @@ final readonly class DeliveryPolicyRegistry
 
     private DeliveryPolicy $fallback;
 
+    private ActiveMediaTypes $activeMediaTypes;
+
     /**
      * @param array<non-empty-string, DeliveryPolicy> $policies Group name => policy.
      *        The {@see self::WILDCARD} key, if present, becomes the fallback.
+     * @param ActiveMediaTypes|null $activeMediaTypes Null is the default list;
+     *        core's DI passes the one built from params.
      */
-    public function __construct(array $policies = [])
+    public function __construct(array $policies = [], ?ActiveMediaTypes $activeMediaTypes = null)
     {
+        $this->activeMediaTypes = $activeMediaTypes ?? new ActiveMediaTypes();
         $this->fallback = $policies[self::WILDCARD] ?? new DeliveryPolicy();
         unset($policies[self::WILDCARD]);
         $this->policies = $policies;
@@ -52,7 +64,7 @@ final readonly class DeliveryPolicyRegistry
      *
      * @throws InvalidArgumentException
      */
-    public static function fromArray(array $config): self
+    public static function fromArray(array $config, ?ActiveMediaTypes $activeMediaTypes = null): self
     {
         $policies = [];
         foreach ($config as $group => $policy) {
@@ -80,7 +92,7 @@ final readonly class DeliveryPolicyRegistry
             );
         }
 
-        return new self($policies);
+        return new self($policies, $activeMediaTypes);
     }
 
     /**
@@ -107,5 +119,27 @@ final readonly class DeliveryPolicyRegistry
     public function for(string $groupName): DeliveryPolicy
     {
         return $this->policies[$groupName] ?? $this->fallback;
+    }
+
+    public function activeMediaTypes(): ActiveMediaTypes
+    {
+        return $this->activeMediaTypes;
+    }
+
+    /**
+     * The delivery shape of a stored file under its group's policy and the
+     * configured active list.
+     */
+    public function optionsFor(File $file): DeliveryOptions
+    {
+        return DeliveryOptions::fromFile($file, $this->for($file->groupName), $this->activeMediaTypes);
+    }
+
+    /**
+     * The delivery shape of one of the file's renditions.
+     */
+    public function optionsForVariant(File $file, DerivativeDescriptor $derivative): DeliveryOptions
+    {
+        return DeliveryOptions::forVariant($file, $this->for($file->groupName), $derivative, $this->activeMediaTypes);
     }
 }

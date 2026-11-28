@@ -18,6 +18,7 @@ use Rasuvaeff\Yii3Filestorage\Exception\PolicyViolationException;
 use Rasuvaeff\Yii3Filestorage\Exception\RemoveException;
 use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
 use Rasuvaeff\Yii3Filestorage\File;
+use Rasuvaeff\Yii3Filestorage\Id\IdGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Id\Uuid7IdGenerator;
 use Rasuvaeff\Yii3Filestorage\Mime\FinfoMimeTypeDetector;
 use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
@@ -30,6 +31,7 @@ use Rasuvaeff\Yii3Filestorage\Repository\RepositoryInterface;
 use Rasuvaeff\Yii3Filestorage\Storage;
 use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
+use Rasuvaeff\Yii3Filestorage\Store\StoreResult;
 use Rasuvaeff\Yii3Filestorage\Store\StoreUrlProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
@@ -39,6 +41,7 @@ use Rasuvaeff\Yii3Filestorage\Url\ProxyUrlGeneratorInterface;
 use RuntimeException;
 use Testo\Assert;
 use Testo\Codecov\Covers;
+use Testo\Data\DataProvider;
 use Testo\Expect;
 use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
@@ -159,6 +162,97 @@ final class StorageTest
             Assert::same($this->store->writeCount(), 0);
             Assert::same($this->repository->count(), 0);
         }
+    }
+
+    /**
+     * Review 1.0 A2 (summary A3), probe p2: metadata used to be validated by
+     * `File::create()` *after* the write, outside the compensating `try` — so
+     * every invalid request left a whole object with no row and surfaced as a
+     * bare `InvalidArgumentException`. It is now validated before the store is
+     * touched.
+     *
+     * @param array<array-key, mixed> $metadata
+     */
+    #[DataProvider('invalidMetadataProvider')]
+    public function invalidMetadataIsRefusedBeforeAnythingIsWritten(array $metadata, string $message): void
+    {
+        try {
+            $this->storage()->add($this->upload('x'), metadata: $metadata);
+            Assert::true(actual: false, message: 'the metadata should have been rejected');
+        } catch (InvalidArgumentException $e) {
+            Assert::string($e->getMessage())->contains($message);
+            Assert::same($this->store->writeCount(), 0, 'nothing was written');
+            Assert::same($this->store->paths(), []);
+            Assert::same($this->repository->count(), 0);
+        }
+    }
+
+    /**
+     * @return iterable<string, array{array<array-key, mixed>, non-empty-string}>
+     */
+    public static function invalidMetadataProvider(): iterable
+    {
+        yield 'integer key' => [[0 => 'v'], 'keys must be non-empty strings'];
+        yield 'array value' => [['k' => ['nested']], 'File metadata value "k" must be scalar or null'];
+        yield 'NAN' => [['k' => \NAN], 'File metadata value "k" must be a finite number'];
+    }
+
+    /**
+     * The id and the clock are consulted before the write as well: a failing
+     * generator must not cost an object either.
+     */
+    public function aFailingIdGeneratorWritesNothing(): void
+    {
+        $ids = Understudy::for(IdGeneratorInterface::class);
+        when(static fn(): string => $ids->generate())->throws(new RuntimeException('entropy exhausted'));
+
+        try {
+            $this->storage(idGenerator: $ids)->add($this->upload('x'));
+            Assert::true(actual: false, message: 'add() should have failed');
+        } catch (RuntimeException $e) {
+            Assert::same($e->getMessage(), 'entropy exhausted');
+            Assert::same($this->store->writeCount(), 0);
+        }
+    }
+
+    /**
+     * Anything that fails after the write is an `AddException`, as `@throws`
+     * promises — here a store answering with a path `File` refuses.
+     */
+    public function aStoreResultFileRefusesIsAnAddException(): void
+    {
+        $store = Understudy::for(StoreInterface::class);
+        Understudy::forwarding($store, $this->store);
+        when(static fn(): StoreResult => $store->write(Arg::any(), Arg::any(), Arg::any(), Arg::any(), Arg::any()))
+            ->returns(new StoreResult(relativePath: '../escape/original.txt', size: 1));
+
+        try {
+            $this->storage(store: $store)->add($this->upload('x'));
+            Assert::true(actual: false, message: 'add() should have failed');
+        } catch (AddException $e) {
+            Assert::string($e->getMessage())->contains(
+                'returned a result that is not a valid file ("../escape/original.txt"); the written object is left for filestorage:gc',
+            );
+            Assert::instanceOf($e->getPrevious(), InvalidArgumentException::class);
+            Assert::same($this->repository->count(), 0);
+        }
+    }
+
+    /**
+     * Review 1.0 C4: a negative inline cap made `content()` throw on every
+     * non-empty file; a negative hash cap silently meant "off".
+     */
+    public function negativeCapsAreRejected(): void
+    {
+        try {
+            $this->storage(maxInlineBytes: -1);
+            Assert::true(actual: false, message: 'a negative inline cap should have been rejected');
+        } catch (InvalidArgumentException $e) {
+            Assert::same($e->getMessage(), 'maxInlineBytes must not be negative');
+        }
+
+        Expect::exception(InvalidArgumentException::class)->withMessage('integrityHashMaxBytes must not be negative');
+        $this->storage(integrityHashMaxBytes: -1);
     }
 
     public function findReturnsTheStoredFile(): void
@@ -536,6 +630,32 @@ final class StorageTest
         Assert::same($storage->urlFor($file), "https://cdn.example.com/temp/{$file->relativePath}");
     }
 
+    /**
+     * Review 1.0 pass 2 (flysystem-web-images N10): a URL minted outside the
+     * tenant's request — a queue job, a mail — needs a proxy generator pinned
+     * to the file's tenant, and the facade had no way to take one.
+     */
+    public function withProxyUrlsMintsThroughAnotherGeneratorAndLeavesTheOriginalAlone(): void
+    {
+        $shared = Understudy::for(ProxyUrlGeneratorInterface::class);
+        when(static fn(): string => $shared->url(Arg::any(), Arg::any()))->answers(
+            static fn(Invocation $call): string => "https://app.example.com/shared/{$call->args[0]->id}",
+        );
+        $pinned = Understudy::for(ProxyUrlGeneratorInterface::class);
+        when(static fn(): string => $pinned->url(Arg::any(), Arg::any()))->answers(
+            static fn(Invocation $call): string => "https://app.example.com/tenant-a/{$call->args[0]->id}",
+        );
+
+        $storage = $this->storage(proxyUrls: $shared);
+        $file = $storage->add($this->upload('x'));
+        $forTenant = $storage->withProxyUrls($pinned);
+
+        Assert::same($forTenant->urlFor($file), "https://app.example.com/tenant-a/{$file->id}");
+        Assert::same($storage->urlFor($file), "https://app.example.com/shared/{$file->id}");
+        Assert::null($storage->withProxyUrls(null)->urlFor($file));
+        Assert::same($forTenant->find($file->id)?->id, $file->id, 'everything else is the same facade');
+    }
+
     public function urlForFallsBackToTheProxyGenerator(): void
     {
         $proxy = Understudy::for(ProxyUrlGeneratorInterface::class);
@@ -618,13 +738,14 @@ final class StorageTest
         int $maxInlineBytes = 8_388_608,
         int $integrityHashMaxBytes = 0,
         ?ProxyUrlGeneratorInterface $proxyUrls = null,
+        ?IdGeneratorInterface $idGenerator = null,
     ): Storage {
         return new Storage(
             stores: new StoreRegistry([$store ?? $this->store]),
             repository: $repository ?? $this->repository,
             pathGenerator: new RandomPathGenerator(),
             mimeTypeDetector: new FinfoMimeTypeDetector(),
-            idGenerator: new Uuid7IdGenerator($this->clock),
+            idGenerator: $idGenerator ?? new Uuid7IdGenerator($this->clock),
             policies: $policies ?? new PolicyRegistry(),
             deliveryPolicies: $deliveryPolicies ?? new DeliveryPolicyRegistry(),
             clock: $this->clock,

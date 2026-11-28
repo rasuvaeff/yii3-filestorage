@@ -68,4 +68,44 @@ final class FlatSha256KeyGeneratorTest
             '.' . str_repeat('a', 16),
         ));
     }
+
+    public function aPrefixReplacesTheScope(): void
+    {
+        $sha = str_repeat('ab', 32);
+
+        Assert::same(
+            (new FlatSha256KeyGenerator(prefix: 'blobs'))->generate('sha/tenant/group', $sha, 'jpg'),
+            'blobs/ab/ab/' . $sha . '.jpg',
+        );
+        Assert::same(
+            (new FlatSha256KeyGenerator(prefix: 'media/blobs'))->generate('sha', $sha),
+            'media/blobs/ab/ab/' . $sha,
+        );
+    }
+
+    public function withoutAPrefixTheScopeLeads(): void
+    {
+        $sha = str_repeat('ab', 32);
+
+        Assert::same((new FlatSha256KeyGenerator())->generate('sha', $sha, 'jpg'), 'sha/ab/ab/' . $sha . '.jpg');
+    }
+
+    #[DataProvider('invalidPrefixProvider')]
+    public function anInvalidPrefixIsRejected(string $prefix): void
+    {
+        Expect::exception(InvalidArgumentException::class)->withMessageContaining('Invalid key prefix');
+
+        new FlatSha256KeyGenerator(prefix: $prefix);
+    }
+
+    public static function invalidPrefixProvider(): iterable
+    {
+        yield 'empty' => [''];
+        yield 'leading slash' => ['/blobs'];
+        yield 'trailing slash' => ['blobs/'];
+        yield 'traversal' => ['../blobs'];
+        yield 'empty segment' => ['a//b'];
+        yield 'dot first' => ['.blobs'];
+        yield 'newline' => ["blobs\n"];
+    }
 }

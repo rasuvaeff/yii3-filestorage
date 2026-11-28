@@ -425,11 +425,17 @@ final class ImportCommand extends Command
     private function openManifest(string $path)
     {
         $directory = \dirname($path);
+        // dirname() of a manifest at a stream wrapper's root ("scheme://m.jsonl")
+        // is "scheme:" — a *relative local* path, which mkdir() would happily
+        // create in the working directory (review 1.0 C7). A wrapper's root
+        // exists by definition; there is nothing to create.
+        $wrapperRoot = str_contains($path, '://') && !str_contains($directory, '://');
+
         // Silenced deliberately: the third clause is the race check, so a
         // concurrent creator is an expected outcome rather than a problem —
         // and the warning it emits is enough to fail a test run that treats
         // warnings as errors.
-        if (!is_dir($directory) && !@mkdir($directory, 0o775, recursive: true) && !is_dir($directory)) {
+        if (!$wrapperRoot && !is_dir($directory) && !@mkdir($directory, 0o775, recursive: true) && !is_dir($directory)) {
             return null;
         }
 

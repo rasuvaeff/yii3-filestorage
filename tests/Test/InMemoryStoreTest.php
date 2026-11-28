@@ -10,7 +10,7 @@ use Nyholm\Psr7\Factory\Psr17Factory;
 use Rasuvaeff\Understudy\Arg;
 use Rasuvaeff\Understudy\Understudy;
 use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
-use Rasuvaeff\Yii3Filestorage\Exception\UploadTooLargeException;
+use Rasuvaeff\Yii3Filestorage\Exception\UploadSizeException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
@@ -126,7 +126,9 @@ final class InMemoryStoreTest
                 maxBytes: 10,
             );
             Assert::true(actual: false, message: 'the write should have been refused');
-        } catch (UploadTooLargeException) {
+        } catch (UploadSizeException) {
+            // Review 1.0 B3: the group's limit, crossed mid-copy, is the same
+            // class the policy throws for a known size.
             Assert::same($this->store->paths(), []);
             Assert::same($this->store->writeCount(), 0);
         }
@@ -219,13 +221,13 @@ final class InMemoryStoreTest
         sort($paths);
 
         $first = array_map(
-            static fn(StoredObject $object): string => $object->relativePath,
+            static fn(StoredObject $object): string => $object->id->relativePath,
             iterator_to_array($this->store->objects(limit: 2), preserve_keys: false),
         );
         Assert::same($first, array_slice($paths, 0, 2));
 
         $second = array_map(
-            static fn(StoredObject $object): string => $object->relativePath,
+            static fn(StoredObject $object): string => $object->id->relativePath,
             iterator_to_array($this->store->objects(afterPath: $first[1], limit: 10), preserve_keys: false),
         );
         Assert::same($second, array_slice($paths, 2));
@@ -280,13 +282,57 @@ final class InMemoryStoreTest
         new InMemoryStore('bad name', $this->factory);
     }
 
+    /**
+     * Review 1.0 C21: a numeric path at the root became an int array key and
+     * the inventory threw a TypeError.
+     */
+    /**
+     * Review 1.0 pass 2 (maintenance), N6: PHP turns the key "123" into an
+     * integer, and `quarantine()` handed it to `ObjectSet::contains(string)` —
+     * a TypeError that ended the whole `gc --orphans` run.
+     */
+    public function aNumericRootPathCanBeQuarantinedAndRestored(): void
+    {
+        $this->store->corrupt('123', 'a');
+        $this->store->corrupt('45', 'b');
+
+        $entry = $this->store->quarantine(ObjectSet::tree(new StoredObjectId('123')), $this->clock->now());
+
+        Assert::true($entry instanceof QuarantinedObject);
+        Assert::same($entry->objects[0]->relativePath, '123');
+        Assert::true($this->store->isQuarantined('123'));
+        Assert::same($this->store->paths(), ['45']);
+
+        $this->store->restore($entry);
+        Assert::same($this->store->bytesAt('123'), 'a');
+    }
+
+    public function aNumericRootPathIsListedInCursorOrder(): void
+    {
+        $this->store->corrupt('123', 'a');
+        $this->store->corrupt('45', 'b');
+        $this->store->corrupt('a.bin', 'c');
+
+        $paths = array_map(
+            static fn(StoredObject $object): string => $object->id->relativePath,
+            iterator_to_array($this->store->objects(), preserve_keys: false),
+        );
+
+        Assert::same($paths, ['123', '45', 'a.bin']);
+        Assert::same($this->store->paths(), ['123', '45', 'a.bin']);
+        Assert::same(array_map(
+            static fn(StoredObject $object): string => $object->id->relativePath,
+            iterator_to_array($this->store->objects('123'), preserve_keys: false),
+        ), ['45', 'a.bin']);
+    }
+
     public function theInventoryCarriesTimestampAndSize(): void
     {
         $file = $this->write('four');
 
         $objects = iterator_to_array($this->store->objects(), preserve_keys: false);
 
-        Assert::same($objects[0]->relativePath, $file->relativePath);
+        Assert::same($objects[0]->id->relativePath, $file->relativePath);
         Assert::same($objects[0]->size, 4);
         Assert::same($objects[0]->lastModified, $this->clock->now());
     }

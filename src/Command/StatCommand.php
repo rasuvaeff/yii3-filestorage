@@ -78,6 +78,7 @@ final class StatCommand extends Command
         $options = $input->getOptions();
         $after = isset($options['after']) && \is_string($options['after']) && $options['after'] !== '' ? $options['after'] : null;
         $limit = max(0, (int) $input->getOption('limit'));
+        $resumed = $after !== null;
         $nextCursor = null;
 
         while (
@@ -115,6 +116,13 @@ final class StatCommand extends Command
                 ];
             }
         }
+
+        // Exactly --limit rows left nothing behind: no cursor, no false
+        // "Stopped at --limit" (review 1.0 C15).
+        if ($nextCursor !== null && iterator_to_array($this->repository->files($nextCursor, 1), preserve_keys: false) === []) {
+            $nextCursor = null;
+        }
+        $windowed = $resumed || $nextCursor !== null;
 
         if ($scoped) {
             $io->note($this->scopedPhysicalNote());
@@ -168,6 +176,11 @@ final class StatCommand extends Command
             return Command::SUCCESS;
         }
 
+        if ($windowed) {
+            // Sharing is counted inside this window only: a row that shares an
+            // object with a row of another window counts as distinct here.
+            $io->text('Distinct objects and sharing below are for this --after/--limit window only.');
+        }
         $io->text(sprintf('Distinct objects: %d', \count($paths)));
         // On rows, not on bytes: a shared row of size zero adds nothing to
         // $sharedBytes, and the sentence below counts rows. Deciding with one
@@ -189,6 +202,7 @@ final class StatCommand extends Command
             'distinctObjects' => \count($paths),
             'sharedRows' => $files - \count($paths),
             'sharedBytes' => $sharedBytes,
+            'windowed' => $windowed,
             'nextCursor' => $nextCursor,
         ]);
 

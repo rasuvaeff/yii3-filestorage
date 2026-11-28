@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Filestorage\Url;
 
 use DateTimeImmutable;
+use InvalidArgumentException;
 use Override;
 use Psr\Clock\ClockInterface;
 
@@ -48,13 +49,23 @@ final readonly class HmacUrlSigner implements UrlSignerInterface
     #[Override]
     public function sign(SignedPayload $payload, DateTimeImmutable $expiresAt): string
     {
+        // verify() accepts 1 to MAX_EXPIRES_DIGITS digits and nothing else, so
+        // anything outside that range would be a link dead on arrival.
+        $expires = $expiresAt->getTimestamp();
+        if ($expires < 0 || \strlen((string) $expires) > self::MAX_EXPIRES_DIGITS) {
+            throw new InvalidArgumentException(
+                "Cannot sign a token expiring at {$expires}: the expiry must be between 0 and "
+                . str_repeat('9', self::MAX_EXPIRES_DIGITS) . ' seconds since the epoch',
+            );
+        }
+
         $keyId = $this->keys->activeKeyId();
         $secret = $this->keys->secretFor($keyId);
         \assert($secret !== null);
 
         $signedPart = self::VERSION
             . '.' . $keyId
-            . '.' . $expiresAt->getTimestamp()
+            . '.' . $expires
             . '.' . $this->base64UrlEncode($payload->toCanonicalJson());
 
         return $signedPart . '.' . $this->base64UrlEncode(hash_hmac(self::ALGORITHM, $signedPart, $secret, binary: true));

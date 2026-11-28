@@ -197,8 +197,18 @@ $file = $storage->add(Upload::fromDataUrl(
     'logo.png',
     $streamFactory,
     $clientHint, // the URL's media type claim, by reference — a hint, not a fact
+    maxSpoolBytes: 5_242_880, // cap on the decoded payload; 0 = none
 ));
 ```
+
+`fromDataUrl()` accepts parameters (`;charset=utf-8`), any case of the type and
+of `;base64`; the hint comes back lower-cased.
+
+The client's filename is normalised once, in `Upload`: control characters and
+bidi controls (U+202E turns `invoice<U+202E>gpj.exe` into a visible `invoiceexe.jpg`)
+are removed, invalid UTF-8 becomes U+FFFD, and the name is cut to
+`File::MAX_ORIGINAL_NAME_LENGTH` (255) characters keeping its extension, so it
+fits a `VARCHAR(255)` everywhere. It stays metadata and never enters a path.
 
 `$file` is an immutable `File`: `id`, `storeName`, `groupName`, `relativePath`,
 `originalName`, `mimeType`, `size`, `description`, `contentHash`, `metadata`,
@@ -224,6 +234,10 @@ The timestamp argument is the point: `updatedAt` is part of the download
 validator, so a metadata change that left it untouched would serve stale
 caches. `description` travels the same way — build the new `File` via
 `File::fromArray()` with the field changed, then `save()` it.
+
+This relies on `RepositoryInterface::save()` being an **upsert** by `File::$id`
+— that is its contract. A repository of your own that only inserts breaks this
+recipe and every decorator that updates metadata.
 
 ### The files of one group
 
@@ -275,6 +289,19 @@ back when the store cannot honour them. What neither consults is
 Application code and templates should not branch on whether the store happens
 to be public — that is what `urlFor()` is for.
 
+The proxy generator reads the tenant from the current request. A URL minted
+outside one — a queue job, a mail — takes a generator pinned to the file's
+tenant through `Storage::withProxyUrls()`, which returns a copy of the facade
+and leaves the shared one alone:
+
+```php
+$url = $storage->withProxyUrls($proxyUrls->forScope($tenantId))->urlFor($file);
+```
+
+It is a method of the concrete `Storage` (not of `StorageInterface`, so
+decorators keep compiling); where `StorageInterface` is bound to a decorator,
+resolve `Storage::class` for this — URLs do not depend on the decorator.
+
 ### Groups and policies
 
 A group is a use case, not a folder. Give it accept rules once, in `params`,
@@ -306,7 +333,41 @@ return [
 ```
 
 An upload that fails its policy throws `PolicyViolationException` **before the
-store is touched**, so nothing is written.
+store is touched**, so nothing is written. Catch it for every rejection, or the
+specific branches an HTTP layer maps to different statuses:
+
+```php
+use Rasuvaeff\Yii3Filestorage\Exception\PolicyViolationException;
+use Rasuvaeff\Yii3Filestorage\Exception\SizeLimitExceededException;
+use Rasuvaeff\Yii3Filestorage\Exception\UnsupportedMediaTypeException;
+
+try {
+    $file = $storage->add($upload, groupName: 'avatars');
+} catch (SizeLimitExceededException) {
+    // 413 — the group's maxBytes (known size or crossed mid-copy), the spool
+    // cap, a data URL over its cap, or PHP's upload_max_filesize.
+} catch (UnsupportedMediaTypeException $e) {
+    // 415
+} catch (PolicyViolationException $e) {
+    // 400/422 — pixel limit, unmeasurable image
+}
+```
+
+**Pixel limit.** `maxPixels` (40 M by default) is read from the image header;
+pixels are never decoded. A JPEG is walked marker by marker to its frame
+header, however much metadata (ICC, XMP, Photoshop) precedes it, and skips
+stray bytes between segments as libjpeg does; a second frame header before the
+scan is refused (Pillow would measure the last one). A GIF is walked block by block:
+every frame carries its own size, and one that does not fit inside the logical
+screen is refused — a 1×1 screen around an 8000×8000 frame is the GIF bomb. A
+TIFF is measured from its directory chain wherever the writer put it (the
+largest page counts, a directory without dimensions is skipped; BigTIFF is not measured). A JPEG, PNG, GIF, WebP or TIFF
+whose dimensions cannot be established is **refused** while `maxPixels > 0` —
+a hidden header is how a decompression bomb gets past a fixed window. Every
+other raster format (AVIF, HEIC, BMP, ICO…) is measured from its first 256 KiB
+only, and passes unmeasured when its size is not found there, unless
+`requireImageDimensions` is on — set it, or an allow-list without such
+formats, on groups whose files reach an image decoder.
 
 **References the application owns.** By default a `File` row *is* the
 reference: it lives until the application removes it
@@ -339,6 +400,18 @@ ledger, a unique object into the store's quarantine, restorable for
 blob is quarantined and during the orphan sweep, so a URL pasted back into a
 text in the meantime keeps its bytes.
 
+Two traps of a checker that scans text columns, both seen on a real
+application:
+
+- **Skip this package's own tables.** `filestorage_file.relative_path` (and
+  the blob tables) name every stored file. A scan over "every text column"
+  that includes them answers "referenced" for every row, and nothing is ever
+  released.
+- **Match every form the application writes.** A URL (`/uploads/blobs/…`) and
+  a path inside the store (`blobs/…`, kept by an image cache column, say) are
+  both references. A checker that looks for one form only releases files the
+  other form still names.
+
 ### Parameters
 
 | Key | Default | Meaning |
@@ -347,9 +420,11 @@ text in the meantime keeps its bytes.
 | `maxInlineBytes` | 8 MiB | Cap enforced by `content()` |
 | `integrityHashMaxBytes` | `0` | `0` leaves `contentHash` null; a positive value opts into a bounded SHA-256 |
 | `defaultUrlTtl` | `PT1H` | Expiry `urlFor()` uses when none is given |
-| `extensionOverrides` | `[]` | Media type ⇒ extension, over the `symfony/mime` table |
+| `extensionOverrides` | `[]` | Media type ⇒ extension, over the `symfony/mime` table; keys in any case. Active and executable types (HTML, SVG, XML and every `+xml` type, JS, scripts, executables) are stored as `.bin` unless overridden here |
+| `activeMediaTypes` | `['extra' => [], 'allowInline' => []]` | The family's one active-content list (`Mime\ActiveMediaTypes`, bound in DI). `extra` adds types; `allowInline` lets plugin-tier types (`application/pdf`) out, so a group with `forceDownload => false` shows them inline — on the proxy and on a presigned URL alike. A scriptable type cannot be let out |
 | `policies` | `['*' => …]` | Per-group accept rules and `referencesOwnedBy` |
 | `delivery` | `['*' => …]` | Per-group delivery rules |
+| `gc` | `leaseTtl` `PT5M`, `gracePeriod` `PT1H`, `retention` `P7D` | `filestorage:gc` intervals (ISO 8601, strictly positive): blob lease, the wait of a released blob and default `--min-age` (keep it ≥ `-db`'s `deleteGracePeriod`), default `--retention` |
 
 ### Failure handling
 
@@ -359,8 +434,9 @@ object, or nothing.
 | What failed | What you get |
 |---|---|
 | Policy rejects the upload | `PolicyViolationException`; nothing written |
-| Byte cap crossed while copying | `UploadTooLargeException`; the partial object is removed |
-| Metadata save fails after the write | `AddException`; the object is deleted on a best-effort basis |
+| Invalid metadata, group name or other caller field | `InvalidArgumentException`; nothing written |
+| Group's `maxBytes` crossed while copying | `UploadSizeException` (a `PolicyViolationException` and a `SizeLimitExceededException`); the partial object is removed |
+| Anything failing after the write (metadata save, an unusable store answer) | `AddException`; the object is deleted on a best-effort basis |
 | Object delete fails after the row is gone | `RemoveException`; the object is an orphan for `filestorage:gc` |
 
 There is no `addMany()`. An atomic batch is impossible over a filesystem or an
@@ -391,6 +467,49 @@ The rule the whole design turns on: **shared bytes are never deleted inside a
 request.** The last release only marks a blob `pending_delete`; only the
 collector deletes, only under a lease, and only while the reference and
 reservation counts are still zero in the same statement that claims it.
+
+**Local stores are content-addressable (0.10).** `FileSystemStore` and
+`PublicFileSystemStore` implement `ContentAddressableStoreInterface`:
+`putIfAbsent()` stages under a random `.part` name and publishes with `link()`,
+which refuses an existing target, so two writers of the same content both
+succeed and existing bytes are reused after a size check (a different size is a
+`StoreException`, a reuse over the caller's `maxBytes` an `UploadSizeException`).
+That is what lets `-db`'s deduplication run on a local disk, public or not.
+
+**A key generator must fit the store's layout.** They are configured in two
+places, and a mismatch deletes other files' bytes: flat keys
+(`FlatSha256KeyGenerator`) under the default `DirectoryLayout` made deleting one
+blob delete its whole `ab/cd/` bucket. `DirectoryLayout` now refuses any file not
+named `original` / `original.<ext>` (a store reports that as `StoreException`), and `Store\Layout\LayoutCompatibility`
+checks a pair behaviourally — it takes two keys that share a directory and asks
+the layout what deleting each removes and where each one's derivative goes.
+Content keys share the fan-out prefix by construction; for a path generator it
+draws up to 4096 paths looking for two in one directory, and probes the first
+two when there are none (a key directory per file). A layout that misbehaves
+only for shapes the generator rarely emits can still pass. Call it wherever a
+generator meets a store; `-db`'s factory and `filestorage:check` do:
+
+```php
+use Rasuvaeff\Yii3Filestorage\Store\Layout\LayoutCompatibility;
+
+LayoutCompatibility::assertContentKeys($keys, $store);           // InvalidConfigException
+LayoutCompatibility::assertPaths($pathGenerator, $store, $streams);
+$problem = LayoutCompatibility::contentKeysProblem($keys, $store->layout()); // ?string
+```
+
+A second probe asks whether a content-key generator keeps the **tenant** in the
+key at all: it generates one digest under two scopes and compares.
+`FlatSha256KeyGenerator(prefix: …)` does not, so two tenants' identical bytes
+would share one object. Only the caller knows whether that is intended (`-db`'s
+`global` deduplication scope shares on purpose), so `filestorage:check` reports
+it as a **warning** when a `FileScopeProviderInterface` is bound, and `-db`
+refuses it at boot under its tenant scopes:
+
+```php
+$problem = LayoutCompatibility::tenantProblem($keys);                  // ?string, scopes 'tenant-a'/'tenant-b'
+$problem = LayoutCompatibility::tenantProblem($keys, $scopeA, $scopeB); // your real scope strings
+LayoutCompatibility::assertTenantKept($keys);                          // InvalidConfigException
+```
 
 ### Tenant scope
 
@@ -435,16 +554,43 @@ beside the original as `<sha>-<name>.<ext>`. `delete()` then removes the
 original and every `<sha>-*` sibling; a base must not contain `-` or `.`, and a
 file whose name does not fit is refused rather than guessed at. The layout is
 chosen per store through its constructor (`layout:`), and `StoreInterface::layout()`
-tells `gc` and derivative writers which one is in force:
+tells `gc` and derivative writers which one is in force. `DirectoryLayout`
+refuses a flat key outright (see *Deduplication contracts*).
+
+`FlatSha256KeyGenerator(prefix: 'blobs')` adopts an existing tree as it is:
+keys become `blobs/ab/cd/<sha>.<ext>` and the scope argument is **ignored**, so
+it is for a single-tenant installation whose deduplication scope is global
+anyway. Without `prefix` the scope leads, as before.
+
+A root that is also a web root usually holds the application's own files.
+**The root belongs to the store**: `gc --orphans` treats every file under it
+without a row as an orphan. Hidden entries (`.htaccess`, `.well-known/`) are
+never listed; anything else the application keeps there must be excluded with
+`ownedPrefixes` — the inventory is then those subtrees only, and a write outside
+them is refused. Listing group names there works until a group is named like
+one of the application's directories; `RandomPathGenerator(prefix: 'files')`
+puts every group under one subtree (`files/<group>/ab/cd/<key>/original.<ext>`),
+so `ownedPrefixes: ['blobs', 'files']` covers every write. `webRoot` lets
+`PublicFileSystemStore` refuse a quarantine inside the document root (the inner
+store can only check its own root):
 
 ```php
-new FileSystemStore(
-    name: 'blobs',
-    rootPath: '/app/public/uploads',
-    streamFactory: $streams,
-    quarantinePath: '/app/runtime/uploads-quarantine',
-    layout: new FlatSiblingLayout(),
+new PublicFileSystemStore(
+    new FileSystemStore(
+        name: 'uploads',
+        rootPath: '/app/public/uploads',
+        streamFactory: $streams,
+        quarantinePath: '/app/runtime/uploads-quarantine',
+        layout: new FlatSiblingLayout(),
+        ownedPrefixes: ['blobs', 'files'],
+    ),
+    baseUrl: '/uploads',
+    webRoot: '/app/public',
 );
+
+// and, in the application's DI, the prefixed path generator:
+PathGeneratorInterface::class => static fn (ExtensionMap $extensions): PathGeneratorInterface
+    => new RandomPathGenerator($extensions, prefix: 'files'),
 ```
 
 **Token format.** `v1.<key-id>.<expires>.<base64url payload>.<base64url hmac>`,
@@ -549,16 +695,20 @@ Assert::same($store->bytesAt($file->relativePath), 'hello');
 |---|---|
 | Media type | Only `finfo` output is authoritative. The client-supplied type is kept for diagnostics and never reaches a policy, a path, or a response header |
 | Paths | Always generated, never taken from a request. `StoredObjectId` rejects `..`, NUL, backslashes and absolute paths; local stores re-check containment with `realpath()` after resolving, so a planted symlink cannot read outside the root |
-| Original filename | Metadata only. It never enters a path, and CR/LF/NUL are stripped before it reaches a header |
+| Original filename | Metadata only. It never enters a path; `Upload` looks at its first 4 KiB only (plus the extension), removes control characters, bidi and other invisible format characters (except the zero-width joiner and non-joiner) and line/paragraph separators, and cuts it to 255 characters |
 | Ingress size | A non-seekable upload is spooled with a finite cap; stores enforce the group's `maxBytes` *while copying* and remove partial output |
-| Decompression bombs | `maxPixels` is checked from the image header via `getimagesizefromstring()`. Pixels are never decoded |
-| Direct public URLs | Off by default. `filestorage:check` **fails** when a group combines them with a permissive or active-content allow-list |
+| Decompression bombs | `maxPixels` is checked from the image header; JPEG is walked marker by marker, so metadata padding cannot hide the frame header; a GIF frame larger than its screen is refused; a TIFF directory is found wherever it sits. A JPEG/PNG/GIF/WebP/TIFF whose dimensions cannot be established is refused; other formats are measured from a 256 KiB prefix only. Pixels are never decoded |
+| Active content | One list, `Mime\ActiveMediaTypes` (scriptable tier: HTML, XHTML, SVG, XML and any `+xml` type, XSLT, MathML, JavaScript, RSS/Atom; plugin tier: PDF, Flash), one instance configured by the `activeMediaTypes` parameter. `DeliveryPolicyRegistry` carries it, so `DeliveryOptions` forces `attachment` for all of them and a presigned URL never serves them inline; `check` refuses all but the plugin tier on public URLs; `ExtensionMap` stores scriptable types as `.bin` |
+| Content-addressed public paths | A deduplicated object's key is the SHA-256 of its bytes (`blobs/ab/cd/<sha>.<ext>`). On a public store anyone holding the same bytes can compute the URL and learn whether the site stores them — and fetch them. Random keys (128 bits) are not guessable; content keys are guessable by design. Keep groups whose files are private out of a content-addressed public store |
+| Direct public URLs | Off by default. `filestorage:check` **fails** when a group combines them with a permissive or scriptable allow-list — and when a publicly readable store is registered, for every group, since it serves objects by path whatever `allowDirectPublicUrl` says. A store says so through `Store\PubliclyReadableStoreInterface::isPubliclyReadable()`: `PublicFileSystemStore` always, a bucket store when configured as public (answering `publicUrl()` is not enough — an S3 adapter builds object URLs for private buckets too) |
 | Signed URLs | HMAC-SHA256 over version, key id, expiry and canonical payload; strict length and schema checks; `hash_equals()`; key-ring rotation; keys shorter than 32 bytes are a configuration error |
 | Deduplication | Ownership is a physical `BlobId`, never a hash count — a hash is content identity and says nothing about who owns the bytes |
 
 `finfo` recognising `image/svg+xml` says nothing about whether serving it inline
 is safe: an SVG served from your own origin is a stored-XSS primitive. Keep SVG
 out of any group that allows direct public URLs, and let `-web` force a download.
+An application that really serves public SVG through `<img>` opts back into the
+`.svg` extension explicitly: `'extensionOverrides' => ['image/svg+xml' => 'svg']`.
 
 Uploaded images keep their EXIF, which includes GPS coordinates on most phone
 photos. Nobody expects an avatar upload to publish their home address — strip or
@@ -568,11 +718,11 @@ re-encode if the files will be served publicly.
 
 | Command | Does |
 |---|---|
-| `filestorage:check` | Reports wiring, per-store capabilities, tenancy and per-group rules; fails on an unsafe delivery combination or on tenant mode with no scoped resolver |
+| `filestorage:check` | Reports wiring, per-store layout and capabilities, tenancy and per-group rules; fails on an unsafe delivery combination, on tenant mode with no scoped resolver, and on a path generator that the store's layout cannot delete one by one; warns about a content-key generator the layout cannot delete one by one (on every store: only `-db` knows which store deduplication writes to, and its factory refuses the pair); warns about a `PublicFileSystemStore` owning its whole root or with no `webRoot`, about a content-key generator that ignores the tenant while a scope provider is bound, and about an application-owned group with no reference checker. Stores that are publicly readable list the `public` capability |
 | `filestorage:stat` | Counts and sizes by group, plus how much sharing has saved (physical figures withheld under tenancy) |
-| `filestorage:verify` | Reports rows whose object is missing; `--deep` re-reads each one and compares its hash |
-| `filestorage:backfill-hash` | Fills in `contentHash` on rows written before integrity hashing was on |
-| `filestorage:gc` | Collects unreferenced shared blobs, and with `--orphans` sweeps objects no row points at |
+| `filestorage:verify` | Reports rows whose object is missing; `--deep` re-reads each one and compares its hash — `corrupt` for wrong bytes or length, `unreadable` for a read cut short before EOF |
+| `filestorage:backfill-hash` | Fills in `contentHash` on rows written before integrity hashing was on; a read cut short, or one whose length differs from the row, writes nothing |
+| `filestorage:gc` | Collects unreferenced shared blobs, and with `--orphans` sweeps objects no row points at and the `.part` files crashed writes left |
 | `filestorage:import <dir>` | Ingests a directory tree through the ordinary write path, skipping what a manifest says is already imported |
 
 `gc`, `backfill-hash` and the `-db` package's `deduplicate` **report by default
@@ -597,9 +747,23 @@ a table too large for one run is a sequence of bounded runs:
 ./yii filestorage:stat --limit=100000 --after=019603f2-…   # JSON: nextCursor
 ```
 
+A windowed `stat` (`--after`, or stopped at `--limit`) says so: its distinct
+objects and sharing are counted within the window only (JSON: `windowed`).
+
 `gc --orphans` pages a store by path instead: `--max-scan=N` bounds the objects
 examined, and when it or `--limit` stops the sweep early it prints
 `Resume with --orphans --store=<name> --after=<path>` (JSON: `nextCursor`).
+The cursor belongs to one store, and a run without `--store` always starts at
+the first one — so with more than one store, cron the sweep per store:
+
+```bash
+./yii filestorage:gc --apply --orphans --store=uploads --max-scan=50000
+./yii filestorage:gc --apply --orphans --store=private --max-scan=50000
+```
+
+When `--limit` is used up by released rows and blobs, the sweep does not start
+and says so (`Orphan sweep skipped`, JSON `orphanSweepSkipped: true`) instead of
+reporting zero orphans.
 
 `gc`, `verify`, `backfill-hash` and `stat` need a backend implementing
 `MaintenanceRepositoryInterface` (`-db` does). `gc` additionally collects shared
@@ -620,8 +784,28 @@ finishing what earlier runs left there. Without a quarantine
 |---|---|
 | A shared blob is purged only after `completeDeletion()` succeeds; if it is refused, the bytes go back and a writer's re-publication of them is kept | A collector paused past its lease used to delete bytes a writer had re-published meanwhile |
 | An orphan is a candidate only when it is older than `--min-age` (default `PT1H`) *measured from the moment its page's rows were looked up*, and an object without a timestamp never is | An upload between publishing its bytes and saving its row, or committed while the walk was elsewhere, used to lose its bytes. `--orphans --apply` no longer needs uploads stopped, as long as publication-to-row stays under `--min-age` |
-| Orphans and released application-owned files stay in the quarantine for `--retention` (default `P7D`); blob deletions the ledger committed are purged at once | A mistaken sweep is reversible for a week; the quarantine is outside the web root, so a deleted public file is not downloadable meanwhile |
+| Orphans and released application-owned files stay in the quarantine for `--retention` (default `P7D`); blob deletions the ledger committed are purged at once | A mistaken sweep is reversible for a week. The quarantine must be outside anything the web server serves: the store checks its root, `PublicFileSystemStore(webRoot:)` the document root |
 | An entry the ledger still knows is put back, unless another collector holds a live lease on it | Recovery of a collector that crashed between the two phases |
+| Every other entry is checked against the rows (matched through the layout) and the `ReferenceCheckerInterface` on every run, whatever its age; a referenced entry is restored at once, with a warning | A release interrupted between quarantine and row deletion leaves a live row over quarantined bytes — the next run gives them back (and, if nothing references the file, finishes the release); a file released by mistake comes back as soon as it is referenced again |
+| Under a bound `FileScopeProviderInterface` that answers a scope, a quarantine entry is restored when a row matches but never purged (warning) | The rows are one tenant's: a miss proves nothing. Purge from an entry point that leaves the provider unbound, or where it answers no scope (`-db`'s `globalMaintenanceAccess`) |
+| One entry that cannot be restored or purged is skipped and counted (JSON `quarantine.failed`); a failed restore after a refused commit or a failed row deletion is a warning, and the next run restores it — the ledger or the row still points at it | One bad entry used to stop the whole quarantine on every run, and one failed restore ended the run |
+| A quarantine that fails half-way puts back what it already moved | A row whose original was half-quarantined would have lost it to the retention |
+| The orphan inventory never contains hidden entries, and only the `ownedPrefixes` subtrees when the store declares them | The root of a public store is often shared with the application's own files |
+| A key the layout refuses is kept and warned about, never deleted with its directory | A flat key under `DirectoryLayout` used to take its whole fan-out bucket with it |
+| Quarantining an orphan removes its emptied key directory (`DirectoryLayout`), never a fan-out directory | One empty `<group>/ab/cd/<key>/` was left per swept orphan |
+| With `--orphans`, once the walk of a store is complete, `.part` files not written to for `--min-age` are removed outright (JSON `abandonedPartials`), within `--limit` | A crash mid-write left them for good — no listing saw them, and a public root served them. Stores opt in through `Store\AbandonedPartialsInterface`; both local stores do |
+
+**Cost.** Every run reads the whole quarantine: per page of 500 entries, one row
+lookup, one checker call and one ledger lookup — one call when the ledger
+implements `Store\BlobLedgerBatchLookupInterface` (`Test\MemoryBlobLedger` does),
+otherwise one per object. After `deduplicate --apply` and `gc --orphans --apply`
+the quarantine holds an entry per object for the whole retention, so a
+per-object ledger is that many queries per run. With `--orphans`, the `.part`
+sweep walks each completed store a second time.
+
+To undo a mistaken sweep by hand within the retention, move the objects back
+from `<quarantinePath>/<token>/<relative path>` to `<rootPath>/<relative path>`;
+the token starts with the Unix time of the quarantine.
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -633,6 +817,9 @@ finishing what earlier runs left there. Without a quarantine
 | `--max-scan=N` | 0 (no limit) | Stop the sweep after examining N objects |
 | `--min-age=<ISO 8601>` | `PT1H` | Minimum age of an orphan object or a released row |
 | `--retention=<ISO 8601>` | `P7D` | How long quarantined orphans and released files stay restorable |
+
+The defaults come from the `gc` parameters; the constructor refuses a zero or
+negative lease, grace period or retention.
 
 Order matters after enabling deduplication: `deduplicate --apply` repoints the
 rows, and the objects they used to point at become orphans that
@@ -700,7 +887,14 @@ other tenant's objects as orphans, and `--apply` deletes them. There is no tenan
 to run it "as", because no single tenant's rows can prove an object unreferenced.
 
 Run the sweep from a maintenance entry point that leaves the scope provider
-unbound, where the repository sees every row. Blob collection is unaffected:
+unbound, where the repository sees every row. With `-db` 0.4 a provider that is
+bound but answers `null` — a console process with no tenant — no longer means
+"every tenant": `DbRepository` throws `MissingScopeException`, so `gc`, `stat`,
+`verify` and `backfill-hash` fail there unless the entry point leaves the
+provider unbound or opts in with `-db`'s `globalMaintenanceAccess` parameter — it
+applies only to the `MaintenanceRepositoryInterface` and `BlobLedgerInterface`
+bindings (see `-db`'s
+`UPGRADE.md`). Blob collection is unaffected:
 the ledger is keyed by physical identity, not by tenant, so plain `gc --apply`
 works in either kind of installation.
 

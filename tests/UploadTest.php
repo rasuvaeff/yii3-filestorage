@@ -13,8 +13,10 @@ use Psr\Http\Message\StreamInterface;
 use Rasuvaeff\PropertyTesting\ArbitraryInterface;
 use Rasuvaeff\PropertyTesting\Gen;
 use Rasuvaeff\PropertyTesting\Property;
+use Rasuvaeff\Yii3Filestorage\Exception\SizeLimitExceededException;
 use Rasuvaeff\Yii3Filestorage\Exception\UploadFailedException;
 use Rasuvaeff\Yii3Filestorage\Exception\UploadTooLargeException;
+use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\ForwardOnlyStream;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\ShortWritingStream;
 use Rasuvaeff\Yii3Filestorage\Upload;
@@ -298,6 +300,264 @@ final class UploadTest
         Upload::fromStream($this->factory->createStream('x'), 'a.txt', $this->factory, maxSpoolBytes: -1);
     }
 
+    /**
+     * Review 1.0 B3: PHP's own size refusals are size refusals. They used to be
+     * a bare `UploadFailedException`, indistinguishable from a broken tmp dir,
+     * so a caller following the "catch the size marker" recipe answered 500.
+     */
+    #[DataProvider('phpSizeErrorProvider')]
+    public function phpSizeErrorsAreSizeLimitRefusals(int $error): void
+    {
+        $file = new UploadedFile($this->factory->createStream('partial'), 7, $error);
+
+        try {
+            Upload::fromUploadedFile($file, $this->factory);
+            Assert::true(actual: false, message: 'the upload should have been refused');
+        } catch (UploadTooLargeException $e) {
+            Assert::instanceOf($e, SizeLimitExceededException::class);
+            Assert::string($e->getMessage())->contains("PHP error code {$error}");
+        }
+    }
+
+    /**
+     * @return iterable<string, array{int}>
+     */
+    public static function phpSizeErrorProvider(): iterable
+    {
+        yield 'ini size' => [\UPLOAD_ERR_INI_SIZE];
+        yield 'form size' => [\UPLOAD_ERR_FORM_SIZE];
+    }
+
+    /**
+     * Review 1.0 B2, probe p1: ordinary RFC 2397 forms — parameters after the
+     * type, an upper-case type, an upper-case `;BASE64` — were refused as
+     * "malformed".
+     */
+    #[DataProvider('rfc2397Provider')]
+    public function fromDataUrlAcceptsTheOrdinaryRfc2397Forms(string $dataUrl, string $body, ?string $hint): void
+    {
+        $upload = Upload::fromDataUrl($dataUrl, 'x.bin', $this->factory, $actualHint);
+
+        Assert::same($upload->stream()->getContents(), $body);
+        Assert::same($actualHint, $hint);
+        Assert::same($upload->clientMediaTypeHint, $hint);
+    }
+
+    /**
+     * @return iterable<string, array{non-empty-string, string, non-empty-string|null}>
+     */
+    public static function rfc2397Provider(): iterable
+    {
+        yield 'charset parameter' => ['data:text/plain;charset=utf-8,Hello', 'Hello', 'text/plain'];
+        yield 'svg with charset' => ['data:image/svg+xml;charset=utf-8,%3Csvg%3E', '<svg>', 'image/svg+xml'];
+        yield 'upper-case type' => ['data:image/PNG;base64,iVBORw0KGgo=', "\x89PNG\r\n\x1a\n", 'image/png'];
+        yield 'upper-case base64' => ['data:text/plain;Base64,SGVsbG8=', 'Hello', 'text/plain'];
+        yield 'parameter and base64' => ['data:text/plain;charset=US-ASCII;base64,SGVsbG8=', 'Hello', 'text/plain'];
+        yield 'parameters without a type' => ['data:;charset=utf-8,Hello', 'Hello', null];
+    }
+
+    #[DataProvider('malformedParameterProvider')]
+    public function fromDataUrlStillRefusesAMalformedParameter(string $dataUrl, string $message): void
+    {
+        Expect::exception(UploadFailedException::class)->withMessage($message);
+
+        Upload::fromDataUrl($dataUrl, 'x.bin', $this->factory);
+    }
+
+    /**
+     * @return iterable<string, array{non-empty-string, non-empty-string}>
+     */
+    public static function malformedParameterProvider(): iterable
+    {
+        yield 'parameter without a value separator' => [
+            'data:text/plain;garbage,x',
+            'Malformed parameter "garbage" in the data URL',
+        ];
+        yield 'parameter with an empty name' => ['data:text/plain;=v,x', 'Malformed parameter "=v" in the data URL'];
+        yield 'a type in the parameter position' => [
+            'data:text/plain;image/png,x',
+            'Malformed parameter "image/png" in the data URL',
+        ];
+        yield 'type with a trailing newline' => ["data:text/plain\n,x", "Malformed media type \"text/plain\n\" in the data URL"];
+    }
+
+    /**
+     * Review 1.0 C1: the cap was accepted and ignored — a factory stream over
+     * the decoded bytes is already seekable, so the spool never ran.
+     */
+    public function fromDataUrlEnforcesTheSpoolCapOnTheDecodedBytes(): void
+    {
+        $dataUrl = 'data:;base64,' . base64_encode(str_repeat('A', 2000));
+
+        Assert::same(Upload::fromDataUrl($dataUrl, 'x', $this->factory, maxSpoolBytes: 2000)->size(), 2000);
+
+        Expect::exception(UploadTooLargeException::class)->withMessage(
+            'The data URL decodes to 2000 bytes, over the cap of 1999 bytes',
+        );
+        Upload::fromDataUrl($dataUrl, 'x', $this->factory, maxSpoolBytes: 1999);
+    }
+
+    public function fromDataUrlWithAZeroCapIsUnlimited(): void
+    {
+        $dataUrl = 'data:;base64,' . base64_encode(str_repeat('A', 2000));
+
+        Assert::same(Upload::fromDataUrl($dataUrl, 'x', $this->factory, maxSpoolBytes: 0)->size(), 2000);
+    }
+
+    /**
+     * Review 1.0 B4, probe p2: the client's name is metadata, but it reaches a
+     * database column of 255 characters and a `Content-Disposition` in a save
+     * dialog. Control characters and bidi overrides — U+202E turns
+     * `gpj.exe` into a visible `exe.jpg` — are removed.
+     */
+    #[DataProvider('originalNameProvider')]
+    public function theOriginalNameIsNormalised(string $given, string $expected): void
+    {
+        Assert::same(Upload::fromStream($this->factory->createStream('x'), $given, $this->factory)->originalName, $expected);
+    }
+
+    /**
+     * @return iterable<string, array{string, non-empty-string}>
+     */
+    public static function originalNameProvider(): iterable
+    {
+        yield 'plain name' => ['report.pdf', 'report.pdf'];
+        yield 'traversal kept verbatim, it never reaches a path' => ['../../etc/passwd', '../../etc/passwd'];
+        yield 'control characters' => ["a\x07b\x00c\nd\x7Fe\u{0085}.txt", 'abcde.txt'];
+        yield 'right-to-left override' => ["invoice\u{202E}gpj.exe", 'invoicegpj.exe'];
+        yield 'every bidi control' => ["a\u{200E}\u{200F}\u{202A}\u{202B}\u{202C}\u{202D}\u{2066}\u{2067}\u{2068}\u{2069}\u{061C}b", 'ab'];
+        yield 'nothing left' => ["\u{202E}\x01", 'file'];
+        yield 'surrounding whitespace' => ["  name.txt \t", 'name.txt'];
+        yield 'invalid UTF-8 is replaced, not dropped' => ["caf\xE9.txt", "caf\u{FFFD}.txt"];
+        yield 'multi-byte text survives' => ['отчёт.pdf', 'отчёт.pdf'];
+        yield 'emoji with a joiner survive' => ["\u{1F469}\u{200D}\u{1F4BB}.png", "\u{1F469}\u{200D}\u{1F4BB}.png"];
+        // Review 1.0 pass 2, N9: invisible format characters and line or
+        // paragraph separators stayed, so two names that look the same
+        // differed, and a name broke a log line.
+        yield 'zero-width space, BOM, word joiner' => ["a\u{200B}b\u{FEFF}c\u{2060}.txt", 'abc.txt'];
+        yield 'soft hyphen and other format characters' => ["re\u{00AD}port\u{180E}\u{206F}.txt", 'report.txt'];
+        yield 'line and paragraph separators' => ["a\u{2028}b\u{2029}c.txt", 'abc.txt'];
+        yield 'a non-joiner stays, Persian and Indic need it' => ["\u{0645}\u{06CC}\u{200C}\u{062E}\u{0648}\u{0627}\u{0647}\u{0645}.txt", "\u{0645}\u{06CC}\u{200C}\u{062E}\u{0648}\u{0627}\u{0647}\u{0645}.txt"];
+    }
+
+    /**
+     * Review 1.0 pass 2, N6: the per-character work ran over the whole input
+     * before the cut — an 8 MiB name took 278 MB and over a second, and
+     * `fromStream()` takes names from JSON bodies and form fields. The input
+     * is cut to a bounded window first.
+     */
+    public function aHugeNameCostsNoMoreThanASmallOne(): void
+    {
+        $given = str_repeat('я', 4 * 1_048_576) . '.pdf';
+        memory_reset_peak_usage();
+        $before = memory_get_usage();
+
+        $name = Upload::fromStream($this->factory->createStream('x'), $given, $this->factory)->originalName;
+
+        Assert::true(memory_get_peak_usage() - $before < 2 * 1_048_576, 'peak stays near the input already held');
+        Assert::same($name, str_repeat('я', File::MAX_ORIGINAL_NAME_LENGTH - 4) . '.pdf');
+    }
+
+    /**
+     * The cut lands on a character boundary and keeps the extension, even
+     * when the window ends inside a multi-byte character.
+     */
+    public function theInputWindowCutsOnACharacterBoundary(): void
+    {
+        foreach (['', 'a', 'ab', 'abc'] as $shift) {
+            $name = Upload::fromStream(
+                $this->factory->createStream('x'),
+                $shift . str_repeat('€', 20_000) . '.docx',
+                $this->factory,
+            )->originalName;
+
+            Assert::false(str_contains($name, "\u{FFFD}"), $shift);
+            Assert::true(str_ends_with($name, '.docx'), $shift);
+        }
+    }
+
+    /**
+     * The window keeps 4096 bytes minus the extension. Control-character
+     * padding, which normalisation removes afterwards, puts the window's last
+     * bytes inside the name that survives, so the cut itself is visible: a
+     * character the window splits is dropped whole, one it ends on is kept.
+     *
+     * @param int<1, 16> $inWindow bytes of `$tail` that fall inside the window
+     */
+    #[DataProvider('windowEndProvider')]
+    public function theInputWindowDropsOnlyTheCharacterItSplits(string $tail, int $inWindow, string $expected): void
+    {
+        $given = str_repeat("\x01", 4096 - \strlen('.txt') - $inWindow) . $tail . '.txt';
+
+        Assert::same(Upload::fromStream($this->factory->createStream('x'), $given, $this->factory)->originalName, $expected);
+    }
+
+    /**
+     * @return iterable<string, array{string, int, string}>
+     */
+    public static function windowEndProvider(): iterable
+    {
+        yield 'ends on ASCII' => ['abcdef', 3, 'abc.txt'];
+        yield 'two-byte character split' => ['abéz', 3, 'ab.txt'];
+        yield 'two-byte character complete' => ['abéz', 4, 'abé.txt'];
+        yield 'lowest three-byte lead, two bytes in' => ["ab\u{0800}z", 4, 'ab.txt'];
+        yield 'three-byte character, one byte in' => ['ab€z', 3, 'ab.txt'];
+        yield 'three-byte character, two bytes in' => ['ab€z', 4, 'ab.txt'];
+        yield 'three-byte character complete' => ['ab€z', 5, 'ab€.txt'];
+        yield 'four-byte character, one byte in' => ["ab\u{1F600}z", 3, 'ab.txt'];
+        yield 'four-byte character, two bytes in' => ["ab\u{1F600}z", 4, 'ab.txt'];
+        yield 'four-byte character, three bytes in' => ["ab\u{1F600}z", 5, 'ab.txt'];
+        yield 'four-byte character complete' => ["ab\u{1F600}z", 6, "ab\u{1F600}.txt"];
+        yield 'stray continuation bytes are not a character to drop' => ["ab\x80\x80z", 4, "ab\u{FFFD}\u{FFFD}.txt"];
+    }
+
+    /**
+     * Padding past the window costs the padder their own base name — never
+     * memory — and the extension still survives.
+     */
+    public function aNameBehindPaddingLosesItsBaseButKeepsItsExtension(): void
+    {
+        $name = Upload::fromStream(
+            $this->factory->createStream('x'),
+            str_repeat("\u{200B}", 100_000) . 'photo.jpg',
+            $this->factory,
+        )->originalName;
+
+        Assert::same($name, '.jpg');
+    }
+
+    /**
+     * Truncated to {@see File::MAX_ORIGINAL_NAME_LENGTH} characters — not
+     * bytes — keeping the extension, so the name still opens with the right
+     * program and fits a `VARCHAR(255)` on every database.
+     */
+    public function aLongOriginalNameIsTruncatedKeepingItsExtension(): void
+    {
+        $name = Upload::fromStream($this->factory->createStream('x'), str_repeat('я', 5000) . '.pdf', $this->factory)->originalName;
+
+        Assert::same(preg_match_all('/./su', $name), File::MAX_ORIGINAL_NAME_LENGTH);
+        Assert::same($name, str_repeat('я', File::MAX_ORIGINAL_NAME_LENGTH - 4) . '.pdf');
+    }
+
+    public function aNameOfExactlyTheLimitIsKept(): void
+    {
+        $given = str_repeat('a', File::MAX_ORIGINAL_NAME_LENGTH);
+
+        Assert::same(Upload::fromStream($this->factory->createStream('x'), $given, $this->factory)->originalName, $given);
+    }
+
+    /**
+     * An "extension" too long to be one is not preserved at the cost of the
+     * whole name: the name is cut like any other string.
+     */
+    public function aLongNameWithoutAPlausibleExtensionIsCutPlainly(): void
+    {
+        $given = 'a.' . str_repeat('b', 400);
+        $name = Upload::fromStream($this->factory->createStream('x'), $given, $this->factory)->originalName;
+
+        Assert::same($name, substr($given, 0, File::MAX_ORIGINAL_NAME_LENGTH));
+    }
+
     public function anEmptyOriginalNameFallsBackToAPlaceholder(): void
     {
         $upload = Upload::fromStream($this->factory->createStream('x'), '', $this->factory);
@@ -390,8 +650,6 @@ final class UploadTest
      */
     public static function uploadErrorProvider(): iterable
     {
-        yield 'ini size' => [\UPLOAD_ERR_INI_SIZE];
-        yield 'form size' => [\UPLOAD_ERR_FORM_SIZE];
         yield 'partial' => [\UPLOAD_ERR_PARTIAL];
         yield 'no file' => [\UPLOAD_ERR_NO_FILE];
         yield 'no tmp dir' => [\UPLOAD_ERR_NO_TMP_DIR];

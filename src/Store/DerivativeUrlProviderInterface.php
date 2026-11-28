@@ -20,6 +20,9 @@ interface DerivativeUrlProviderInterface extends DerivativeAwareStoreInterface
 {
     /**
      * @return non-empty-string|null
+     *
+     * @throws \Rasuvaeff\Yii3Filestorage\Exception\StoreException When the
+     *         file's path does not fit the store's layout.
      */
     public function publicDerivativeUrl(File $file, DerivativeDescriptor $derivative): ?string;
 

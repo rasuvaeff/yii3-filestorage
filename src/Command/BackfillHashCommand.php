@@ -132,18 +132,11 @@ final class BackfillHashCommand extends Command
             return null;
         }
 
-        $context = hash_init('sha256');
+        // A read cut short is not the content (review 1.0 B9): writing its
+        // hash would make verify --deep call the intact object corrupt.
+        $hash = ContentHash::of($stream);
 
-        while (!$stream->eof()) {
-            $chunk = $stream->read(262_144);
-            if ($chunk === '') {
-                break;
-            }
-
-            hash_update($context, $chunk);
-        }
-
-        return hash_final($context);
+        return $hash === null || $hash['bytes'] !== $file->size ? null : $hash['sha256'];
     }
 
     /**

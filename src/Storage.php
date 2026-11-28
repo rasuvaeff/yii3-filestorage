@@ -17,7 +17,6 @@ use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
 use Rasuvaeff\Yii3Filestorage\Id\IdGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Mime\MimeTypeDetectorInterface;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
-use Rasuvaeff\Yii3Filestorage\Policy\DeliveryOptions;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\PolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Repository\RepositoryInterface;
@@ -43,14 +42,21 @@ final readonly class Storage implements StorageInterface
     private const string NAME_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\z/';
     private const int CHUNK = 262_144;
 
+    /** Stands in for the store's answer while the caller's fields are validated. */
+    private const string DRAFT_PATH = 'pending';
+
     /** @var non-empty-string */
     private string $defaultGroup;
 
     /**
-     * @param int $maxInlineBytes Cap for {@see self::content()}.
+     * @param int $maxInlineBytes Cap for {@see self::content()}. Must not be negative.
      * @param int $integrityHashMaxBytes Opt-in: 0 leaves `contentHash` null.
      *        A hash costs a second full read of every upload, so it is not
-     *        charged to consumers that do not need one.
+     *        charged to consumers that do not need one. It is computed in its
+     *        own pass *before* the copy: a source that changes in between — a
+     *        `fromPath()` file still being written — stores bytes the hash
+     *        does not describe, which `filestorage:verify --deep` later reports
+     *        as corruption. Hand over sources that are complete.
      * @param ProxyUrlGeneratorInterface|null $proxyUrls Supplied by
      *        `rasuvaeff/yii3-filestorage-web`; null when no proxy route exists.
      */
@@ -72,8 +78,42 @@ final readonly class Storage implements StorageInterface
         if ($defaultGroup === '' || preg_match(self::NAME_PATTERN, $defaultGroup) !== 1) {
             throw new InvalidArgumentException("Invalid default group \"{$defaultGroup}\"");
         }
+        if ($maxInlineBytes < 0) {
+            throw new InvalidArgumentException('maxInlineBytes must not be negative');
+        }
+        if ($integrityHashMaxBytes < 0) {
+            throw new InvalidArgumentException('integrityHashMaxBytes must not be negative');
+        }
 
         $this->defaultGroup = $defaultGroup;
+    }
+
+    /**
+     * The same facade minting proxy URLs through another generator. The
+     * shared one reads the tenant from the current request; a URL minted
+     * outside it — a queue job, a mail — needs one pinned to the tenant the
+     * file belongs to, e.g. `-web`'s `HmacProxyUrlGenerator::forScope()`
+     * (review 1.0 pass 2, flysystem-web-images N10). Null leaves the facade
+     * with no proxy route. Everything else — stores, repository, policies —
+     * is shared with this instance.
+     */
+    public function withProxyUrls(?ProxyUrlGeneratorInterface $proxyUrls): self
+    {
+        return new self(
+            stores: $this->stores,
+            repository: $this->repository,
+            pathGenerator: $this->pathGenerator,
+            mimeTypeDetector: $this->mimeTypeDetector,
+            idGenerator: $this->idGenerator,
+            policies: $this->policies,
+            deliveryPolicies: $this->deliveryPolicies,
+            clock: $this->clock,
+            defaultUrlTtl: $this->defaultUrlTtl,
+            defaultGroup: $this->defaultGroup,
+            maxInlineBytes: $this->maxInlineBytes,
+            integrityHashMaxBytes: $this->integrityHashMaxBytes,
+            proxyUrls: $proxyUrls,
+        );
     }
 
     #[Override]
@@ -94,10 +134,28 @@ final readonly class Storage implements StorageInterface
         $mimeType = $this->mimeTypeDetector->detect($upload);
 
         // Everything knowable without touching the store is checked first, so a
-        // rejected upload writes nothing at all.
+        // rejected upload writes nothing at all: the policy, then every field
+        // the caller supplied — metadata, description, the client's name —
+        // together with the id and the clock, by building the row with a
+        // placeholder path before the write (review 1.0 A2). Only what the
+        // store answers is left to validate afterwards.
         $policy->assertAcceptable($upload, $mimeType);
 
         $contentHash = $this->hashWithinLimit($upload);
+
+        $draft = File::create(
+            id: $this->idGenerator->generate(),
+            storeName: $store->name(),
+            groupName: $groupName,
+            relativePath: self::DRAFT_PATH,
+            originalName: $upload->originalName,
+            size: 0,
+            createdAt: $this->clock->now(),
+            mimeType: $mimeType,
+            description: $description,
+            contentHash: $contentHash,
+            metadata: $metadata,
+        );
 
         $result = $store->write(
             upload: $upload,
@@ -107,21 +165,32 @@ final readonly class Storage implements StorageInterface
             maxBytes: $policy->maxBytes,
         );
 
-        $now = $this->clock->now();
-        $file = File::create(
-            id: $this->idGenerator->generate(),
-            storeName: $store->name(),
-            groupName: $groupName,
-            relativePath: $result->relativePath,
-            originalName: $upload->originalName,
-            size: $result->size,
-            createdAt: $now,
-            externalId: $result->externalId,
-            mimeType: $mimeType,
-            description: $description,
-            contentHash: $contentHash,
-            metadata: $metadata,
-        );
+        try {
+            $file = File::create(
+                id: $draft->id,
+                storeName: $draft->storeName,
+                groupName: $draft->groupName,
+                relativePath: $result->relativePath,
+                originalName: $draft->originalName,
+                size: $result->size,
+                createdAt: $draft->createdAt,
+                externalId: $result->externalId,
+                mimeType: $draft->mimeType,
+                description: $draft->description,
+                contentHash: $draft->contentHash,
+                metadata: $draft->metadata,
+            );
+        } catch (InvalidArgumentException $e) {
+            // Without a valid File there is nothing to hand delete(): the
+            // object stays for `filestorage:gc`, and the caller still gets the
+            // exception add() promises.
+            throw new AddException(
+                "Store \"{$draft->storeName}\" returned a result that is not a valid file "
+                . "(\"{$result->relativePath}\"); the written object is left for filestorage:gc",
+                0,
+                $e,
+            );
+        }
 
         try {
             $this->repository->save($file);
@@ -199,10 +268,7 @@ final readonly class Storage implements StorageInterface
             ? $store->temporaryUrl(
                 file: $file,
                 expiresAt: $expiresAt,
-                options: DeliveryOptions::fromFile(
-                    file: $file,
-                    policy: $this->deliveryPolicies->for($file->groupName),
-                ),
+                options: $this->deliveryPolicies->optionsFor($file),
             )
             : null;
     }

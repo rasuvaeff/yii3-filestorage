@@ -61,11 +61,6 @@ final class FlatSiblingLayoutTest
         yield 'dash first' => ['-x.jpg', '-x.jpg'];
     }
 
-    public function theOwnerOfAFileIsTheOwnerOfItsPath(): void
-    {
-        Assert::same((new FlatSiblingLayout())->ownerOfFile($this->file('b/ab/abc.jpg')), 'b/ab/abc');
-    }
-
     public function deletingAFileRemovesItAndItsSiblings(): void
     {
         $set = (new FlatSiblingLayout())->deletion(new StoredObjectId('blobs/ab/cd/abc.jpg'));

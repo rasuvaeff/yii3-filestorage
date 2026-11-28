@@ -7,6 +7,7 @@ namespace Rasuvaeff\Yii3Filestorage\Mime;
 use finfo;
 use InvalidArgumentException;
 use Override;
+use Rasuvaeff\Yii3Filestorage\Stream\StreamReader;
 use Rasuvaeff\Yii3Filestorage\Upload;
 
 /**
@@ -51,7 +52,8 @@ final readonly class FinfoMimeTypeDetector implements MimeTypeDetectorInterface
     public function detect(Upload $upload): ?string
     {
         $stream = $upload->stream();
-        $bytes = $stream->read($this->sniffBytes);
+        // Read in full: one read() may legally return a fragment of the window.
+        $bytes = StreamReader::readUpTo($stream, $this->sniffBytes);
         $stream->rewind();
 
         if ($bytes === '') {

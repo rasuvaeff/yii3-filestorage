@@ -16,14 +16,16 @@ capabilities `StoreUrlProviderInterface`, `RangeReadableStoreInterface`,
 `Store\StoreRegistry`, `StoreResult`, `StoredObjectId`, `BlobId`,
 `DerivativeDescriptor`, `DerivativeObject`, `StoredObject`, `QuarantinedObject`;
 `Store\Layout\ObjectLayoutInterface` with `DirectoryLayout` (default) and
-`FlatSiblingLayout`, and `ObjectSet`; `Store\FileSystem\FileSystemStore`
+`FlatSiblingLayout`, `ObjectSet` and `LayoutCompatibility`; `Store\PubliclyReadableStoreInterface`,
+`Store\AbandonedPartialsInterface`, `Store\BlobLedgerBatchLookupInterface`; `Store\FileSystem\FileSystemStore`
 and `PublicFileSystemStore`; `Repository\RepositoryInterface` and
 `MaintenanceRepositoryInterface`; `Path\PathGeneratorInterface` with
 `RandomPathGenerator` / `DatePathGenerator`, and
 `ContentAddressedKeyGeneratorInterface` with `Sha256KeyGenerator` and
 `FlatSha256KeyGenerator`; `Reference\ReferenceCheckerInterface` and
 `ReferenceAuthority`;
-`Mime\MimeTypeDetectorInterface` / `FinfoMimeTypeDetector` / `ExtensionMap`;
+`Mime\MimeTypeDetectorInterface` / `FinfoMimeTypeDetector` / `ExtensionMap` /
+`ActiveMediaTypes`;
 `Id\IdGeneratorInterface` with `Uuid7IdGenerator` (default),
 `SymfonyUidIdGenerator` and `RamseyUuidIdGenerator`; `Policy\UploadPolicy`,
 `PolicyRegistry`, `DeliveryPolicy`, `DeliveryPolicyRegistry`, `DeliveryOptions`;
@@ -34,7 +36,8 @@ and `PublicFileSystemStore`; `Repository\RepositoryInterface` and
 `Store\BlobLedgerInterface` with `BlobState`, `BlobToken`, `BlobReservation`,
 `BlobLease` and `BlobRecord`; `Repository\FileScopeProviderInterface` and
 `ScopedFileResolverInterface`;
-the `Exception\*` family behind the `FilestorageException` marker; and the
+the `Exception\*` family behind the `FilestorageException` marker, with
+`SizeLimitExceededException` marking every size refusal; and the
 `Test\InMemoryStore` / `Test\MemoryRepository` / `Test\MemoryBlobLedger` doubles.
 
 **No clock double ships here.** Everything takes a PSR-20 clock, and a Yii
@@ -54,7 +57,7 @@ through the shipped doubles alone.
 
 DI wiring: core `config/di.php` binds the facade under **two** ids, plus
 `StoreRegistry`, path generator, MIME detector, id generator, `ExtensionMap`,
-both policy registries and all six commands. It must **not** bind `StoreInterface` or
+`ActiveMediaTypes`, both policy registries and all six commands. It must **not** bind `StoreInterface` or
 `RepositoryInterface` — `yiisoft/config` allows exactly one vendor package per
 key, so those belong to `-flysystem`/`-db` or to the application. Two packages
 binding one of them is a `Duplicate key` error by design.
@@ -123,6 +126,10 @@ removes the original and every `<base>-*`) is chosen once per store, before it
 holds data; it refuses a file whose name is not `<base>[.<ext>]` with a base of
 `[A-Za-z0-9_]`, because a dash or dot in the base would make `foo-bar.jpg` a
 derivative of `foo.jpg`.
+Since 0.10 `DirectoryLayout` likewise refuses, in `deletion()`/`derivativePath()`,
+a file not named `original[.<ext>]` outside the root (review 1.0 A1) — only
+shapes that were already data-losing change; the regression test passes
+unedited.
 
 **Token format `v1.<key-id>.<expires>.<b64url payload>.<b64url hmac>`.**
 Version, key id, expiry and payload are all covered by the HMAC. The payload is
@@ -172,6 +179,34 @@ asserting only one half lets the operands be swapped undetected.
 
 ## Invariants & gotchas
 
+- **The pixel guard fails closed, and JPEG is walked, not windowed.** Review
+  1.0 A1: APPn padding pushed the frame header past a 256 KiB prefix and the
+  "no dimensions found → skip" branch let a 60000×60000 JPEG through every
+  policy. `Policy\ImageDimensions` (`@internal`) follows JPEG segment lengths
+  with `seek()` — never a scan for `FFC0` inside a segment, which finds the EXIF
+  thumbnail's frame header; between segments it skips stray bytes exactly as
+  libjpeg's `next_marker()` does (pass 2, N2), and walks on to SOS: a second
+  frame header is undetermined (Pillow measures the last one). GIF is walked block by block
+  through `Policy\GifReader` (buffered: one stream call per sub-block would be a
+  CPU DoS), and a frame outside the logical screen is undetermined (pass 2,
+  N1). TIFF is walked IFD by IFD (N3). While `maxPixels > 0` a
+  JPEG/PNG/GIF/WebP/TIFF whose dimensions cannot be established is refused. Every prefix read goes through
+  `Stream\StreamReader::readUpTo()`: PSR-7 allows a short `read()`, and one call
+  is a fragment (B1).
+- **One active-content list: `Mime\ActiveMediaTypes`, one configured instance.**
+  Core DI binds it from `params['activeMediaTypes']` (`fromConfig()`: `extra`,
+  `allowInline` — plugin tier only); `DeliveryPolicyRegistry` carries it to
+  `DeliveryOptions` (the facade's presign) and to `check` (`withoutPlugins()`);
+  `-web` and `-flysystem` take it from the container. Never `new ActiveMediaTypes()`
+  where a delivery decision is made. Any `+xml` type is scriptable whatever the
+  list says (pass 2, N8). `ExtensionMap` uses `scriptable()`. Its scriptable
+  tier is what `check` refuses on public delivery; the plugin tier (PDF) is only
+  forced to download — a public PDF is a legitimate publication. Do not add a
+  second list anywhere in the family.
+- **`add()` validates every caller field before the write.** The row is built
+  with a placeholder path first, so bad metadata, a failing id generator or
+  clock write nothing (review 1.0 A2). Only the store's answer is validated
+  after `write()`, inside the compensating path, as an `AddException`.
 - **Byte caps are enforced during the copy.** `StoreInterface::write()` counts
   bytes as it writes and removes its partial output when the cap is crossed.
   Checking afterwards has already spent the disk, and the whole point is an
@@ -224,6 +259,42 @@ asserting only one half lets the operands be swapped undetected.
   The half-lease freshness check from 0.8.4 stays as an optimisation; correctness
   no longer depends on it. The run-start quarantine sweep restores an entry the
   ledger still knows unless its lease is live — that is the crash recovery.
+- **A key generator and a store layout are configured apart, so check the
+  pair.** Review 1.0 A1: flat keys under `DirectoryLayout` deleted a whole
+  fan-out bucket per blob. `Store\Layout\LayoutCompatibility` probes behaviourally
+  (two keys sharing the fan-out prefix; deletion and derivative of each) and is
+  what `-db`'s factory, `-flysystem`'s DI and `check` call. Keep it behavioural —
+  a third-party layout will not refuse. `tenantProblem()` is the separate
+  tenant-in-key probe (one digest, two scopes); `check` only **warns** on it —
+  core cannot see `-db`'s `DedupScope`, and `global` shares across tenants on
+  purpose.
+- **"Public" is the store's statement, not a type.** `check` treats a store as
+  public only through `PubliclyReadableStoreInterface::isPubliclyReadable()`,
+  never through `instanceof PublicFileSystemStore` or `publicUrl()` answering
+  (a private bucket builds URLs too). The `ownedPrefixes`/`webRoot` warnings stay
+  on `PublicFileSystemStore`: they are its constructor arguments.
+- **The store root belongs to the store.** `gc --orphans` sweeps every row-less
+  file the inventory lists. The local inventory skips hidden entries and, with
+  `ownedPrefixes`, everything outside them — a write outside is refused so no
+  object of the store escapes its own sweep (review 1.0 B2).
+- **A quarantine entry is purged only when nothing references it again**
+  (rows via the layout, plus the checker — B5), and every entry the ledger does
+  not know is checked on *every* run, not only past the retention: a referenced
+  one is restored at once (pass 2, N1 — a release interrupted between quarantine
+  and row deletion). Only ledger-unknown entries are row-checked: restoring an
+  entry another collector holds a live lease on would race its commit. Under a
+  bound scope provider that answers a scope such entries are never purged (one
+  answering null is a global maintenance entry point and purges). Entries are settled one
+  by one (B6), a failed restore is a warning (B7), and a failed quarantine rolls
+  back what it moved (B8). A row must never outlive its bytes because of gc.
+  `GcSafetyTest::aRowStillPointingAtQuarantinedBytesGetsThemBackOnTheNextRun`
+  must not grow a clock jump past the retention — that is what hid N1.
+- **Quarantine tokens of one process sort in issue order** (`QuarantineSequence`
+  leads the 16-hex part). A test that quarantines twice under a frozen clock
+  relies on it; the random half keeps processes apart.
+- **`.part` leftovers are collected by age alone** (`AbandonedPartialsInterface`,
+  pass 2 maintenance N4): no row points at a staging file, and under a flat
+  layout its owner is a live blob, so ownership cannot decide.
 - **The orphan sweep checks references after listing, per page, against a
   minimum age.** Review #3: a snapshot of every row read before the walk lost
   uploads between publication and `save()`, and files committed after the

@@ -31,6 +31,9 @@ use Symfony\Component\Console\Output\OutputInterface;
  *
  * `--deep` also re-reads each object and compares the hash, which catches
  * corruption that a size check cannot. It costs a full read of everything.
+ * A read that stops before EOF — a transient network error on a remote store
+ * — is reported as `unreadable`, never as `corrupt`: the bytes may be fine.
+ * A complete read whose length differs from the row is `corrupt`.
  *
  * @api
  */
@@ -66,6 +69,7 @@ final class VerifyCommand extends Command
         $checked = 0;
         $missing = 0;
         $mismatched = 0;
+        $unreadable = 0;
         $last = null;
 
         /** @var list<array{id: string, problem: string, relativePath: string}> $problems */
@@ -87,7 +91,11 @@ final class VerifyCommand extends Command
                     continue;
                 }
 
-                $problem === 'missing' ? $missing++ : $mismatched++;
+                match ($problem) {
+                    'missing' => $missing++,
+                    'corrupt' => $mismatched++,
+                    'unreadable' => $unreadable++,
+                };
                 $problems[] = ['id' => $file->id, 'problem' => $problem, 'relativePath' => $file->relativePath];
                 $io->text(sprintf('  %s: %s (%s)', $problem, $file->id, $file->relativePath));
             }
@@ -99,7 +107,7 @@ final class VerifyCommand extends Command
             $io->text(sprintf('Last id: %s', $last));
         }
 
-        if ($missing === 0 && $mismatched === 0) {
+        if ($missing === 0 && $mismatched === 0 && $unreadable === 0) {
             $io->success('Every row has its object.');
             $this->maybeJson($input, $output, $log, $deep, $limit, $checked, $last, $problems);
 
@@ -110,7 +118,8 @@ final class VerifyCommand extends Command
             '%d row%s without an object%s.',
             $missing,
             $missing === 1 ? '' : 's',
-            $mismatched === 0 ? '' : sprintf(', %d with the wrong content', $mismatched),
+            ($mismatched === 0 ? '' : sprintf(', %d with the wrong content', $mismatched))
+            . ($unreadable === 0 ? '' : sprintf(', %d that could not be read to the end', $unreadable)),
         ));
         $this->maybeJson($input, $output, $log, $deep, $limit, $checked, $last, $problems);
 
@@ -142,13 +151,14 @@ final class VerifyCommand extends Command
             'lastId' => $last,
             'missing' => \count(array_filter($problems, static fn(array $p): bool => $p['problem'] === 'missing')),
             'corrupt' => \count(array_filter($problems, static fn(array $p): bool => $p['problem'] === 'corrupt')),
+            'unreadable' => \count(array_filter($problems, static fn(array $p): bool => $p['problem'] === 'unreadable')),
             'problems' => $problems,
             'log' => $log,
         ]);
     }
 
     /**
-     * @return 'missing'|'corrupt'|null
+     * @return 'missing'|'corrupt'|'unreadable'|null
      */
     private function inspect(File $file, bool $deep): ?string
     {
@@ -174,18 +184,12 @@ final class VerifyCommand extends Command
             return 'missing';
         }
 
-        $context = hash_init('sha256');
-
-        while (!$stream->eof()) {
-            $chunk = $stream->read(262_144);
-            if ($chunk === '') {
-                break;
-            }
-
-            hash_update($context, $chunk);
+        $hash = ContentHash::of($stream);
+        if ($hash === null) {
+            return 'unreadable';
         }
 
-        return hash_final($context) === $file->contentHash ? null : 'corrupt';
+        return $hash['bytes'] === $file->size && $hash['sha256'] === $file->contentHash ? null : 'corrupt';
     }
 
     /**

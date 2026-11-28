@@ -24,7 +24,6 @@ final class StoredObjectTest
         $object = new StoredObject(new StoredObjectId('docs/ab/key/original.pdf'), $at, 12);
 
         Assert::same($object->id->relativePath, 'docs/ab/key/original.pdf');
-        Assert::same($object->relativePath, 'docs/ab/key/original.pdf');
         Assert::same($object->lastModified, $at);
         Assert::same($object->size, 12);
     }

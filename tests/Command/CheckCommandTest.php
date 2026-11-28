@@ -5,21 +5,32 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Filestorage\Tests\Command;
 
 use Nyholm\Psr7\Factory\Psr17Factory;
+use Override;
 use Rasuvaeff\Understudy\Understudy;
 use Rasuvaeff\Yii3Filestorage\Command\CheckCommand;
+use Rasuvaeff\Yii3Filestorage\Mime\ActiveMediaTypes;
+use Rasuvaeff\Yii3Filestorage\Path\ContentAddressedKeyGeneratorInterface;
+use Rasuvaeff\Yii3Filestorage\Path\FlatSha256KeyGenerator;
+use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
+use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicy;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\PolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\UploadPolicy;
+use Rasuvaeff\Yii3Filestorage\Reference\ReferenceAuthority;
+use Rasuvaeff\Yii3Filestorage\Reference\ReferenceCheckerInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\FileScopeProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\RepositoryInterface;
 use Rasuvaeff\Yii3Filestorage\Repository\ScopedFileResolverInterface;
 use Rasuvaeff\Yii3Filestorage\Store\FileSystem\FileSystemStore;
 use Rasuvaeff\Yii3Filestorage\Store\FileSystem\PublicFileSystemStore;
+use Rasuvaeff\Yii3Filestorage\Store\Layout\FlatSiblingLayout;
 use Rasuvaeff\Yii3Filestorage\Store\StoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoreRegistry;
 use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
+use Rasuvaeff\Yii3Filestorage\Test\UrlCapableInMemoryStore;
+use Rasuvaeff\Yii3Filestorage\Upload;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
 use Testo\Assert;
@@ -83,7 +94,7 @@ final class CheckCommandTest
         Assert::string($display)->contains('Max pixels');
         // The whole header row: a dropped column header is what a consumer
         // diffing two reports first stumbles over.
-        Assert::string($this->flatten($display))->contains('Name Class Capabilities');
+        Assert::string($this->flatten($display))->contains('Name Class Layout Capabilities');
     }
 
     /**
@@ -115,6 +126,7 @@ final class CheckCommandTest
             [
                 'name' => 'memory',
                 'class' => InMemoryStore::class,
+                'layout' => \Rasuvaeff\Yii3Filestorage\Store\Layout\DirectoryLayout::class,
                 'capabilities' => ['maintenance'],
                 'default' => true,
             ],
@@ -375,6 +387,131 @@ final class CheckCommandTest
         Assert::false(str_contains($tester->getDisplay(), '"ok"'), 'no JSON keys in text mode');
     }
 
+    /**
+     * Review 1.0 C5: the list `check` used knew five types. JavaScript, XSLT
+     * and feed types execute as well, and now come from the one family list.
+     */
+    public function directPublicUrlsWithScriptAreAnError(): void
+    {
+        $tester = $this->run(
+            policies: new PolicyRegistry([
+                'assets' => new UploadPolicy(allowedMimeTypes: ['image/png', 'text/javascript', 'application/rss+xml']),
+            ]),
+            deliveryPolicies: new DeliveryPolicyRegistry([
+                'assets' => new DeliveryPolicy(allowDirectPublicUrl: true),
+            ]),
+            knownGroups: ['assets'],
+        );
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string($this->flatten($tester->getDisplay()))->contains(
+            'Group "assets" allows direct public URLs and accepts text/javascript, application/rss+xml.',
+        );
+    }
+
+    /**
+     * PDF is in the active list `-web` forces to download, but it runs in a
+     * plugin, not as the origin: a public PDF is a legitimate publication and
+     * not the stored XSS this gate exists for.
+     */
+    public function directPublicUrlsForPdfArePermitted(): void
+    {
+        $tester = $this->run(
+            policies: new PolicyRegistry([
+                'documents' => new UploadPolicy(allowedMimeTypes: ['application/pdf']),
+            ]),
+            deliveryPolicies: new DeliveryPolicyRegistry([
+                'documents' => new DeliveryPolicy(allowDirectPublicUrl: true),
+            ]),
+            knownGroups: ['documents'],
+        );
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+    }
+
+    /**
+     * Review 1.0 pass 2, N4: `check` read its own copy of the list, so a type
+     * the application declared active was still allowed on a public URL. It
+     * now asks the delivery registry — the configured list, minus plugins.
+     */
+    public function theConfiguredExtraTypesAreRefusedOnDirectPublicUrls(): void
+    {
+        $tester = $this->run(
+            policies: new PolicyRegistry([
+                'assets' => new UploadPolicy(allowedMimeTypes: ['image/png', 'application/x-custom', 'application/pdf']),
+            ]),
+            deliveryPolicies: new DeliveryPolicyRegistry(
+                ['assets' => new DeliveryPolicy(allowDirectPublicUrl: true)],
+                ActiveMediaTypes::withExtra(['application/x-custom']),
+            ),
+            knownGroups: ['assets'],
+        );
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string($this->flatten($tester->getDisplay()))->contains(
+            'Group "assets" allows direct public URLs and accepts application/x-custom.',
+        );
+    }
+
+    /**
+     * Review 1.0 B5: a store that serves objects at public URLs serves them by
+     * path whatever `allowDirectPublicUrl` says — that flag only chooses which
+     * URL the application prints. A permissive group next to such a store is
+     * stored XSS for anyone who can compute a content-addressed path.
+     */
+    public function aPublicStoreMakesAPermissiveGroupAnErrorEvenWithoutDirectUrls(): void
+    {
+        $tester = $this->run(store: $this->publicStore());
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string($this->flatten($tester->getDisplay()))->contains(
+            'Group "*" accepts any media type, and store "assets" serves every object it holds at a public URL '
+            . 'whatever the delivery policy says. Set an explicit allowedMimeTypes list that excludes active '
+            . 'content, or keep this group out of public stores.',
+        );
+    }
+
+    public function aPublicStoreMakesAScriptableAllowListAnError(): void
+    {
+        $tester = $this->run(
+            store: $this->publicStore(),
+            policies: new PolicyRegistry([
+                '*' => new UploadPolicy(allowedMimeTypes: ['image/png']),
+                'assets' => new UploadPolicy(allowedMimeTypes: ['image/png', 'image/svg+xml']),
+            ]),
+            knownGroups: ['assets'],
+        );
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string($this->flatten($tester->getDisplay()))->contains(
+            'Group "assets" accepts image/svg+xml, and store "assets" serves every object it holds at a public URL '
+            . 'whatever the delivery policy says. Served from your own origin these execute as your site. Remove '
+            . 'them from allowedMimeTypes, or keep this group out of public stores.',
+        );
+    }
+
+    public function aPublicStoreWithInertAllowListsIsSound(): void
+    {
+        $tester = $this->run(
+            store: $this->publicStore(),
+            policies: new PolicyRegistry(['*' => new UploadPolicy(allowedMimeTypes: ['image/png', 'image/jpeg'])]),
+        );
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+    }
+
+    /**
+     * Answering `publicUrl()` is not being public: a Flysystem S3 store builds
+     * an object URL for a private bucket too, and that URL answers 403. Only a
+     * store that lives under a web root by definition counts.
+     */
+    public function aUrlCapableStoreIsNotTreatedAsPublicMerelyForAnsweringPublicUrl(): void
+    {
+        $store = new UrlCapableInMemoryStore(new InMemoryStore('memory', $this->factory), publicUrls: true);
+
+        Assert::same($this->run(store: $store)->getStatusCode(), Command::SUCCESS);
+    }
+
     public function directPublicUrlsWithAnInertAllowListArePermitted(): void
     {
         $tester = $this->run(
@@ -389,6 +526,14 @@ final class CheckCommandTest
 
         Assert::same($tester->getStatusCode(), Command::SUCCESS);
         Assert::string($tester->getDisplay())->contains('direct public URL');
+    }
+
+    private function publicStore(): PublicFileSystemStore
+    {
+        return new PublicFileSystemStore(
+            new FileSystemStore('assets', $this->root, $this->factory),
+            'https://cdn.example.com',
+        );
     }
 
     /**
@@ -525,6 +670,199 @@ final class CheckCommandTest
         Assert::false(str_contains($tester->getDisplay(), 'quarantine'));
     }
 
+    // ---- review 1.0 A1, C20 -------------------------------------------------
+
+    public function aPathGeneratorTheLayoutCannotDeleteIsAnError(): void
+    {
+        $paths = new class implements PathGeneratorInterface {
+            #[Override]
+            public function generate(string $groupName, Upload $upload, ?string $mediaType): string
+            {
+                return $groupName . '/' . bin2hex(random_bytes(8)) . '.jpg';
+            }
+        };
+
+        $tester = $this->run(paths: $paths);
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string($this->flatten($tester->getDisplay()))->contains('Store "memory": Path generator');
+    }
+
+    /**
+     * Review 1.0 pass 2 (maintenance), N5: an error on the default store
+     * failed a sound configuration — deduplication pointed by `-db`'s factory
+     * (`storeName`) at another store — with no way to say so. The store
+     * deduplication really writes to is only known to `-db`, whose factory
+     * refuses a mismatched pair when it is built; here it is a warning.
+     */
+    public function flatContentKeysOnTheDefaultStoreWithTheDirectoryLayoutAreAWarning(): void
+    {
+        $tester = $this->run(
+            store: new FileSystemStore('upload', $this->root, $this->factory),
+            contentKeys: new FlatSha256KeyGenerator(prefix: 'blobs'),
+        );
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        Assert::string($this->flatten($tester->getDisplay()))->contains('Store "upload": Content-addressed key generator');
+        Assert::string($this->flatten($tester->getDisplay()))->contains('refuses that combination when it is built');
+    }
+
+    public function aDefaultPrivateStoreBesideAFlatDeduplicatedOneIsSound(): void
+    {
+        $command = new CheckCommand(
+            stores: new StoreRegistry([
+                new FileSystemStore('private', $this->root . '/private', $this->factory),
+                new FileSystemStore('public', $this->root . '/public', $this->factory, layout: new FlatSiblingLayout()),
+            ]),
+            repository: new MemoryRepository(),
+            policies: new PolicyRegistry(),
+            deliveryPolicies: new DeliveryPolicyRegistry(),
+            contentKeys: new FlatSha256KeyGenerator(prefix: 'blobs'),
+        );
+        $tester = new CommandTester($command);
+        $tester->execute([]);
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+    }
+
+    public function flatContentKeysOnAFlatStoreAreSound(): void
+    {
+        $tester = $this->run(
+            store: new FileSystemStore('upload', $this->root, $this->factory, layout: new FlatSiblingLayout()),
+            contentKeys: new FlatSha256KeyGenerator(prefix: 'blobs'),
+        );
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+    }
+
+    /**
+     * Deduplication writes to one store; a second local store with the default
+     * layout — private attachments next to a flat public tree — is only a
+     * warning, not a failed check.
+     */
+    public function aContentKeyMismatchOnANonDefaultStoreIsAWarning(): void
+    {
+        $command = new CheckCommand(
+            stores: new StoreRegistry([
+                new FileSystemStore('public', $this->root . '/public', $this->factory, layout: new FlatSiblingLayout()),
+                new FileSystemStore('private', $this->root . '/private', $this->factory),
+            ]),
+            repository: new MemoryRepository(),
+            policies: new PolicyRegistry(),
+            deliveryPolicies: new DeliveryPolicyRegistry(),
+            contentKeys: new FlatSha256KeyGenerator(prefix: 'blobs'),
+        );
+        $tester = new CommandTester($command);
+        $tester->execute([]);
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        Assert::string($this->flatten($tester->getDisplay()))->contains('Store "private": Content-addressed key generator');
+        Assert::string($this->flatten($tester->getDisplay()))->contains('only a problem if deduplication writes to this store');
+    }
+
+    public function withoutABoundGeneratorTheDedupDefaultIsProbed(): void
+    {
+        Assert::same(
+            $this->run(store: new FileSystemStore('upload', $this->root, $this->factory))->getStatusCode(),
+            Command::SUCCESS,
+        );
+    }
+
+    public function aPublicStoreOwningItsWholeRootIsAWarning(): void
+    {
+        $tester = $this->run(store: $this->publicStore());
+
+        Assert::string($this->flatten($tester->getDisplay()))->contains(
+            'Store "assets" serves its root publicly and owns all of it: filestorage:gc --orphans quarantines, then '
+            . 'purges, every file under it that has no row. If anything else lives there, pass ownedPrefixes to the '
+            . 'FileSystemStore.',
+        );
+    }
+
+    public function aPublicStoreWhoseQuarantineCannotBeCheckedAgainstTheWebRootIsAWarning(): void
+    {
+        $store = new PublicFileSystemStore(
+            new FileSystemStore('upload', $this->root . '/public/uploads', $this->factory, quarantinePath: $this->root . '/q'),
+            'https://cdn.example.test',
+        );
+
+        Assert::string($this->flatten($this->run(store: $store)->getDisplay()))->contains(
+            'Store "upload": nothing checks that its quarantine is outside the web server\'s document root, only '
+            . 'outside the store root. Pass webRoot to PublicFileSystemStore.',
+        );
+    }
+
+    public function aPublicStoreWithAWebRootIsNotWarnedAbout(): void
+    {
+        $store = new PublicFileSystemStore(
+            new FileSystemStore('upload', $this->root . '/public/uploads', $this->factory, quarantinePath: $this->root . '/q'),
+            'https://cdn.example.test',
+            webRoot: $this->root . '/public',
+        );
+
+        Assert::false(str_contains($this->flatten($this->run(store: $store)->getDisplay()), 'Pass webRoot'));
+    }
+
+    public function aPublicStoreWithOwnedPrefixesIsQuiet(): void
+    {
+        $tester = $this->run(store: new PublicFileSystemStore(
+            new FileSystemStore('upload', $this->root, $this->factory, ownedPrefixes: ['blobs']),
+            'https://cdn.example.test',
+        ));
+
+        Assert::false(str_contains($tester->getDisplay(), 'owns all of it'));
+    }
+
+    public function theShippedPathGeneratorFitsTheDefaultLayout(): void
+    {
+        Assert::same($this->run(paths: new RandomPathGenerator())->getStatusCode(), Command::SUCCESS);
+    }
+
+    public function everyStoreShowsItsLayout(): void
+    {
+        $tester = $this->run(store: new InMemoryStore('memory', $this->factory, layout: new FlatSiblingLayout()), json: true);
+
+        $decoded = json_decode($tester->getDisplay(), associative: true, flags: \JSON_THROW_ON_ERROR);
+        Assert::true(\is_array($decoded));
+        Assert::same($decoded['stores'][0]['layout'] ?? null, FlatSiblingLayout::class);
+        $display = $this->run(store: new InMemoryStore('memory', $this->factory, layout: new FlatSiblingLayout()))->getDisplay();
+        Assert::string($display)->contains('FlatSiblingLayout');
+        Assert::false(str_contains($display, '\\FlatSiblingLayout'), 'the table shows the short class name');
+    }
+
+    public function anApplicationOwnedGroupWithoutACheckerIsAWarning(): void
+    {
+        $policies = new PolicyRegistry(['avatars' => new UploadPolicy(
+            allowedMimeTypes: ['image/png'],
+            referencesOwnedBy: ReferenceAuthority::Application,
+        )]);
+
+        $tester = $this->run(policies: $policies, knownGroups: ['avatars']);
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        Assert::string($this->flatten($tester->getDisplay()))
+            ->contains(
+                'Group "avatars" hands references to the application, but no ' . ReferenceCheckerInterface::class
+                . ' is bound, so filestorage:gc never releases its files.',
+            );
+    }
+
+    public function anApplicationOwnedGroupWithACheckerIsQuiet(): void
+    {
+        $policies = new PolicyRegistry(['avatars' => new UploadPolicy(
+            allowedMimeTypes: ['image/png'],
+            referencesOwnedBy: ReferenceAuthority::Application,
+        )]);
+
+        $tester = $this->run(
+            policies: $policies,
+            knownGroups: ['avatars'],
+            references: Understudy::for(ReferenceCheckerInterface::class),
+        );
+
+        Assert::false(str_contains($tester->getDisplay(), 'hands references'));
+    }
+
     private function run(
         ?StoreInterface $store = null,
         ?RepositoryInterface $repository = null,
@@ -533,6 +871,10 @@ final class CheckCommandTest
         array $knownGroups = [],
         ?FileScopeProviderInterface $scopes = null,
         ?ScopedFileResolverInterface $scopedFiles = null,
+        ?ContentAddressedKeyGeneratorInterface $contentKeys = null,
+        ?PathGeneratorInterface $paths = null,
+        ?ReferenceCheckerInterface $references = null,
+        bool $json = false,
     ): CommandTester {
         $command = new CheckCommand(
             stores: new StoreRegistry([$store ?? new InMemoryStore('memory', $this->factory)]),
@@ -542,11 +884,114 @@ final class CheckCommandTest
             knownGroups: $knownGroups,
             scopes: $scopes,
             scopedFiles: $scopedFiles,
+            contentKeys: $contentKeys,
+            paths: $paths,
+            streams: $paths instanceof \Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface ? $this->factory : null,
+            references: $references,
         );
 
         $tester = new CommandTester($command);
-        $tester->execute([]);
+        $tester->execute($json ? ['--format' => 'json'] : []);
 
         return $tester;
+    }
+
+    // ---- follow-ups: public-store marker, tenant in the key -------------------
+
+    /**
+     * A store other than `PublicFileSystemStore` — a public bucket — says it
+     * serves every object without credentials, and the active-content rule
+     * applies to it the same way.
+     */
+    public function aStoreThatSaysItIsPubliclyReadableIsTreatedAsPublic(): void
+    {
+        $store = new UrlCapableInMemoryStore(new InMemoryStore('bucket', $this->factory), publiclyReadable: true);
+        $tester = $this->run(store: $store);
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string($this->flatten($tester->getDisplay()))->contains(
+            'Group "*" accepts any media type, and store "bucket" serves every object it holds at a public URL',
+        );
+    }
+
+    public function aPubliclyReadableStoreIsSoundWithInertAllowLists(): void
+    {
+        $store = new UrlCapableInMemoryStore(new InMemoryStore('bucket', $this->factory), publiclyReadable: true);
+        $tester = $this->run(
+            store: $store,
+            policies: new PolicyRegistry(['*' => new UploadPolicy(allowedMimeTypes: ['image/png'])]),
+            json: true,
+        );
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        Assert::string($tester->getDisplay())->contains('"public"');
+    }
+
+    public function aStoreThatIsNotPubliclyReadableHasNoPublicCapability(): void
+    {
+        $store = new UrlCapableInMemoryStore(new InMemoryStore('bucket', $this->factory), publiclyReadable: false);
+        $tester = $this->run(store: $store, json: true);
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        Assert::false(str_contains($tester->getDisplay(), '"public"'));
+    }
+
+    /**
+     * `ownedPrefixes` and `webRoot` are `PublicFileSystemStore` constructor
+     * arguments; a public bucket has neither and is not warned about them.
+     */
+    public function theFilesystemWarningsStayWithTheFilesystemStore(): void
+    {
+        $store = new UrlCapableInMemoryStore(new InMemoryStore('bucket', $this->factory), publiclyReadable: true);
+        $display = $this->flatten($this->run(store: $store)->getDisplay());
+
+        Assert::false(str_contains($display, 'ownedPrefixes'));
+        Assert::false(str_contains($display, 'webRoot'));
+    }
+
+    /**
+     * Under a bound scope provider, a generator that drops the scope from the
+     * key pools every tenant's bytes under the tenant dedup scopes. Core cannot
+     * see the dedup scope (`-db`'s `DedupScope::Global` shares on purpose), so
+     * this is a warning; `-db` refuses the pair at boot under the other scopes.
+     */
+    public function aContentKeyGeneratorThatIgnoresTheTenantIsAWarningInTenantMode(): void
+    {
+        $tester = $this->run(
+            store: new FileSystemStore('upload', $this->root, $this->factory, layout: new FlatSiblingLayout()),
+            scopes: $this->tenantScope(),
+            scopedFiles: Understudy::for(ScopedFileResolverInterface::class),
+            contentKeys: new FlatSha256KeyGenerator(prefix: 'blobs'),
+        );
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        $display = $this->flatten($tester->getDisplay());
+        Assert::string($display)->contains(FlatSha256KeyGenerator::class . ' ignores the tenant');
+        Assert::string($display)->contains(
+            'A FileScopeProviderInterface is bound, so this is right only with the "global" deduplication scope; '
+            . 'rasuvaeff/yii3-filestorage-db refuses the generator under the "tenant" and "tenant-group" scopes '
+            . 'when it is built. Use a generator that keeps the scope in the key.',
+        );
+    }
+
+    public function aTenantlessGeneratorWithoutAScopeProviderIsNotMentioned(): void
+    {
+        $tester = $this->run(
+            store: new FileSystemStore('upload', $this->root, $this->factory, layout: new FlatSiblingLayout()),
+            contentKeys: new FlatSha256KeyGenerator(prefix: 'blobs'),
+        );
+
+        Assert::same($tester->getStatusCode(), Command::SUCCESS);
+        Assert::false(str_contains($tester->getDisplay(), 'ignores the tenant'));
+    }
+
+    public function theDefaultGeneratorKeepsTheTenant(): void
+    {
+        $tester = $this->run(
+            scopes: $this->tenantScope(),
+            scopedFiles: Understudy::for(ScopedFileResolverInterface::class),
+        );
+
+        Assert::false(str_contains($tester->getDisplay(), 'ignores the tenant'));
     }
 }

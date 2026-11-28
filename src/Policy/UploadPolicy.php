@@ -29,9 +29,9 @@ use Rasuvaeff\Yii3Filestorage\Upload;
 final readonly class UploadPolicy
 {
     /**
-     * Bounded prefix handed to the dimension reader. Large enough for a JPEG
-     * that carries a fat EXIF block before its SOF marker, small enough that a
-     * hostile upload cannot make the check itself expensive.
+     * Bounded prefix handed to the dimension reader for every format but JPEG,
+     * which is walked segment by segment instead and has no such window. PNG,
+     * GIF and WebP carry their dimensions in the first few dozen bytes.
      */
     public const int MAX_IMAGE_HEADER_BYTES = 262_144;
 
@@ -48,9 +48,12 @@ final readonly class UploadPolicy
      * @param int $maxPixels Decompression-bomb guard for raster images: a
      *        1 KiB file can declare 60000×60000 and flatten any decoder that
      *        opens it later. Read from the header; pixels are never decoded.
-     *        0 disables the check.
-     * @param bool $requireImageDimensions Reject a raster image whose dimensions
-     *        cannot be established within the bounded prefix, instead of letting
+     *        A JPEG is walked marker by marker to its frame header, however
+     *        much metadata precedes it. A JPEG, PNG, GIF or WebP whose
+     *        dimensions cannot be established is refused while this is
+     *        non-zero. 0 disables the check.
+     * @param bool $requireImageDimensions Also reject an image in *any* raster
+     *        format whose dimensions cannot be established, instead of letting
      *        it through unmeasured. Off by default because formats the runtime
      *        cannot parse (AVIF, HEIC on older builds) would otherwise be
      *        rejected wholesale; turn it on for a group that must be safe to
@@ -132,28 +135,37 @@ final readonly class UploadPolicy
             return;
         }
 
-        $stream = $upload->stream();
-        $header = $stream->read(self::MAX_IMAGE_HEADER_BYTES);
-        $stream->rewind();
-
-        // getimagesizefromstring() parses the header only and ships with PHP
-        // itself (ext-standard, no ext-gd), so this guard costs no dependency
-        // and never decodes a single pixel.
-        $size = @getimagesizefromstring($header);
-        if ($size === false) {
+        $size = ImageDimensions::measure(
+            stream: $upload->stream(),
+            mediaType: $detectedMimeType,
+            headerBytes: self::MAX_IMAGE_HEADER_BYTES,
+        );
+        if ($size === null) {
+            // Fail closed for the formats the guard can always read: a JPEG,
+            // PNG, GIF or WebP whose header cannot be found is malformed or
+            // built to hide it, and letting it through unmeasured is the
+            // bypass (review 1.0 A1). Formats the runtime may not parse stay
+            // opt-in through requireImageDimensions.
             if ($this->requireImageDimensions) {
                 throw new PolicyViolationException(
                     "Image dimensions could not be established for {$detectedMimeType}, and this group requires them",
+                );
+            }
+            if ($this->maxPixels > 0 && ImageDimensions::isParseable($detectedMimeType)) {
+                throw new PolicyViolationException(
+                    "Image dimensions could not be established for {$detectedMimeType}; "
+                    . 'a malformed header cannot be checked against the pixel limit',
                 );
             }
 
             return;
         }
 
-        $pixels = $size[0] * $size[1];
+        [$width, $height] = $size;
+        $pixels = $width * $height;
         if ($this->maxPixels > 0 && $pixels > $this->maxPixels) {
             throw new PolicyViolationException(
-                "Image is {$size[0]}x{$size[1]} = {$pixels} pixels, over the {$this->maxPixels} pixel limit for this group",
+                "Image is {$width}x{$height} = {$pixels} pixels, over the {$this->maxPixels} pixel limit for this group",
             );
         }
     }

@@ -11,7 +11,7 @@ use Psr\Clock\ClockInterface;
 use Psr\Http\Message\StreamFactoryInterface;
 use Psr\Http\Message\StreamInterface;
 use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
-use Rasuvaeff\Yii3Filestorage\Exception\UploadTooLargeException;
+use Rasuvaeff\Yii3Filestorage\Exception\UploadSizeException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Store\Layout\DirectoryLayout;
@@ -123,7 +123,7 @@ final class InMemoryStore implements MaintenanceStoreInterface
             if ($maxBytes > 0 && \strlen($bytes) > $maxBytes) {
                 // Nothing is stored, exactly as a real store removes its
                 // partial output rather than leaving it behind.
-                throw new UploadTooLargeException(
+                throw new UploadSizeException(
                     "Upload exceeds the {$maxBytes} byte limit for this group",
                 );
             }
@@ -139,8 +139,12 @@ final class InMemoryStore implements MaintenanceStoreInterface
     #[Override]
     public function delete(File $file): void
     {
-        $set = $this->layout->deletion(new StoredObjectId($file->relativePath));
-        foreach (array_keys($this->objects) as $path) {
+        try {
+            $set = $this->layout->deletion(new StoredObjectId($file->relativePath));
+        } catch (InvalidArgumentException $e) {
+            throw new StoreException($e->getMessage(), 0, $e);
+        }
+        foreach (array_map(strval(...), array_keys($this->objects)) as $path) {
             if ($set->contains($path)) {
                 unset($this->objects[$path], $this->timestamps[$path]);
             }
@@ -178,8 +182,11 @@ final class InMemoryStore implements MaintenanceStoreInterface
     #[Override]
     public function objects(?string $afterPath = null, int $limit = 1000): iterable
     {
-        $paths = array_keys($this->objects);
-        sort($paths);
+        // strval: PHP turns a numeric string key such as "123" into an int
+        // (review 1.0 C21), and the order must be the strcmp() order of the
+        // cursor, not a numeric one.
+        $paths = $this->storedPaths();
+        sort($paths, SORT_STRING);
 
         $yielded = 0;
         foreach ($paths as $path) {
@@ -199,7 +206,11 @@ final class InMemoryStore implements MaintenanceStoreInterface
         }
     }
 
-    #[Override]
+    /**
+     * Removes one object outright, as a test arranging a missing object
+     * needs. Not part of any store contract since 0.10: deletion in this
+     * package goes through the layout and the quarantine.
+     */
     public function deleteObject(StoredObjectId $object): void
     {
         unset($this->objects[$object->relativePath], $this->timestamps[$object->relativePath]);
@@ -209,9 +220,10 @@ final class InMemoryStore implements MaintenanceStoreInterface
     public function quarantine(ObjectSet $objects, DateTimeImmutable $now): ?QuarantinedObject
     {
         $held = [];
-        foreach ($this->objects as $path => $bytes) {
+        // A numeric path is an integer key of the map (review 1.0 C21, pass 2 N6).
+        foreach ($this->storedPaths() as $path) {
             if ($objects->contains($path)) {
-                $held[$path] = [$bytes, $this->timestamps[$path] ?? $now];
+                $held[$path] = [$this->objects[$path], $this->timestamps[$path] ?? $now];
                 unset($this->objects[$path], $this->timestamps[$path]);
             }
         }
@@ -284,7 +296,18 @@ final class InMemoryStore implements MaintenanceStoreInterface
      */
     public function paths(): array
     {
-        return array_keys($this->objects);
+        return $this->storedPaths();
+    }
+
+    /**
+     * @return list<non-empty-string>
+     */
+    private function storedPaths(): array
+    {
+        return array_map(
+            static fn(int|string $path): string => (new StoredObjectId(strval($path)))->relativePath,
+            array_keys($this->objects),
+        );
     }
 
     /**

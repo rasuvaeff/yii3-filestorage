@@ -10,15 +10,15 @@ use Nyholm\Psr7\Factory\Psr17Factory;
 use Override;
 use Rasuvaeff\Understudy\Arg;
 use Rasuvaeff\Understudy\Understudy;
+use Rasuvaeff\Yii3Filestorage\Exception\SizeLimitExceededException;
 use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
-use Rasuvaeff\Yii3Filestorage\Exception\UploadTooLargeException;
+use Rasuvaeff\Yii3Filestorage\Exception\UploadSizeException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Path\RandomPathGenerator;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeDescriptor;
 use Rasuvaeff\Yii3Filestorage\Store\FileSystem\FileSystemStore;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObject;
-use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\ForwardOnlyStream;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Testo\Assert;
@@ -112,7 +112,8 @@ final class FileSystemStoreTest
                 maxBytes: 10,
             );
             Assert::true(actual: false, message: 'the write should have been refused');
-        } catch (UploadTooLargeException $e) {
+        } catch (UploadSizeException $e) {
+            // Review 1.0 B3: same class as the policy's known-size refusal.
             Assert::true(str_contains($e->getMessage(), '10 byte limit'));
             Assert::same($this->filesUnder($this->root), [], 'nothing at all was left behind');
         }
@@ -290,7 +291,7 @@ final class FileSystemStoreTest
         try {
             $this->store->writeDerivative($file, $thumb, $this->factory->createStream(str_repeat('x', 50)), 10);
             Assert::true(actual: false, message: 'the derivative should have been refused');
-        } catch (UploadTooLargeException) {
+        } catch (SizeLimitExceededException) {
             Assert::false($this->store->hasDerivative($file, $thumb));
             Assert::same($this->filesUnder($this->root, '.part'), []);
         }
@@ -303,7 +304,7 @@ final class FileSystemStoreTest
         file_put_contents($this->root . '/' . $first->directory() . '/leftover.abc123.part', 'junk');
 
         $paths = array_map(
-            static fn(StoredObject $object): string => $object->relativePath,
+            static fn(StoredObject $object): string => $object->id->relativePath,
             iterator_to_array($this->store->objects(), preserve_keys: false),
         );
 
@@ -343,8 +344,8 @@ final class FileSystemStoreTest
                 break;
             }
 
-            $all[] = $page[0]->relativePath;
-            $after = $page[0]->relativePath;
+            $all[] = $page[0]->id->relativePath;
+            $after = $page[0]->id->relativePath;
         }
 
         sort($all);
@@ -364,7 +365,7 @@ final class FileSystemStoreTest
         file_put_contents($this->root . '/a-b.txt', 'z');
 
         $paths = array_map(
-            static fn(StoredObject $object): string => $object->relativePath,
+            static fn(StoredObject $object): string => $object->id->relativePath,
             iterator_to_array($this->store->objects(), preserve_keys: false),
         );
 
@@ -386,24 +387,13 @@ final class FileSystemStoreTest
         Assert::same(count($first), 2);
 
         $second = iterator_to_array(
-            $this->store->objects(afterPath: $first[1]->relativePath, limit: 2),
+            $this->store->objects(afterPath: $first[1]->id->relativePath, limit: 2),
             preserve_keys: false,
         );
 
         Assert::same(count($second), 2);
-        Assert::true($second[0]->relativePath !== $first[0]->relativePath);
-        Assert::true($second[0]->relativePath !== $first[1]->relativePath);
-    }
-
-    public function deleteObjectRemovesOneObjectAndIsIdempotent(): void
-    {
-        $file = $this->write('x');
-        $object = new StoredObjectId($file->relativePath);
-
-        $this->store->deleteObject($object);
-        $this->store->deleteObject($object);
-
-        Assert::false($this->store->exists($file));
+        Assert::true($second[0]->id->relativePath !== $first[0]->id->relativePath);
+        Assert::true($second[0]->id->relativePath !== $first[1]->id->relativePath);
     }
 
     /**
@@ -733,7 +723,7 @@ final class FileSystemStoreTest
 
         try {
             $paths = array_map(
-                static fn(StoredObject $object): string => $object->relativePath,
+                static fn(StoredObject $object): string => $object->id->relativePath,
                 iterator_to_array($this->store->objects(), preserve_keys: false),
             );
 

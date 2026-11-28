@@ -29,6 +29,34 @@ final readonly class Upload
 
     private const int CHUNK = 262_144;
 
+    private const string DATA_URL_TYPE_PATTERN = '~^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*\z~';
+    private const string DATA_URL_PARAMETER_PATTERN = '~^[A-Za-z0-9!#$&^_.+-]+=[^;,]*\z~';
+
+    /**
+     * Cc (C0, DEL, C1), the line and paragraph separators, and every format
+     * character (Cf): the bidi controls — embeddings, overrides, isolates,
+     * marks — and the invisible ones, U+200B, U+FEFF, U+2060, the soft hyphen
+     * (review 1.0 pass 2, N9). Except the zero-width non-joiner and joiner:
+     * Persian and Indic text, and emoji sequences, are spelt with them.
+     */
+    private const string UNSAFE_NAME_CHARACTERS = '/[\p{Cc}\p{Zl}\p{Zp}]|(?![\x{200C}\x{200D}])\p{Cf}/u';
+
+    /**
+     * Bytes of a client name examined at all. Comfortably more than
+     * {@see File::MAX_ORIGINAL_NAME_LENGTH} characters of four bytes each;
+     * the per-character work below costs a multiple of its input, and a name
+     * from a JSON body has no size limit of its own (review 1.0 pass 2, N6).
+     */
+    private const int MAX_NAME_INPUT_BYTES = 4096;
+
+    /** One well-formed UTF-8 sequence, or (group 1) a byte that starts none. */
+    private const string UTF8_SEQUENCE = '/[\x00-\x7F]|[\xC2-\xDF][\x80-\xBF]|\xE0[\xA0-\xBF][\x80-\xBF]'
+        . '|[\xE1-\xEC\xEE\xEF][\x80-\xBF]{2}|\xED[\x80-\x9F][\x80-\xBF]|\xF0[\x90-\xBF][\x80-\xBF]{2}'
+        . '|[\xF1-\xF3][\x80-\xBF]{3}|\xF4[\x80-\x8F][\x80-\xBF]{2}|(.)/s';
+
+    /** An extension worth keeping when a long name is cut. */
+    private const string NAME_EXTENSION_PATTERN = '/\.[A-Za-z0-9]{1,16}\z/';
+
     /**
      * @param non-empty-string $originalName
      * @param non-empty-string|null $clientMediaTypeHint
@@ -40,9 +68,9 @@ final readonly class Upload
     ) {}
 
     /**
-     *
      * @throws UploadFailedException When PHP reports the upload itself failed.
-     * @throws UploadTooLargeException
+     * @throws UploadTooLargeException Over the spool cap, or PHP refused the
+     *         size itself (`UPLOAD_ERR_INI_SIZE`, `UPLOAD_ERR_FORM_SIZE`).
      */
     public static function fromUploadedFile(
         UploadedFileInterface $file,
@@ -50,6 +78,10 @@ final readonly class Upload
         int $maxSpoolBytes = self::DEFAULT_MAX_SPOOL_BYTES,
     ): self {
         $error = $file->getError();
+        if ($error === \UPLOAD_ERR_INI_SIZE || $error === \UPLOAD_ERR_FORM_SIZE) {
+            // A size refusal, not a broken upload: callers answer 413 to it.
+            throw new UploadTooLargeException("Upload exceeds PHP's size limit (PHP error code {$error})");
+        }
         if ($error !== \UPLOAD_ERR_OK) {
             throw new UploadFailedException("Upload failed with PHP error code {$error}");
         }
@@ -66,6 +98,13 @@ final readonly class Upload
     }
 
     /**
+     * The client's name is normalised here, at the one entry every factory
+     * goes through: control characters and bidi controls are removed (U+202E
+     * makes `invoice\u{202E}gpj.exe` display as `invoiceexe.jpg` in a save
+     * dialog), invalid UTF-8 becomes U+FFFD, and the result is cut to
+     * {@see File::MAX_ORIGINAL_NAME_LENGTH} characters keeping its extension.
+     * It stays metadata — it never enters a path.
+     *
      * @param int $maxSpoolBytes Zero disables the cap.
      *
      * @throws UploadTooLargeException
@@ -85,7 +124,7 @@ final readonly class Upload
             stream: $stream->isSeekable()
                 ? $stream
                 : self::spool($stream, $streamFactory, $maxSpoolBytes),
-            originalName: $originalName === '' ? 'file' : $originalName,
+            originalName: self::normaliseName($originalName),
             clientMediaTypeHint: $clientMediaTypeHint === '' ? null : $clientMediaTypeHint,
         );
     }
@@ -121,8 +160,16 @@ final readonly class Upload
      * @param non-empty-string $originalName The data URL carries none.
      * @param-out non-empty-string|null $clientMediaTypeHint
      *
+     * The media type is matched case-insensitively and returned in lower
+     * case; parameters such as `;charset=utf-8` are accepted and ignored, and
+     * so is the case of `;base64`.
+     *
+     * @param int $maxSpoolBytes Cap on the *decoded* payload. Zero disables it.
+     *
      * @throws UploadFailedException When the URL is not a data URL, its
-     *         payload does not decode, or the media type is malformed.
+     *         payload does not decode, or the media type or a parameter is
+     *         malformed.
+     * @throws UploadTooLargeException When the decoded payload exceeds `$maxSpoolBytes`.
      */
     public static function fromDataUrl(
         string $dataUrl,
@@ -145,21 +192,31 @@ final readonly class Upload
         $clientMediaTypeHint = null;
 
         $base64 = false;
-        foreach (explode(';', $header) as $part) {
-            if ($part === 'base64') {
+        $parts = explode(';', $header);
+        $type = array_shift($parts);
+        if ($type !== '') {
+            $normalised = strtolower($type);
+            if (preg_match(self::DATA_URL_TYPE_PATTERN, $normalised) !== 1) {
+                throw new UploadFailedException("Malformed media type \"{$type}\" in the data URL");
+            }
+            $clientMediaTypeHint = $normalised;
+        }
+
+        // RFC 2397: `mediatype := [type "/" subtype] *(";" parameter)`, then an
+        // optional `;base64`. Parameters (`charset=utf-8`) say nothing the
+        // stored bytes need, so they are validated and skipped.
+        foreach ($parts as $part) {
+            if (strcasecmp($part, 'base64') === 0) {
                 $base64 = true;
+
                 continue;
             }
-
             if ($part === '') {
                 continue;
             }
-
-            if (preg_match('~^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$~', $part) !== 1) {
-                throw new UploadFailedException("Malformed media type \"{$part}\" in the data URL");
+            if (preg_match(self::DATA_URL_PARAMETER_PATTERN, $part) !== 1) {
+                throw new UploadFailedException("Malformed parameter \"{$part}\" in the data URL");
             }
-
-            $clientMediaTypeHint = $part;
         }
 
         if ($base64) {
@@ -169,6 +226,14 @@ final readonly class Upload
             }
         } else {
             $bytes = rawurldecode($payload);
+        }
+
+        // The decoded bytes are already in memory and the stream over them is
+        // seekable, so the spool — where this cap normally bites — never runs.
+        if ($maxSpoolBytes > 0 && \strlen($bytes) > $maxSpoolBytes) {
+            throw new UploadTooLargeException(
+                'The data URL decodes to ' . \strlen($bytes) . " bytes, over the cap of {$maxSpoolBytes} bytes",
+            );
         }
 
         return self::fromStream(
@@ -198,6 +263,62 @@ final readonly class Upload
         $size = $this->stream->getSize();
 
         return $size === null ? null : max(0, $size);
+    }
+
+    /**
+     * @return non-empty-string
+     */
+    private static function normaliseName(string $name): string
+    {
+        if (\strlen($name) > self::MAX_NAME_INPUT_BYTES) {
+            $extension = preg_match(self::NAME_EXTENSION_PATTERN, $name, $found) === 1 ? $found[0] : '';
+            $name = self::cutOnCharacter(substr($name, 0, self::MAX_NAME_INPUT_BYTES - \strlen($extension))) . $extension;
+        }
+
+        $valid = (string) preg_replace_callback(
+            self::UTF8_SEQUENCE,
+            static fn(array $match): string => isset($match[1]) ? "\u{FFFD}" : $match[0],
+            $name,
+        );
+        $clean = trim((string) preg_replace(self::UNSAFE_NAME_CHARACTERS, '', $valid));
+
+        $characters = preg_split('//u', $clean, -1, \PREG_SPLIT_NO_EMPTY);
+        if ($characters === false) {
+            $characters = [];
+        }
+        if (\count($characters) > File::MAX_ORIGINAL_NAME_LENGTH) {
+            $extension = preg_match(self::NAME_EXTENSION_PATTERN, $clean, $found) === 1 ? $found[0] : '';
+            $keep = File::MAX_ORIGINAL_NAME_LENGTH - \strlen($extension);
+            $clean = implode('', \array_slice($characters, 0, $keep)) . $extension;
+        }
+
+        return $clean === '' ? 'file' : $clean;
+    }
+
+    /**
+     * Drops a UTF-8 sequence the cut left incomplete at the end, so it is not
+     * reported as an invalid byte.
+     */
+    private static function cutOnCharacter(string $bytes): string
+    {
+        $end = \strlen($bytes);
+        $lead = $end - 1;
+        while ($lead >= 0 && $end - $lead < 4 && (\ord($bytes[$lead]) & 0xC0) === 0x80) {
+            --$lead;
+        }
+        if ($lead < 0) {
+            return $bytes;
+        }
+
+        $byte = \ord($bytes[$lead]);
+        $length = match (true) {
+            $byte >= 0xF0 => 4,
+            $byte >= 0xE0 => 3,
+            $byte >= 0xC0 => 2,
+            default => 1,
+        };
+
+        return $end - $lead < $length ? substr($bytes, 0, $lead) : $bytes;
     }
 
     /**

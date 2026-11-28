@@ -31,6 +31,17 @@ final class InterleavingLedger implements BlobLedgerInterface
 
     private bool $claims = true;
 
+    private bool $refuseCompletion = false;
+
+    /**
+     * Every completeDeletion() is refused, as when a writer re-referenced the
+     * blob or another collector took the lease.
+     */
+    public function refusingCompletion(): void
+    {
+        $this->refuseCompletion = true;
+    }
+
     /**
      * Nothing is ever claimable, so a run exercises everything except the
      * collection pass.
@@ -102,6 +113,10 @@ final class InterleavingLedger implements BlobLedgerInterface
     #[Override]
     public function completeDeletion(BlobLease $lease): bool
     {
+        if ($this->refuseCompletion) {
+            return false;
+        }
+
         return $this->ledger->completeDeletion($lease);
     }
 

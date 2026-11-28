@@ -16,6 +16,7 @@ use Rasuvaeff\Yii3Filestorage\Store\FileSystem\FileSystemStore;
 use Rasuvaeff\Yii3Filestorage\Store\FileSystem\PublicFileSystemStore;
 use Rasuvaeff\Yii3Filestorage\Store\Layout\FlatSiblingLayout;
 use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectSet;
+use Rasuvaeff\Yii3Filestorage\Store\PubliclyReadableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\QuarantinedObject;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObject;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
@@ -150,13 +151,10 @@ final class PublicFileSystemStoreTest
         Assert::same($this->store->derivativeStream($file, $thumb)?->getContents(), 'rendition');
 
         $paths = array_map(
-            static fn(StoredObject $object): string => $object->relativePath,
+            static fn(StoredObject $object): string => $object->id->relativePath,
             iterator_to_array($this->store->objects(), preserve_keys: false),
         );
         Assert::same(count($paths), 2, 'the original and its derivative');
-
-        $this->store->deleteObject(new StoredObjectId($file->relativePath));
-        Assert::false($this->store->exists($file));
 
         $this->store->delete($file);
         Assert::false($this->store->hasDerivative($file, $thumb));
@@ -235,6 +233,89 @@ final class PublicFileSystemStoreTest
         return $this->file($result->relativePath);
     }
 
+    /**
+     * Review 1.0 B12: with the store root at `public/uploads`, a quarantine at
+     * `public/uploads-quarantine` passed every check and was served.
+     */
+    public function aQuarantineInsideTheWebRootIsRefused(): void
+    {
+        Expect::exception(InvalidArgumentException::class)->withMessageContaining(
+            '": a deleted public file would stay downloadable for the whole retention. Move it outside',
+        );
+
+        new PublicFileSystemStore(
+            new FileSystemStore(
+                'assets',
+                $this->root . '/public/uploads',
+                $this->factory,
+                quarantinePath: $this->root . '/public/uploads-quarantine',
+            ),
+            'https://cdn.example.com/uploads',
+            webRoot: $this->root . '/public',
+        );
+    }
+
+    public function aQuarantineOutsideTheWebRootIsAccepted(): void
+    {
+        $store = new PublicFileSystemStore(
+            new FileSystemStore(
+                'assets',
+                $this->root . '/public/uploads',
+                $this->factory,
+                quarantinePath: $this->root . '/var/quarantine',
+            ),
+            'https://cdn.example.com/uploads',
+            webRoot: $this->root . '/public/../public',
+        );
+
+        Assert::same($store->webRoot(), realpath($this->root . '/public'));
+        Assert::null($store->quarantineProblem());
+    }
+
+    /**
+     * Inside means under the web root's directory, not sharing its name as a
+     * string prefix: `public-quarantine` is a sibling of `public`.
+     */
+    public function aQuarantineBesideTheWebRootIsAccepted(): void
+    {
+        $store = new PublicFileSystemStore(
+            new FileSystemStore(
+                'assets',
+                $this->root . '/public/uploads',
+                $this->factory,
+                quarantinePath: $this->root . '/public-quarantine',
+            ),
+            'https://cdn.example.com/uploads',
+            webRoot: $this->root . '/public',
+        );
+
+        Assert::same($store->webRoot(), realpath($this->root . '/public'));
+    }
+
+    public function aWebRootThatIsAFileIsRefused(): void
+    {
+        file_put_contents($this->root . '/index.php', '<?php');
+
+        Expect::exception(InvalidArgumentException::class)->withMessageContaining('is not an existing directory');
+
+        new PublicFileSystemStore(
+            new FileSystemStore('assets', $this->root . '/public/uploads', $this->factory),
+            'https://cdn.example.com/uploads',
+            webRoot: $this->root . '/index.php',
+        );
+    }
+
+    public function aMissingWebRootIsRefused(): void
+    {
+        Expect::exception(InvalidArgumentException::class)->withMessageContaining('is not an existing directory');
+
+        new PublicFileSystemStore(
+            new FileSystemStore('assets', $this->root . '/public/uploads', $this->factory),
+            'https://cdn.example.com/uploads',
+            webRoot: $this->root . '/nowhere',
+        );
+    }
+
     private function file(string $relativePath): File
     {
         return File::create(
@@ -246,5 +327,15 @@ final class PublicFileSystemStoreTest
             size: 0,
             createdAt: new DateTimeImmutable('2026-08-06T12:00:00.000000+00:00'),
         );
+    }
+
+    /**
+     * The web server serves the root: every object is readable without
+     * credentials, and `filestorage:check` learns that from the store itself.
+     */
+    public function saysItIsPubliclyReadable(): void
+    {
+        Assert::instanceOf($this->store, PubliclyReadableStoreInterface::class);
+        Assert::true($this->store->isPubliclyReadable());
     }
 }

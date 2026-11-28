@@ -8,15 +8,19 @@ use DateTimeImmutable;
 use InvalidArgumentException;
 use Override;
 use Psr\Http\Message\StreamInterface;
+use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
 use Rasuvaeff\Yii3Filestorage\File;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryOptions;
+use Rasuvaeff\Yii3Filestorage\Store\AbandonedPartialsInterface;
+use Rasuvaeff\Yii3Filestorage\Store\ContentAddressableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeDescriptor;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeObject;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeUrlProviderInterface;
 use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectLayoutInterface;
 use Rasuvaeff\Yii3Filestorage\Store\Layout\ObjectSet;
 use Rasuvaeff\Yii3Filestorage\Store\MaintenanceStoreInterface;
+use Rasuvaeff\Yii3Filestorage\Store\PubliclyReadableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\QuarantinedObject;
 use Rasuvaeff\Yii3Filestorage\Store\RangeReadableStoreInterface;
 use Rasuvaeff\Yii3Filestorage\Store\StoredObjectId;
@@ -43,22 +47,41 @@ use Rasuvaeff\Yii3Filestorage\Upload;
  * generators is there to prevent — but "unguessable" is not "access
  * controlled", and only the application knows whether that is enough.
  *
+ * A deduplicated object is the exception: its key is the SHA-256 of its bytes
+ * (`blobs/ab/cd/<sha>.<ext>`), so anyone who holds the same bytes computes
+ * its URL, learns whether the site stores them and can fetch them. Keep
+ * groups whose files are private out of a content-addressed public store
+ * (review 1.0 pass 2, maintenance N3).
+ *
  * @api
  */
 final readonly class PublicFileSystemStore implements
+    AbandonedPartialsInterface,
+    ContentAddressableStoreInterface,
     DerivativeUrlProviderInterface,
     MaintenanceStoreInterface,
+    PubliclyReadableStoreInterface,
     RangeReadableStoreInterface,
     StoreUrlProviderInterface
 {
     /** @var non-empty-string Without a trailing slash. */
     private string $baseUrl;
 
+    /** @var non-empty-string|null Absolute, symlink-resolved. */
+    private ?string $webRoot;
+
     /**
      * @param non-empty-string $baseUrl Public prefix the root is served under,
      *        e.g. `https://cdn.example.com/uploads`.
+     * @param string|null $webRoot The directory the web server serves — for
+     *        a root of `public/uploads` usually `public`. Given, a quarantine
+     *        under it is refused: a deleted public file would stay
+     *        downloadable for the whole retention. The inner store only
+     *        knows its own root, so without this nothing checks it.
+     *
+     * @throws InvalidArgumentException
      */
-    public function __construct(private FileSystemStore $store, string $baseUrl)
+    public function __construct(private FileSystemStore $store, string $baseUrl, ?string $webRoot = null)
     {
         $trimmed = rtrim($baseUrl, '/');
         if ($trimmed === '') {
@@ -66,6 +89,24 @@ final readonly class PublicFileSystemStore implements
         }
 
         $this->baseUrl = $trimmed;
+        $this->webRoot = $webRoot === null ? null : $this->resolveWebRoot($webRoot);
+    }
+
+    /**
+     * @return non-empty-string|null
+     */
+    public function webRoot(): ?string
+    {
+        return $this->webRoot;
+    }
+
+    /**
+     * Always: the web server serves the root.
+     */
+    #[Override]
+    public function isPubliclyReadable(): bool
+    {
+        return true;
     }
 
     #[Override]
@@ -86,7 +127,13 @@ final readonly class PublicFileSystemStore implements
     #[Override]
     public function publicDerivativeUrl(File $file, DerivativeDescriptor $derivative): string
     {
-        return $this->baseUrl . '/' . $this->encodePath($this->store->layout()->derivativePath($file, $derivative));
+        try {
+            $path = $this->store->layout()->derivativePath($file, $derivative);
+        } catch (InvalidArgumentException $e) {
+            throw new StoreException($e->getMessage(), 0, $e);
+        }
+
+        return $this->baseUrl . '/' . $this->encodePath($path);
     }
 
     /**
@@ -116,6 +163,20 @@ final readonly class PublicFileSystemStore implements
         int $maxBytes = 0,
     ): StoreResult {
         return $this->store->write($upload, $groupName, $pathGenerator, $mediaType, $maxBytes);
+    }
+
+    #[Override]
+    public function putIfAbsent(Upload $upload, StoredObjectId $object, int $maxBytes = 0): StoreResult
+    {
+        return $this->store->putIfAbsent($upload, $object, $maxBytes);
+    }
+
+    /**
+     * @return list<non-empty-string>
+     */
+    public function ownedPrefixes(): array
+    {
+        return $this->store->ownedPrefixes();
     }
 
     #[Override]
@@ -189,12 +250,6 @@ final readonly class PublicFileSystemStore implements
     }
 
     #[Override]
-    public function deleteObject(StoredObjectId $object): void
-    {
-        $this->store->deleteObject($object);
-    }
-
-    #[Override]
     public function quarantine(ObjectSet $objects, DateTimeImmutable $now): ?QuarantinedObject
     {
         return $this->store->quarantine($objects, $now);
@@ -219,14 +274,44 @@ final readonly class PublicFileSystemStore implements
     }
 
     /**
-     * The inner store already refuses a quarantine under its root, which is
-     * this store's web root: a deleted public file must not stay downloadable
-     * for the whole retention.
+     * The inner store refuses a quarantine under its root; the constructor
+     * refuses one under `webRoot`. Where the web server's document root is
+     * wider than the store root and no `webRoot` was given, nothing here can
+     * tell — `filestorage:check` says so.
      */
     #[Override]
     public function quarantineProblem(): ?string
     {
         return $this->store->quarantineProblem();
+    }
+
+    #[Override]
+    public function sweepAbandonedPartials(DateTimeImmutable $modifiedBefore, bool $apply, int $limit): array
+    {
+        return $this->store->sweepAbandonedPartials($modifiedBefore, $apply, $limit);
+    }
+
+    /**
+     * @return non-empty-string
+     *
+     * @throws InvalidArgumentException
+     */
+    private function resolveWebRoot(string $webRoot): string
+    {
+        $resolved = realpath($webRoot);
+        if ($resolved === false || $resolved === '' || !is_dir($resolved)) {
+            throw new InvalidArgumentException("webRoot \"{$webRoot}\" is not an existing directory");
+        }
+
+        $quarantine = $this->store->quarantinePath();
+        if ($quarantine !== null && ($quarantine === $resolved || str_starts_with($quarantine, $resolved . \DIRECTORY_SEPARATOR))) {
+            throw new InvalidArgumentException(
+                "Store \"{$this->store->name()}\" quarantine \"{$quarantine}\" is inside the web root \"{$resolved}\": "
+                . 'a deleted public file would stay downloadable for the whole retention. Move it outside',
+            );
+        }
+
+        return $resolved;
     }
 
     /**
