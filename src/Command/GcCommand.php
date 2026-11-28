@@ -941,6 +941,11 @@ final class GcCommand extends Command
             return [];
         }
 
+        // In path order, whatever order the caller collected them in: entries
+        // of one quarantine page may come from several processes (review 1.0
+        // pass 2, N5).
+        usort($objects, static fn(StoredObjectId $a, StoredObjectId $b): int => strcmp($a->relativePath, $b->relativePath));
+
         $referenced = [];
         foreach ($this->references->referenced($storeName, $objects) as $object) {
             $referenced[$object->relativePath] = true;

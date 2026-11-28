@@ -62,7 +62,15 @@ final readonly class QuarantinedObject
      */
     public static function newToken(DateTimeImmutable $now): string
     {
-        return sprintf('%010d', max(0, $now->getTimestamp())) . '-' . bin2hex(random_bytes(8));
+        // The first six hex digits are a per-process sequence, the other ten
+        // random: two entries one process quarantines in the same second sort
+        // in the order they were made, so a page of the quarantine — and the
+        // batch gc hands the reference checker — is the same on every run
+        // (review 1.0 pass 2, N5). Across processes the random part keeps
+        // tokens apart; their order within one second is then arbitrary.
+        return sprintf('%010d', max(0, $now->getTimestamp()))
+            . '-' . sprintf('%06x', QuarantineSequence::next())
+            . bin2hex(random_bytes(5));
     }
 
     public static function isToken(string $candidate): bool
