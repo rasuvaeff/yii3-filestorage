@@ -488,7 +488,14 @@ final class ImportCommandTest
         // Review 1.0 C7: dirname() of a manifest at a stream wrapper's root is
         // "fs-unflushable:", which is a *local relative* path — the command
         // used to mkdir it in the working directory.
-        Assert::false(is_dir('fs-unflushable:'), 'no local directory was created for the wrapper root');
+        // Removed before asserting: a regression left behind would fail this
+        // test for every later run in the same working directory, which under
+        // Infection counts unrelated mutants as killed.
+        $created = is_dir('fs-unflushable:');
+        if ($created) {
+            rmdir('fs-unflushable:');
+        }
+        Assert::false($created, 'no local directory was created for the wrapper root');
     }
 
     /**
