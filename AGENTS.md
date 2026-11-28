@@ -16,7 +16,8 @@ capabilities `StoreUrlProviderInterface`, `RangeReadableStoreInterface`,
 `Store\StoreRegistry`, `StoreResult`, `StoredObjectId`, `BlobId`,
 `DerivativeDescriptor`, `DerivativeObject`, `StoredObject`, `QuarantinedObject`;
 `Store\Layout\ObjectLayoutInterface` with `DirectoryLayout` (default) and
-`FlatSiblingLayout`, `ObjectSet` and `LayoutCompatibility`; `Store\PubliclyReadableStoreInterface`; `Store\FileSystem\FileSystemStore`
+`FlatSiblingLayout`, `ObjectSet` and `LayoutCompatibility`; `Store\PubliclyReadableStoreInterface`,
+`Store\AbandonedPartialsInterface`, `Store\BlobLedgerBatchLookupInterface`; `Store\FileSystem\FileSystemStore`
 and `PublicFileSystemStore`; `Repository\RepositoryInterface` and
 `MaintenanceRepositoryInterface`; `Path\PathGeneratorInterface` with
 `RandomPathGenerator` / `DatePathGenerator`, and
@@ -56,7 +57,7 @@ through the shipped doubles alone.
 
 DI wiring: core `config/di.php` binds the facade under **two** ids, plus
 `StoreRegistry`, path generator, MIME detector, id generator, `ExtensionMap`,
-both policy registries and all six commands. It must **not** bind `StoreInterface` or
+`ActiveMediaTypes`, both policy registries and all six commands. It must **not** bind `StoreInterface` or
 `RepositoryInterface` — `yiisoft/config` allows exactly one vendor package per
 key, so those belong to `-flysystem`/`-db` or to the application. Two packages
 binding one of them is a `Duplicate key` error by design.
@@ -182,13 +183,22 @@ asserting only one half lets the operands be swapped undetected.
   1.0 A1: APPn padding pushed the frame header past a 256 KiB prefix and the
   "no dimensions found → skip" branch let a 60000×60000 JPEG through every
   policy. `Policy\ImageDimensions` (`@internal`) follows JPEG segment lengths
-  with `seek()` — never a scan for `FFC0`, which finds the EXIF thumbnail's
-  frame header — and while `maxPixels > 0` a JPEG/PNG/GIF/WebP whose dimensions
-  cannot be established is refused. Every prefix read goes through
+  with `seek()` — never a scan for `FFC0` inside a segment, which finds the EXIF
+  thumbnail's frame header; between segments it skips stray bytes exactly as
+  libjpeg's `next_marker()` does (pass 2, N2). GIF is walked block by block
+  through `Policy\GifReader` (buffered: one stream call per sub-block would be a
+  CPU DoS), and a frame outside the logical screen is undetermined (pass 2,
+  N1). TIFF is walked IFD by IFD (N3). While `maxPixels > 0` a
+  JPEG/PNG/GIF/WebP/TIFF whose dimensions cannot be established is refused. Every prefix read goes through
   `Stream\StreamReader::readUpTo()`: PSR-7 allows a short `read()`, and one call
   is a fragment (B1).
-- **One active-content list: `Mime\ActiveMediaTypes`.** `check`, `DeliveryOptions`
-  and `ExtensionMap` use it, and `-web`/`-flysystem` are meant to. Its scriptable
+- **One active-content list: `Mime\ActiveMediaTypes`, one configured instance.**
+  Core DI binds it from `params['activeMediaTypes']` (`fromConfig()`: `extra`,
+  `allowInline` — plugin tier only); `DeliveryPolicyRegistry` carries it to
+  `DeliveryOptions` (the facade's presign) and to `check` (`withoutPlugins()`);
+  `-web` and `-flysystem` take it from the container. Never `new ActiveMediaTypes()`
+  where a delivery decision is made. Any `+xml` type is scriptable whatever the
+  list says (pass 2, N8). `ExtensionMap` uses `scriptable()`. Its scriptable
   tier is what `check` refuses on public delivery; the plugin tier (PDF) is only
   forced to download — a public PDF is a legitimate publication. Do not add a
   second list anywhere in the family.
@@ -267,9 +277,22 @@ asserting only one half lets the operands be swapped undetected.
   `ownedPrefixes`, everything outside them — a write outside is refused so no
   object of the store escapes its own sweep (review 1.0 B2).
 - **A quarantine entry is purged only when nothing references it again**
-  (rows via the layout, plus the checker — B5), entries are settled one by one
-  (B6), a failed restore is a warning (B7), and a failed quarantine rolls back
-  what it moved (B8). A row must never outlive its bytes because of gc.
+  (rows via the layout, plus the checker — B5), and every entry the ledger does
+  not know is checked on *every* run, not only past the retention: a referenced
+  one is restored at once (pass 2, N1 — a release interrupted between quarantine
+  and row deletion). Only ledger-unknown entries are row-checked: restoring an
+  entry another collector holds a live lease on would race its commit. Under a
+  bound scope provider such entries are never purged. Entries are settled one
+  by one (B6), a failed restore is a warning (B7), and a failed quarantine rolls
+  back what it moved (B8). A row must never outlive its bytes because of gc.
+  `GcSafetyTest::aRowStillPointingAtQuarantinedBytesGetsThemBackOnTheNextRun`
+  must not grow a clock jump past the retention — that is what hid N1.
+- **Quarantine tokens of one process sort in issue order** (`QuarantineSequence`
+  leads the 16-hex part). A test that quarantines twice under a frozen clock
+  relies on it; the random half keeps processes apart.
+- **`.part` leftovers are collected by age alone** (`AbandonedPartialsInterface`,
+  pass 2 maintenance N4): no row points at a staging file, and under a flat
+  layout its owner is a live blob, so ownership cannot decide.
 - **The orphan sweep checks references after listing, per page, against a
   minimum age.** Review #3: a snapshot of every row read before the walk lost
   uploads between publication and `save()`, and files committed after the

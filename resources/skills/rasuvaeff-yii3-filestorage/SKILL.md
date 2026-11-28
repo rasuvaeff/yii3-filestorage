@@ -57,9 +57,12 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
 5. **Direct public delivery plus active content is a stored-XSS hole.** HTML,
    SVG, XML, XSLT, JavaScript and feeds served from your own origin execute as
    your site. `Mime\ActiveMediaTypes` is the family's one list (scriptable tier
-   + plugin tier: PDF, Flash) — never write a second one. `DeliveryOptions`
-   forces `attachment` for every active type, `ExtensionMap` stores them as
-   `.bin`, and `filestorage:check` fails a direct-public group accepting a
+   + plugin tier: PDF, Flash; any `+xml` type is scriptable) — never write a
+   second one, and never `new` it where a decision is made: take the instance
+   core DI binds from the `activeMediaTypes` parameter (`extra`, `allowInline`
+   for plugin types), or `DeliveryPolicyRegistry::activeMediaTypes()` /
+   `optionsFor($file)`. `DeliveryOptions` forces `attachment` for every active
+   type, `ExtensionMap` stores scriptable ones as `.bin`, and `filestorage:check` fails a direct-public group accepting a
    scriptable type, or any permissive/scriptable group when a publicly
    readable store is registered (`Store\PubliclyReadableStoreInterface::isPubliclyReadable()`
    true: `PublicFileSystemStore` always, a public bucket store when configured
@@ -76,8 +79,13 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
 
 6a. **The pixel guard fails closed.** `maxPixels` walks a JPEG marker by marker
    (seek by segment length, never scan for `FFC0` — the EXIF thumbnail has its
-   own frame header) and refuses a JPEG/PNG/GIF/WebP whose dimensions cannot be
-   established. Prefixes are read with a loop, never one `read()`.
+   own frame header; stray bytes *between* segments are skipped as libjpeg
+   does), walks a GIF block by block (a frame larger than the logical screen is
+   undetermined — the screen alone is a 1×1 lie), walks a TIFF's IFD chain,
+   and refuses a JPEG/PNG/GIF/WebP/TIFF whose dimensions cannot be established.
+   Other formats are measured from a 256 KiB prefix only — `requireImageDimensions`
+   for groups whose files reach a decoder. Prefixes are read with a loop, never
+   one `read()`.
 
 6b. **`add()` writes nothing it cannot keep.** Metadata, id and clock are
    validated before `store->write()`; anything failing after it is an
@@ -116,10 +124,16 @@ Namespace `Rasuvaeff\Yii3Filestorage\`. Full API reference: `llms.txt`.
    `filestorage:check` warns. A store implementation must keep the quarantine
    out of `objects()` and out of public reach (`PublicFileSystemStore(webRoot:)`
    checks the document root), and roll back a quarantine that fails half-way.
-   Before purging, `gc` re-asks rows and the reference checker and restores a
-   referenced entry. **The store root belongs to the store:** `gc --orphans`
-   takes every row-less file under it. Hidden entries are never listed; under
-   a shared web root pass `ownedPrefixes` to `FileSystemStore`.
+   Every run asks rows and the reference checker about every quarantine entry
+   the ledger does not know and restores a referenced one at once — a release
+   interrupted before its row was deleted is undone by the next run; under a
+   bound scope provider nothing the ledger does not know is purged.
+   **The store root belongs to the store:** `gc --orphans` takes every row-less
+   file under it (and stale `.part` leftovers). Hidden entries are never listed;
+   under a shared web root pass `ownedPrefixes` to `FileSystemStore` — with
+   `RandomPathGenerator(prefix: 'files')` one entry covers every group. A
+   deduplicated object on a public store is addressed by its content hash:
+   anyone with the same bytes computes its URL.
 
 11. **No suppressions.** No `@psalm-suppress`, no baseline. Fix the root cause.
 

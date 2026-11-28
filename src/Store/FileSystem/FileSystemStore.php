@@ -585,7 +585,7 @@ final readonly class FileSystemStore implements
             return '; nothing was moved';
         }
 
-        return '; left in the quarantine, restored by gc while a row references them: ' . implode(', ', $stuck);
+        return '; left in the quarantine, restored by the next gc run while a row references them: ' . implode(', ', $stuck);
     }
 
     #[Override]

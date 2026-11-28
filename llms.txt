@@ -39,11 +39,17 @@ Core does NOT bind `StoreInterface` or `RepositoryInterface`. Install a backend
    honour them — what neither consults is `allowDirectPublicUrl`, the gate
    `urlFor()` applies.
 6. **Direct public URLs are opt-in per group** and unsafe with active content
-   (`Mime\ActiveMediaTypes::SCRIPTABLE`: HTML, SVG, XML, XSLT, JS, feeds).
+   (`Mime\ActiveMediaTypes` scriptable tier: HTML, SVG, XML and any `+xml`, XSLT,
+   JS, feeds; plus the application's `activeMediaTypes.extra`).
    `filestorage:check` fails on that combination, and for every group when a
    publicly readable store is registered (`Store\PubliclyReadableStoreInterface::isPubliclyReadable()`
    true — `PublicFileSystemStore` always; it serves by path regardless of the flag).
-   Active types are stored as `.bin` and always delivered as `attachment`.
+   Active types are stored as `.bin` and always delivered as `attachment`
+   (PDF too, unless `activeMediaTypes.allowInline` lets it out). One configured
+   instance: bound in DI, carried by `DeliveryPolicyRegistry`.
+   A deduplicated object on a public store is addressed by the SHA-256 of its
+   bytes — anyone holding the same bytes computes its URL; keep private groups
+   out of such a store.
 7. **`add()` is all-or-nothing per file.** There is no `addMany()`.
 8. **Capabilities are `instanceof` checks, not nullable methods** — except
    `StoreUrlProviderInterface`, whose methods return null because URL support
@@ -123,8 +129,10 @@ $upload->clientMediaTypeHint;        // diagnostics only — never authoritative
 `UPLOAD_ERR_FORM_SIZE` and `UploadFailedException` for any other non-OK code.
 A non-seekable stream is spooled to `php://temp` and throws
 `UploadTooLargeException` past the cap. `originalName` is normalised in every
-factory: control and bidi characters removed, invalid UTF-8 → U+FFFD, cut to
-255 characters keeping the extension; empty → `file`. Hand the `Upload` to `Storage`; do not
+factory: only the first 4 KiB (plus a plausible extension) is examined; control,
+bidi and other invisible format characters (ZWNJ/ZWJ kept) and U+2028/2029
+removed, invalid UTF-8 → U+FFFD, cut to 255 characters keeping the extension;
+empty → `file`. Hand the `Upload` to `Storage`; do not
 call `moveTo()` yourself, it invalidates the stream.
 
 ### Stores
@@ -171,6 +179,8 @@ those subtrees — a write outside them is a `StoreException`. **The root belong
 to the store**: under a shared web root, set `ownedPrefixes`.
 `putIfAbsent()` stages under a random `.part` and publishes with `link()`
 (put-if-absent); reuse needs equal size, and `maxBytes` applies to reuse too.
+Both local stores implement `Store\AbandonedPartialsInterface::sweepAbandonedPartials(DateTimeImmutable $modifiedBefore, bool $apply, int $limit): list<string>`
+— removes `.part` leftovers of crashed writes (what `gc --orphans` calls).
 `Store\FileSystem\PublicFileSystemStore(FileSystemStore $store, string $baseUrl, ?string $webRoot = null)`
 (the above plus public URLs; `temporaryUrl()` is always null — a web server has
 no signature to check; `webRoot` given → a quarantine under it is
@@ -186,7 +196,8 @@ Built by core from the one `StoreInterface` a backend binds.
 `StoredObject(StoredObjectId $id, ?DateTimeImmutable $lastModified = null, ?int $size = null)` —
 one inventory entry (path: `$id->relativePath`). Null time = never an orphan.
 `QuarantinedObject(string $token, list<StoredObjectId> $objects)` — token
-`<10-digit unix time>-<16 hex>`, `$quarantinedAt` from it; `newToken(DateTimeImmutable)`.
+`<10-digit unix time>-<16 hex>` (a per-process sequence, then random: one
+process's tokens sort in issue order), `$quarantinedAt` from it; `newToken(DateTimeImmutable)`.
 `Layout\ObjectSet::tree(StoredObjectId)` / `::siblings(?string $dir, string $base)` —
 what one deletion removes; `contains(string $path)`.
 
@@ -209,7 +220,7 @@ use Rasuvaeff\Yii3Filestorage\Store\Layout\LayoutCompatibility;
 
 LayoutCompatibility::contentKeysProblem(ContentAddressedKeyGeneratorInterface $keys, ObjectLayoutInterface $layout): ?string;
 LayoutCompatibility::assertContentKeys(ContentAddressedKeyGeneratorInterface $keys, StoreInterface $store): void; // InvalidConfigException
-LayoutCompatibility::pathsProblem(PathGeneratorInterface $paths, ObjectLayoutInterface $layout, StreamFactoryInterface $streams): ?string;
+LayoutCompatibility::pathsProblem(PathGeneratorInterface $paths, ObjectLayoutInterface $layout, StreamFactoryInterface $streams): ?string; // draws up to 4096 paths for two sharing a directory
 LayoutCompatibility::assertPaths(PathGeneratorInterface $paths, StoreInterface $store, StreamFactoryInterface $streams): void;
 // Does the generator keep the scope (tenant) in the key? One digest, two scopes; equal keys = problem.
 LayoutCompatibility::tenantProblem(ContentAddressedKeyGeneratorInterface $keys, string $firstScope = 'tenant-a', string $secondScope = 'tenant-b'): ?string; // equal scopes: InvalidArgumentException
@@ -306,7 +317,7 @@ interface PathGeneratorInterface {
 
 | Implementation | Layout |
 |---|---|
-| `RandomPathGenerator` | `<group>/<2 hex>/<2 hex>/<32 hex>/original.<ext>` |
+| `RandomPathGenerator(ExtensionMap $extensions = new ExtensionMap(), ?string $prefix = null)` | `<group>/<2 hex>/<2 hex>/<32 hex>/original.<ext>`; with `prefix: 'files'` → `files/<group>/…` (one `ownedPrefixes` entry for every group) |
 | `DatePathGenerator` | `<group>/<YYYY>/<MM>/<DD>/<uuidv7>/original.<ext>` |
 | `Sha256KeyGenerator` (`ContentAddressedKeyGeneratorInterface`) | `<scope>/<hash[0:2]>/<hash[2:4]>/<hash>/original` — no extension (the argument is ignored), dedup only |
 | `FlatSha256KeyGenerator(?string $prefix = null)` (`ContentAddressedKeyGeneratorInterface`) | `<scope>/<hash[0:2]>/<hash[2:4]>/<hash>.<ext>` — for `FlatSiblingLayout`. With `prefix: 'blobs'`: `blobs/ab/cd/<sha>.<ext>`, scope **ignored** (single-tenant only) |
@@ -320,11 +331,13 @@ the extension comes from the detected media type.
 interface MimeTypeDetectorInterface { public function detect(Upload $upload): ?string; }
 new FinfoMimeTypeDetector(int $sniffBytes = 4096);   // minimum 512
 new ExtensionMap(array $overrides = [], ?MimeTypesInterface $mimeTypes = null);
-$map->extensionFor(?string $mediaType): string;      // 'bin' when unknown, scriptable, or executable (ExtensionMap::INERT_EXTENSIONS); overrides win
+$map->extensionFor(?string $mediaType): string;      // 'bin' when unknown, scriptable (any +xml too), or executable (ExtensionMap::INERT_EXTENSIONS); overrides win, keys any case
 
 new ActiveMediaTypes(array $types = ActiveMediaTypes::DEFAULT);   // SCRIPTABLE + PLUGIN (pdf, flash)
 ActiveMediaTypes::withExtra(array $types): self;  ActiveMediaTypes::scriptable(): self;
-$active->contains(string $mediaType): bool;        // case- and parameter-insensitive
+ActiveMediaTypes::fromConfig(array $config): self; // ['extra' => [...], 'allowInline' => [plugin types only]] — what core DI binds
+$active->withoutPlugins(): self;                   // what check refuses on public URLs
+$active->contains(string $mediaType): bool;        // case- and parameter-insensitive; any `+xml` type is always active
 ```
 
 `symfony/mime` supplies the media-type ⇒ extension table. It is *not* used for
@@ -346,13 +359,19 @@ bind one explicitly, nothing auto-detects.
 ```php
 new UploadPolicy(array $allowedMimeTypes = [], int $maxBytes = 0, int $maxPixels = 40_000_000, bool $requireImageDimensions = false, ?ReferenceAuthority $referencesOwnedBy = null);
 $policy->assertAcceptable(Upload $upload, ?string $detectedMimeType): void;  // throws PolicyViolationException
-// maxPixels: JPEG walked marker by marker to its frame header; JPEG/PNG/GIF/WebP with
-// undeterminable dimensions are refused while maxPixels > 0; other formats only with requireImageDimensions
+// maxPixels: JPEG walked marker by marker (gaps skipped as libjpeg does), GIF block by block
+// (a frame outside the screen is undetermined), TIFF IFD by IFD; JPEG/PNG/GIF/WebP/TIFF with
+// undeterminable dimensions are refused while maxPixels > 0; other formats are measured from a
+// 256 KiB prefix and pass unmeasured unless requireImageDimensions
 
 new PolicyRegistry(array $policies);       PolicyRegistry::fromArray(array $params);
 new DeliveryPolicy(bool $allowDirectPublicUrl = false, bool $forceDownload = true);
-new DeliveryPolicyRegistry(array $policies); DeliveryPolicyRegistry::fromArray(array $params);
-DeliveryOptions::fromFile(File $file, DeliveryPolicy $policy): self;   // forceDownload is true for ActiveMediaTypes whatever the policy
+new DeliveryPolicyRegistry(array $policies = [], ?ActiveMediaTypes $activeMediaTypes = null);
+DeliveryPolicyRegistry::fromArray(array $params, ?ActiveMediaTypes $activeMediaTypes = null);
+$registry->activeMediaTypes(): ActiveMediaTypes;  // the configured list
+$registry->optionsFor(File $file): DeliveryOptions; $registry->optionsForVariant(File $file, DerivativeDescriptor $d): DeliveryOptions;
+DeliveryOptions::fromFile(File $file, DeliveryPolicy $policy, ?ActiveMediaTypes $active = null): self;   // forceDownload true for active types whatever the policy
+DeliveryOptions::forVariant(File $file, DeliveryPolicy $policy, DerivativeDescriptor $d, ?ActiveMediaTypes $active = null): self;
 ```
 
 Key `'*'` is the fallback group in both registries. `fromArray()` reads
@@ -416,7 +435,7 @@ No clock double ships here. Everything takes a PSR-20 clock; use
 
 | Class | Command | Does |
 |---|---|---|
-| `Command\CheckCommand` | `filestorage:check` | Wiring, per-store layout and capabilities, tenancy, per-group rules. Non-zero on an unsafe delivery combination, on a bound `FileScopeProviderInterface` with no `ScopedFileResolverInterface`, or on a path generator — or a content-key generator on the default store (other stores: warning) — its store's layout cannot delete one by one (`LayoutCompatibility`; unbound content keys = `Sha256KeyGenerator`). Treats every group as reachable through a store whose `isPubliclyReadable()` is true (capability `public`). Warns: `PublicFileSystemStore` without `ownedPrefixes` or `webRoot`; content-key generator ignoring the tenant (`LayoutCompatibility::tenantProblem()`) while a scope provider is bound; application-owned group with no `ReferenceCheckerInterface` |
+| `Command\CheckCommand` | `filestorage:check` | Wiring, per-store layout and capabilities, tenancy, per-group rules. Non-zero on an unsafe delivery combination (the configured active list minus the plugin tier), on a bound `FileScopeProviderInterface` with no `ScopedFileResolverInterface`, or on a path generator its store's layout cannot delete one by one (`LayoutCompatibility`). A content-key generator the layout cannot delete one by one is a warning on every store (unbound = `Sha256KeyGenerator`; `-db`'s factory refuses the pair it builds). Treats every group as reachable through a store whose `isPubliclyReadable()` is true (capability `public`). Warns: `PublicFileSystemStore` without `ownedPrefixes` or `webRoot`; content-key generator ignoring the tenant (`LayoutCompatibility::tenantProblem()`) while a scope provider is bound; application-owned group with no `ReferenceCheckerInterface` |
 | `Command\StatCommand` | `filestorage:stat` | Counts and sizes by group, plus what sharing saved. Physical figures withheld under tenancy. `--limit`/`--after`, JSON `nextCursor`, `windowed` (sharing counted within the window only) |
 | `Command\VerifyCommand` | `filestorage:verify` | Rows whose object is missing. `--deep` re-reads and compares the hash: `corrupt` (wrong bytes or length), `unreadable` (read stopped before EOF; JSON `unreadable`). Non-zero on any finding |
 | `Command\BackfillHashCommand` | `filestorage:backfill-hash` | Fills `contentHash` on rows written before hashing was on; never from a read cut short or of the wrong length |
@@ -443,9 +462,13 @@ Rules:
    (put-if-absent) when the ledger refuses, so a collector paused past its lease
    cannot destroy bytes a writer re-published. Each run first sweeps the
    quarantines: an entry the ledger still knows is restored (unless another
-   collector holds a live lease), anything else is purged after `--retention`
-   (default `P7D`) — unless a row (matched via the layout) or the
-   `ReferenceCheckerInterface` references it again, then it is restored. One
+   collector holds a live lease); every other entry is checked against the rows
+   (matched via the layout) and the `ReferenceCheckerInterface` on every run and
+   restored at once when referenced (a release interrupted before its row was
+   deleted is undone by the next run), otherwise purged after `--retention`
+   (default `P7D`). Under a bound scope provider such an entry is never purged
+   (warning). A ledger implementing `Store\BlobLedgerBatchLookupInterface`
+   (`findMany(list<BlobId>): array<key, BlobRecord>`) is asked once per page. One
    failing entry is skipped and counted (`quarantine.failed`); a failed restore
    is a warning, not the end of the run; a failed quarantine rolls back what it
    moved. Committed blob deletions are purged at once. Intervals come from params
@@ -458,8 +481,11 @@ Rules:
    (`MaintenanceRepositoryInterface::referencedPaths(storeName, directories)`),
    and an object is a candidate only when older than `--min-age` (default `PT1H`)
    from that moment; an object with no timestamp never is. Orphans go to the
-   quarantine for `--retention`. The cursor is per store: cron one sweep per
-   `--store`. A `--limit` used up before the sweep → `orphanSweepSkipped: true`.
+   quarantine for `--retention` (an emptied `DirectoryLayout` key directory is
+   removed). Once a store's walk is complete, `.part` files not written to for
+   `--min-age` are removed (JSON `abandonedPartials`). The cursor is per store:
+   cron one sweep per `--store`. A `--limit` used up before the sweep →
+   `orphanSweepSkipped: true`.
 6. **`gc --orphans` refuses when a `FileScopeProviderInterface` is bound.** The
    referenced-set is tenant-filtered, the object listing is physical — the
    difference is other tenants' live files. Run the sweep with the provider
@@ -495,6 +521,7 @@ Rules:
     'integrityHashMaxBytes' => 0,
     'defaultUrlTtl' => 'PT1H',
     'extensionOverrides' => [],
+    'activeMediaTypes' => ['extra' => [], 'allowInline' => []],
     'policies' => ['*' => ['maxBytes' => 20_971_520]],
     'delivery' => ['*' => ['allowDirectPublicUrl' => false, 'forceDownload' => true]],
 ],
@@ -502,7 +529,7 @@ Rules:
 
 Core `config/di.php` binds `Storage`, `StorageInterface`, `StoreRegistry`,
 `PathGeneratorInterface`, `MimeTypeDetectorInterface`, `IdGeneratorInterface`,
-`ExtensionMap`, both policy registries and all six commands. It binds neither
+`ExtensionMap`, `ActiveMediaTypes`, both policy registries and all six commands. It binds neither
 `StoreInterface` nor `RepositoryInterface` — one vendor package owns each key,
 and two binding the same one is a `yiisoft/config` `Duplicate key` error by design.
 

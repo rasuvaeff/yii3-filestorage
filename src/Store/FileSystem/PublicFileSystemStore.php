@@ -47,6 +47,12 @@ use Rasuvaeff\Yii3Filestorage\Upload;
  * generators is there to prevent — but "unguessable" is not "access
  * controlled", and only the application knows whether that is enough.
  *
+ * A deduplicated object is the exception: its key is the SHA-256 of its bytes
+ * (`blobs/ab/cd/<sha>.<ext>`), so anyone who holds the same bytes computes
+ * its URL, learns whether the site stores them and can fetch them. Keep
+ * groups whose files are private out of a content-addressed public store
+ * (review 1.0 pass 2, maintenance N3).
+ *
  * @api
  */
 final readonly class PublicFileSystemStore implements

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Filestorage\Tests\Policy;
 
 use Nyholm\Psr7\Factory\Psr17Factory;
+use Rasuvaeff\Yii3Filestorage\Policy\GifReader;
 use Rasuvaeff\Yii3Filestorage\Policy\ImageDimensions;
 use Rasuvaeff\Yii3Filestorage\Stream\StreamReader;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\Gif;
@@ -25,6 +26,7 @@ use Testo\Test;
  */
 #[Test]
 #[Covers(ImageDimensions::class)]
+#[Covers(GifReader::class)]
 #[Covers(StreamReader::class)]
 final class ImageDimensionsTest
 {

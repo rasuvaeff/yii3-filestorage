@@ -342,11 +342,18 @@ try {
 
 **Pixel limit.** `maxPixels` (40 M by default) is read from the image header;
 pixels are never decoded. A JPEG is walked marker by marker to its frame
-header, however much metadata (ICC, XMP, Photoshop) precedes it. A JPEG, PNG,
-GIF or WebP whose dimensions cannot be established is **refused** while
-`maxPixels > 0` — a hidden header is how a decompression bomb gets past a
-fixed window. Other raster formats the runtime may not parse (AVIF, HEIC) pass
-unmeasured unless `requireImageDimensions` is on.
+header, however much metadata (ICC, XMP, Photoshop) precedes it, and skips
+stray bytes between segments as libjpeg does. A GIF is walked block by block:
+every frame carries its own size, and one that does not fit inside the logical
+screen is refused — a 1×1 screen around an 8000×8000 frame is the GIF bomb. A
+TIFF is measured from its directory chain wherever the writer put it (the
+largest page counts; BigTIFF is not measured). A JPEG, PNG, GIF, WebP or TIFF
+whose dimensions cannot be established is **refused** while `maxPixels > 0` —
+a hidden header is how a decompression bomb gets past a fixed window. Every
+other raster format (AVIF, HEIC, BMP, ICO…) is measured from its first 256 KiB
+only, and passes unmeasured when its size is not found there, unless
+`requireImageDimensions` is on — set it, or an allow-list without such
+formats, on groups whose files reach an image decoder.
 
 **References the application owns.** By default a `File` row *is* the
 reference: it lives until the application removes it
@@ -387,7 +394,8 @@ text in the meantime keeps its bytes.
 | `maxInlineBytes` | 8 MiB | Cap enforced by `content()` |
 | `integrityHashMaxBytes` | `0` | `0` leaves `contentHash` null; a positive value opts into a bounded SHA-256 |
 | `defaultUrlTtl` | `PT1H` | Expiry `urlFor()` uses when none is given |
-| `extensionOverrides` | `[]` | Media type ⇒ extension, over the `symfony/mime` table. Active and executable types (HTML, SVG, XML, JS, scripts, executables) are stored as `.bin` unless overridden here |
+| `extensionOverrides` | `[]` | Media type ⇒ extension, over the `symfony/mime` table; keys in any case. Active and executable types (HTML, SVG, XML and every `+xml` type, JS, scripts, executables) are stored as `.bin` unless overridden here |
+| `activeMediaTypes` | `['extra' => [], 'allowInline' => []]` | The family's one active-content list (`Mime\ActiveMediaTypes`, bound in DI). `extra` adds types; `allowInline` lets plugin-tier types (`application/pdf`) out, so a group with `forceDownload => false` shows them inline — on the proxy and on a presigned URL alike. A scriptable type cannot be let out |
 | `policies` | `['*' => …]` | Per-group accept rules and `referencesOwnedBy` |
 | `delivery` | `['*' => …]` | Per-group delivery rules |
 | `gc` | `leaseTtl` `PT5M`, `gracePeriod` `PT1H`, `retention` `P7D` | `filestorage:gc` intervals (ISO 8601, strictly positive): blob lease, the wait of a released blob and default `--min-age` (keep it ≥ `-db`'s `deleteGracePeriod`), default `--retention` |
@@ -447,10 +455,13 @@ places, and a mismatch deletes other files' bytes: flat keys
 (`FlatSha256KeyGenerator`) under the default `DirectoryLayout` made deleting one
 blob delete its whole `ab/cd/` bucket. `DirectoryLayout` now refuses any file not
 named `original` / `original.<ext>` (a store reports that as `StoreException`), and `Store\Layout\LayoutCompatibility`
-checks a pair behaviourally — it generates two keys that differ only after the
-fan-out prefix and asks the layout what deleting each removes and where each
-one's derivative goes. Call it wherever a generator meets a store; `-db`'s
-factory and `filestorage:check` do:
+checks a pair behaviourally — it takes two keys that share a directory and asks
+the layout what deleting each removes and where each one's derivative goes.
+Content keys share the fan-out prefix by construction; for a path generator it
+draws up to 4096 paths looking for two in one directory, and probes the first
+two when there are none (a key directory per file). A layout that misbehaves
+only for shapes the generator rarely emits can still pass. Call it wherever a
+generator meets a store; `-db`'s factory and `filestorage:check` do:
 
 ```php
 use Rasuvaeff\Yii3Filestorage\Store\Layout\LayoutCompatibility;
@@ -530,8 +541,12 @@ A root that is also a web root usually holds the application's own files.
 without a row as an orphan. Hidden entries (`.htaccess`, `.well-known/`) are
 never listed; anything else the application keeps there must be excluded with
 `ownedPrefixes` — the inventory is then those subtrees only, and a write outside
-them is refused. `webRoot` lets `PublicFileSystemStore` refuse a quarantine
-inside the document root (the inner store can only check its own root):
+them is refused. Listing group names there works until a group is named like
+one of the application's directories; `RandomPathGenerator(prefix: 'files')`
+puts every group under one subtree (`files/<group>/ab/cd/<key>/original.<ext>`),
+so `ownedPrefixes: ['blobs', 'files']` covers every write. `webRoot` lets
+`PublicFileSystemStore` refuse a quarantine inside the document root (the inner
+store can only check its own root):
 
 ```php
 new PublicFileSystemStore(
@@ -541,11 +556,15 @@ new PublicFileSystemStore(
         streamFactory: $streams,
         quarantinePath: '/app/runtime/uploads-quarantine',
         layout: new FlatSiblingLayout(),
-        ownedPrefixes: ['blobs', 'avatars'],
+        ownedPrefixes: ['blobs', 'files'],
     ),
     baseUrl: '/uploads',
     webRoot: '/app/public',
 );
+
+// and, in the application's DI, the prefixed path generator:
+PathGeneratorInterface::class => static fn (ExtensionMap $extensions): PathGeneratorInterface
+    => new RandomPathGenerator($extensions, prefix: 'files'),
 ```
 
 **Token format.** `v1.<key-id>.<expires>.<base64url payload>.<base64url hmac>`,
@@ -650,10 +669,11 @@ Assert::same($store->bytesAt($file->relativePath), 'hello');
 |---|---|
 | Media type | Only `finfo` output is authoritative. The client-supplied type is kept for diagnostics and never reaches a policy, a path, or a response header |
 | Paths | Always generated, never taken from a request. `StoredObjectId` rejects `..`, NUL, backslashes and absolute paths; local stores re-check containment with `realpath()` after resolving, so a planted symlink cannot read outside the root |
-| Original filename | Metadata only. It never enters a path; `Upload` removes control and bidi characters and cuts it to 255 characters |
+| Original filename | Metadata only. It never enters a path; `Upload` looks at its first 4 KiB only (plus the extension), removes control characters, bidi and other invisible format characters (except the zero-width joiner and non-joiner) and line/paragraph separators, and cuts it to 255 characters |
 | Ingress size | A non-seekable upload is spooled with a finite cap; stores enforce the group's `maxBytes` *while copying* and remove partial output |
-| Decompression bombs | `maxPixels` is checked from the image header; JPEG is walked marker by marker, so metadata padding cannot hide the frame header. A JPEG/PNG/GIF/WebP whose dimensions cannot be established is refused. Pixels are never decoded |
-| Active content | One list, `Mime\ActiveMediaTypes` (scriptable tier: HTML, XHTML, SVG, XML, XSLT, MathML, JavaScript, RSS/Atom; plugin tier: PDF, Flash). `DeliveryOptions` forces `attachment` for all of them, so a presigned URL never serves them inline; `ExtensionMap` stores them as `.bin` |
+| Decompression bombs | `maxPixels` is checked from the image header; JPEG is walked marker by marker, so metadata padding cannot hide the frame header; a GIF frame larger than its screen is refused; a TIFF directory is found wherever it sits. A JPEG/PNG/GIF/WebP/TIFF whose dimensions cannot be established is refused; other formats are measured from a 256 KiB prefix only. Pixels are never decoded |
+| Active content | One list, `Mime\ActiveMediaTypes` (scriptable tier: HTML, XHTML, SVG, XML and any `+xml` type, XSLT, MathML, JavaScript, RSS/Atom; plugin tier: PDF, Flash), one instance configured by the `activeMediaTypes` parameter. `DeliveryPolicyRegistry` carries it, so `DeliveryOptions` forces `attachment` for all of them and a presigned URL never serves them inline; `check` refuses all but the plugin tier on public URLs; `ExtensionMap` stores scriptable types as `.bin` |
+| Content-addressed public paths | A deduplicated object's key is the SHA-256 of its bytes (`blobs/ab/cd/<sha>.<ext>`). On a public store anyone holding the same bytes can compute the URL and learn whether the site stores them — and fetch them. Random keys (128 bits) are not guessable; content keys are guessable by design. Keep groups whose files are private out of a content-addressed public store |
 | Direct public URLs | Off by default. `filestorage:check` **fails** when a group combines them with a permissive or scriptable allow-list — and when a publicly readable store is registered, for every group, since it serves objects by path whatever `allowDirectPublicUrl` says. A store says so through `Store\PubliclyReadableStoreInterface::isPubliclyReadable()`: `PublicFileSystemStore` always, a bucket store when configured as public (answering `publicUrl()` is not enough — an S3 adapter builds object URLs for private buckets too) |
 | Signed URLs | HMAC-SHA256 over version, key id, expiry and canonical payload; strict length and schema checks; `hash_equals()`; key-ring rotation; keys shorter than 32 bytes are a configuration error |
 | Deduplication | Ownership is a physical `BlobId`, never a hash count — a hash is content identity and says nothing about who owns the bytes |
@@ -672,11 +692,11 @@ re-encode if the files will be served publicly.
 
 | Command | Does |
 |---|---|
-| `filestorage:check` | Reports wiring, per-store layout and capabilities, tenancy and per-group rules; fails on an unsafe delivery combination, on tenant mode with no scoped resolver, and on a path generator — or a content-key generator on the default store — that the store's layout cannot delete one by one (other stores: a warning); warns about a `PublicFileSystemStore` owning its whole root or with no `webRoot`, about a content-key generator that ignores the tenant while a scope provider is bound, and about an application-owned group with no reference checker. Stores that are publicly readable list the `public` capability |
+| `filestorage:check` | Reports wiring, per-store layout and capabilities, tenancy and per-group rules; fails on an unsafe delivery combination, on tenant mode with no scoped resolver, and on a path generator that the store's layout cannot delete one by one; warns about a content-key generator the layout cannot delete one by one (on every store: only `-db` knows which store deduplication writes to, and its factory refuses the pair); warns about a `PublicFileSystemStore` owning its whole root or with no `webRoot`, about a content-key generator that ignores the tenant while a scope provider is bound, and about an application-owned group with no reference checker. Stores that are publicly readable list the `public` capability |
 | `filestorage:stat` | Counts and sizes by group, plus how much sharing has saved (physical figures withheld under tenancy) |
 | `filestorage:verify` | Reports rows whose object is missing; `--deep` re-reads each one and compares its hash — `corrupt` for wrong bytes or length, `unreadable` for a read cut short before EOF |
 | `filestorage:backfill-hash` | Fills in `contentHash` on rows written before integrity hashing was on; a read cut short, or one whose length differs from the row, writes nothing |
-| `filestorage:gc` | Collects unreferenced shared blobs, and with `--orphans` sweeps objects no row points at |
+| `filestorage:gc` | Collects unreferenced shared blobs, and with `--orphans` sweeps objects no row points at and the `.part` files crashed writes left |
 | `filestorage:import <dir>` | Ingests a directory tree through the ordinary write path, skipping what a manifest says is already imported |
 
 `gc`, `backfill-hash` and the `-db` package's `deduplicate` **report by default
@@ -740,11 +760,21 @@ finishing what earlier runs left there. Without a quarantine
 | An orphan is a candidate only when it is older than `--min-age` (default `PT1H`) *measured from the moment its page's rows were looked up*, and an object without a timestamp never is | An upload between publishing its bytes and saving its row, or committed while the walk was elsewhere, used to lose its bytes. `--orphans --apply` no longer needs uploads stopped, as long as publication-to-row stays under `--min-age` |
 | Orphans and released application-owned files stay in the quarantine for `--retention` (default `P7D`); blob deletions the ledger committed are purged at once | A mistaken sweep is reversible for a week. The quarantine must be outside anything the web server serves: the store checks its root, `PublicFileSystemStore(webRoot:)` the document root |
 | An entry the ledger still knows is put back, unless another collector holds a live lease on it | Recovery of a collector that crashed between the two phases |
-| Before an entry is purged, rows (matched through the layout) and the `ReferenceCheckerInterface` are asked again; a referenced entry is restored with a warning | A file released by mistake — a URL put back into a text after the checker's index was built — must not be purged while its bytes are still there |
-| One entry that cannot be restored or purged is skipped and counted (JSON `quarantine.failed`); a failed restore after a refused commit is a warning, and the next run restores it | One bad entry used to stop the whole quarantine on every run, and one failed restore ended the run |
+| Every other entry is checked against the rows (matched through the layout) and the `ReferenceCheckerInterface` on every run, whatever its age; a referenced entry is restored at once, with a warning | A release interrupted between quarantine and row deletion leaves a live row over quarantined bytes — the next run gives them back (and, if nothing references the file, finishes the release); a file released by mistake comes back as soon as it is referenced again |
+| Under a bound `FileScopeProviderInterface` a quarantine entry is restored when a row matches but never purged (warning) | The rows are one tenant's: a miss proves nothing. Purge from an entry point that leaves the provider unbound |
+| One entry that cannot be restored or purged is skipped and counted (JSON `quarantine.failed`); a failed restore after a refused commit or a failed row deletion is a warning, and the next run restores it — the ledger or the row still points at it | One bad entry used to stop the whole quarantine on every run, and one failed restore ended the run |
 | A quarantine that fails half-way puts back what it already moved | A row whose original was half-quarantined would have lost it to the retention |
 | The orphan inventory never contains hidden entries, and only the `ownedPrefixes` subtrees when the store declares them | The root of a public store is often shared with the application's own files |
 | A key the layout refuses is kept and warned about, never deleted with its directory | A flat key under `DirectoryLayout` used to take its whole fan-out bucket with it |
+| Quarantining an orphan removes its emptied key directory (`DirectoryLayout`), never a fan-out directory | One empty `<group>/ab/cd/<key>/` was left per swept orphan |
+| With `--orphans`, once the walk of a store is complete, `.part` files not written to for `--min-age` are removed outright (JSON `abandonedPartials`), within `--limit` | A crash mid-write left them for good — no listing saw them, and a public root served them. Stores opt in through `Store\AbandonedPartialsInterface`; both local stores do |
+
+**Cost.** Every run reads the whole quarantine: per page of 500 entries, one row
+lookup, one checker call and one ledger lookup — one call when the ledger
+implements `Store\BlobLedgerBatchLookupInterface` (`Test\MemoryBlobLedger` does),
+otherwise one per object. After `deduplicate --apply` and `gc --orphans --apply`
+the quarantine holds an entry per object for the whole retention, so a
+per-object ledger is that many queries per run.
 
 To undo a mistaken sweep by hand within the retention, move the objects back
 from `<quarantinePath>/<token>/<relative path>` to `<rootPath>/<relative path>`;
