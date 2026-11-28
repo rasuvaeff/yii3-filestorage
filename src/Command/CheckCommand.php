@@ -83,8 +83,9 @@ final class CheckCommand extends Command
         // Formats that execute as the origin. A permanent public URL cannot be
         // combined with any of them, because nothing on that path can force a
         // download or send `X-Content-Type-Options`. The plugin tier (PDF) is
-        // not refused: a public PDF is a legitimate publication.
-        $this->activeTypes = ActiveMediaTypes::scriptable();
+        // not refused: a public PDF is a legitimate publication. The configured
+        // list, so an application's extra types count too (review 1.0 pass 2, N4).
+        $this->activeTypes = $deliveryPolicies->activeMediaTypes()->withoutPlugins();
     }
 
     #[Override]

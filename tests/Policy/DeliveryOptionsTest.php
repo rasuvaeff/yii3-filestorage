@@ -6,6 +6,7 @@ namespace Rasuvaeff\Yii3Filestorage\Tests\Policy;
 
 use DateTimeImmutable;
 use Rasuvaeff\Yii3Filestorage\File;
+use Rasuvaeff\Yii3Filestorage\Mime\ActiveMediaTypes;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryOptions;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicy;
 use Rasuvaeff\Yii3Filestorage\Store\DerivativeDescriptor;
@@ -163,6 +164,33 @@ final class DeliveryOptionsTest
         );
 
         Assert::true($options->forceDownload);
+    }
+
+    /**
+     * Review 1.0 pass 2, N4: the list was built inside, so neither an
+     * application's extra types nor a PDF the operator lets out reached a
+     * presigned URL. The configured list is passed in.
+     */
+    public function theConfiguredListDecidesWhatIsActive(): void
+    {
+        $inline = new DeliveryPolicy(forceDownload: false);
+        $types = ActiveMediaTypes::fromConfig(['extra' => ['application/x-custom'], 'allowInline' => ['application/pdf']]);
+
+        Assert::false(DeliveryOptions::fromFile($this->file(mimeType: 'application/pdf'), $inline, $types)->forceDownload);
+        Assert::true(DeliveryOptions::fromFile($this->file(mimeType: 'application/x-custom'), $inline, $types)->forceDownload);
+        Assert::true(DeliveryOptions::fromFile($this->file(mimeType: 'image/svg+xml'), $inline, $types)->forceDownload);
+        Assert::true(DeliveryOptions::forVariant(
+            $this->file(),
+            $inline,
+            new DerivativeDescriptor('custom', 'cst', 'application/x-custom'),
+            $types,
+        )->forceDownload);
+        Assert::false(DeliveryOptions::forVariant(
+            $this->file(),
+            $inline,
+            new DerivativeDescriptor('print', 'pdf', 'application/pdf'),
+            $types,
+        )->forceDownload);
     }
 
     public function inertContentKeepsThePolicysInlineChoice(): void

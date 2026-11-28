@@ -19,6 +19,7 @@ use Rasuvaeff\Yii3Filestorage\Command\StatCommand;
 use Rasuvaeff\Yii3Filestorage\Command\VerifyCommand;
 use Rasuvaeff\Yii3Filestorage\Id\IdGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Id\Uuid7IdGenerator;
+use Rasuvaeff\Yii3Filestorage\Mime\ActiveMediaTypes;
 use Rasuvaeff\Yii3Filestorage\Mime\ExtensionMap;
 use Rasuvaeff\Yii3Filestorage\Mime\FinfoMimeTypeDetector;
 use Rasuvaeff\Yii3Filestorage\Mime\MimeTypeDetectorInterface;
@@ -38,12 +39,14 @@ use Rasuvaeff\Yii3Filestorage\Test\InMemoryStore;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryBlobLedger;
 use Rasuvaeff\Yii3Filestorage\Test\MemoryRepository;
 use Rasuvaeff\Yii3Filestorage\Tests\Support\CountingStorage;
+use Rasuvaeff\Yii3Filestorage\Tests\Support\RecordingUrlStore;
 use Rasuvaeff\Yii3Filestorage\Upload;
 use Rasuvaeff\Yii3Filestorage\Url\ProxyUrlGeneratorInterface;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
 use Testo\Assert;
 use Testo\Codecov\CoversNothing;
+use Testo\Data\DataProvider;
 use Testo\Test;
 use Yiisoft\Di\Container;
 use Yiisoft\Di\ContainerConfig;
@@ -204,6 +207,54 @@ final class ConfigWiringTest
     }
 
     /**
+     * Review 1.0 pass 2, N4: one instance of the active-content list, built
+     * from params, shared by everything that decides a disposition — the
+     * delivery registry here, `-web` and a presigning store through the
+     * container.
+     */
+    public function theActiveListIsOneInstanceBuiltFromParams(): void
+    {
+        $params = $this->params();
+        $params['rasuvaeff/yii3-filestorage']['activeMediaTypes'] = ['extra' => ['application/x-custom'], 'allowInline' => []];
+        $container = $this->container(params: $params);
+
+        $types = $container->get(ActiveMediaTypes::class);
+        Assert::true($types->contains('application/x-custom'));
+        Assert::same($container->get(DeliveryPolicyRegistry::class)->activeMediaTypes(), $types);
+    }
+
+    /**
+     * The PDF opt-out reaches a presigned URL: the disposition the store is
+     * asked to sign follows the group's policy once PDF is let out, and is
+     * `attachment` by default.
+     */
+    #[DataProvider('pdfDispositionProvider')]
+    public function thePdfOptOutReachesThePresignedUrl(array $allowInline, bool $attachment): void
+    {
+        $params = $this->params();
+        $params['rasuvaeff/yii3-filestorage']['activeMediaTypes']['allowInline'] = $allowInline;
+        $params['rasuvaeff/yii3-filestorage']['delivery']['*']['forceDownload'] = false;
+        $store = new RecordingUrlStore(new InMemoryStore('memory', new Psr17Factory()));
+        $storage = $this->container([StoreInterface::class => $store], $params)->get(StorageInterface::class);
+        $factory = new Psr17Factory();
+        $file = $storage->add(Upload::fromStream($factory->createStream("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"), 'a.pdf', $factory));
+        Assert::same($file->mimeType, 'application/pdf');
+
+        $storage->temporaryUrl($file, new DateTimeImmutable('2026-01-01T01:00:00+00:00'));
+
+        Assert::same($store->lastOptions?->forceDownload, $attachment);
+    }
+
+    /**
+     * @return iterable<string, array{list<string>, bool}>
+     */
+    public static function pdfDispositionProvider(): iterable
+    {
+        yield 'shipped: PDF is an attachment' => [[], true];
+        yield 'let out: the group decides' => [['application/pdf'], false];
+    }
+
+    /**
      * The one-source rule. Core binding either of these would make a backend
      * package binding it too a `yiisoft/config` `Duplicate key` error — which
      * is by design, and only works if core stays out of the way.
@@ -234,6 +285,7 @@ final class ConfigWiringTest
             'policies',
             'delivery',
             'gc',
+            'activeMediaTypes',
         ] as $key) {
             Assert::true(\array_key_exists($key, $own), "params is missing \"{$key}\"");
         }

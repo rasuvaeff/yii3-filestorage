@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3Filestorage\Tests\Mime;
 
+use InvalidArgumentException;
 use Rasuvaeff\Yii3Filestorage\Mime\ActiveMediaTypes;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Data\DataProvider;
+use Testo\Expect;
 use Testo\Test;
 
 /**
@@ -131,5 +133,63 @@ final class ActiveMediaTypesTest
         foreach (['application/ld+json', 'application/epub+zip', 'application/xml-dtd', 'text/xmlish', 'application/+xml'] as $type) {
             Assert::false((new ActiveMediaTypes())->contains($type), $type);
         }
+    }
+
+    /**
+     * Review 1.0 pass 2, N4: one configured list for the whole family. The
+     * application's extras join the defaults; the plugin tier is the only one
+     * that can be let out.
+     */
+    public function fromConfigAddsExtrasAndLetsPluginTypesOut(): void
+    {
+        $types = ActiveMediaTypes::fromConfig(['extra' => ['application/x-custom'], 'allowInline' => ['Application/PDF']]);
+
+        Assert::true($types->contains('application/x-custom'));
+        Assert::true($types->contains('text/html'));
+        Assert::true($types->contains('application/x-shockwave-flash'));
+        Assert::false($types->contains('application/pdf'));
+    }
+
+    public function anEmptyConfigIsTheDefaultList(): void
+    {
+        Assert::same(ActiveMediaTypes::fromConfig([])->types(), (new ActiveMediaTypes())->types());
+        Assert::same(ActiveMediaTypes::fromConfig(['extra' => [], 'allowInline' => []])->types(), (new ActiveMediaTypes())->types());
+    }
+
+    /**
+     * @return iterable<string, array{array<array-key, mixed>, string}>
+     */
+    public static function invalidConfigProvider(): iterable
+    {
+        yield 'a scriptable type let out' => [['allowInline' => ['image/svg+xml']], 'Only plugin types can be served inline; "image/svg+xml" is not one of application/pdf, application/x-shockwave-flash'];
+        yield 'an unknown key' => [['extras' => []], 'Unknown activeMediaTypes option "extras". Known options: extra, allowInline'];
+        yield 'extra not a list of strings' => [['extra' => 'text/x-foo'], 'activeMediaTypes "extra" must be a list of non-empty strings'];
+        yield 'an empty extra' => [['extra' => ['']], 'activeMediaTypes "extra" must be a list of non-empty strings'];
+        yield 'allowInline not a list' => [['allowInline' => [1]], 'activeMediaTypes "allowInline" must be a list of non-empty strings'];
+    }
+
+    /**
+     * @param array<array-key, mixed> $config
+     */
+    #[DataProvider('invalidConfigProvider')]
+    public function fromConfigRejectsWhatItCannotHonour(array $config, string $message): void
+    {
+        Expect::exception(InvalidArgumentException::class)->withMessageContaining($message);
+
+        ActiveMediaTypes::fromConfig($config);
+    }
+
+    /**
+     * What `check` refuses on public URLs: everything active except the
+     * plugin tier — an application's extras included.
+     */
+    public function withoutPluginsKeepsTheExtras(): void
+    {
+        $types = ActiveMediaTypes::withExtra(['application/x-custom'])->withoutPlugins();
+
+        Assert::true($types->contains('application/x-custom'));
+        Assert::true($types->contains('text/html'));
+        Assert::false($types->contains('application/pdf'));
+        Assert::false($types->contains('application/x-shockwave-flash'));
     }
 }

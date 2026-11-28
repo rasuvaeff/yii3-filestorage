@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3Filestorage\Mime;
 
+use InvalidArgumentException;
+
 /**
  * Media types a browser or a plugin will execute if you let it render them —
  * the one list for the whole family.
@@ -13,6 +15,12 @@ namespace Rasuvaeff\Yii3Filestorage\Mime;
  * refuses public delivery of these, the `-web` proxy forces them to
  * `attachment`, and a presigned URL must not serve them inline. Those used to
  * be separate lists that had already drifted apart (review 1.0 A5, C5).
+ *
+ * The *instance* is configured once: core's DI builds it from
+ * `params['rasuvaeff/yii3-filestorage']['activeMediaTypes']` through
+ * {@see self::fromConfig()}, and the delivery registry, `check`, `-web` and a
+ * presigning store take that one instance from the container (review 1.0
+ * pass 2, N4). Any `+xml` type is scriptable whatever the list says.
  *
  * Two tiers:
  *
@@ -56,6 +64,9 @@ final readonly class ActiveMediaTypes
 
     public const array DEFAULT = [...self::SCRIPTABLE, ...self::PLUGIN];
 
+    /** Everything {@see self::fromConfig()} understands. */
+    private const array OPTIONS = ['extra', 'allowInline'];
+
     /** @var list<lowercase-string> */
     private array $types;
 
@@ -81,6 +92,61 @@ final readonly class ActiveMediaTypes
     public static function scriptable(): self
     {
         return new self(self::SCRIPTABLE);
+    }
+
+    /**
+     * The family's configured list, from core's `params['activeMediaTypes']`
+     * (review 1.0 pass 2, N4): `extra` joins the defaults, `allowInline` lets
+     * plugin-tier types out — a group with `forceDownload: false` may then
+     * show a PDF in the browser's viewer. Only plugin types can be let out:
+     * a scriptable one inline is stored XSS, and a request for it is refused
+     * rather than honoured.
+     *
+     * @param array<array-key, mixed> $config
+     *
+     * @throws InvalidArgumentException
+     */
+    public static function fromConfig(array $config): self
+    {
+        foreach (array_keys($config) as $option) {
+            if (!\in_array($option, self::OPTIONS, strict: true)) {
+                throw new InvalidArgumentException(sprintf(
+                    'Unknown activeMediaTypes option "%s". Known options: %s',
+                    (string) $option,
+                    implode(', ', self::OPTIONS),
+                ));
+            }
+        }
+
+        $extra = self::listOption($config, 'extra');
+        $inline = array_map(static fn(string $type): string => strtolower(trim($type)), self::listOption($config, 'allowInline'));
+        foreach ($inline as $type) {
+            if (!\in_array($type, self::PLUGIN, strict: true)) {
+                throw new InvalidArgumentException(sprintf(
+                    'Only plugin types can be served inline; "%s" is not one of %s',
+                    $type,
+                    implode(', ', self::PLUGIN),
+                ));
+            }
+        }
+
+        return new self(array_values(array_filter(
+            [...self::DEFAULT, ...$extra],
+            static fn(string $type): bool => !\in_array(strtolower(trim($type)), $inline, strict: true),
+        )));
+    }
+
+    /**
+     * This list without the plugin tier: what must never reach a URL that
+     * cannot force a download. `filestorage:check` refuses these on public
+     * delivery, an application's extras included.
+     */
+    public function withoutPlugins(): self
+    {
+        return new self(array_values(array_filter(
+            $this->types,
+            static fn(string $type): bool => !\in_array($type, self::PLUGIN, strict: true),
+        )));
     }
 
     /**
@@ -112,6 +178,32 @@ final readonly class ActiveMediaTypes
     public function types(): array
     {
         return $this->types;
+    }
+
+    /**
+     * @param array<array-key, mixed> $config
+     *
+     * @return list<string>
+     *
+     * @throws InvalidArgumentException
+     */
+    private static function listOption(array $config, string $key): array
+    {
+        $value = $config[$key] ?? [];
+        if (!\is_array($value) || !array_is_list($value)) {
+            throw new InvalidArgumentException("activeMediaTypes \"{$key}\" must be a list of non-empty strings");
+        }
+
+        $types = [];
+        foreach ($value as $type) {
+            if (!\is_string($type) || trim($type) === '') {
+                throw new InvalidArgumentException("activeMediaTypes \"{$key}\" must be a list of non-empty strings");
+            }
+
+            $types[] = $type;
+        }
+
+        return $types;
     }
 
     /**

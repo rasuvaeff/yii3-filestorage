@@ -4,9 +4,13 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3Filestorage\Tests\Policy;
 
+use DateTimeImmutable;
 use InvalidArgumentException;
+use Rasuvaeff\Yii3Filestorage\File;
+use Rasuvaeff\Yii3Filestorage\Mime\ActiveMediaTypes;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicy;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicyRegistry;
+use Rasuvaeff\Yii3Filestorage\Store\DerivativeDescriptor;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Data\DataProvider;
@@ -136,5 +140,43 @@ final class DeliveryPolicyRegistryTest
         yield 'integer group name' => ['group names must be non-empty strings', [0 => []]];
         yield 'empty group name' => ['group names must be non-empty strings', ['' => []]];
         yield 'policy is not an array' => ['must be an array', ['g' => true]];
+    }
+
+    /**
+     * Review 1.0 pass 2, N4: the registry carries the one active-content list
+     * everything that builds `DeliveryOptions` from it uses.
+     */
+    public function theActiveListIsTheDefaultUnlessOneIsGiven(): void
+    {
+        $types = ActiveMediaTypes::fromConfig(['allowInline' => ['application/pdf']]);
+
+        Assert::same((new DeliveryPolicyRegistry())->activeMediaTypes()->types(), (new ActiveMediaTypes())->types());
+        Assert::same((new DeliveryPolicyRegistry([], $types))->activeMediaTypes(), $types);
+        Assert::same(DeliveryPolicyRegistry::fromArray([], $types)->activeMediaTypes(), $types);
+    }
+
+    public function optionsForAFileUseTheRegistrysListAndTheGroupsPolicy(): void
+    {
+        $registry = new DeliveryPolicyRegistry(
+            ['docs' => new DeliveryPolicy(forceDownload: false)],
+            ActiveMediaTypes::fromConfig(['allowInline' => ['application/pdf']]),
+        );
+        $file = File::create(
+            id: 'f-1',
+            storeName: 'upload',
+            groupName: 'docs',
+            relativePath: 'docs/a/b/key/original.pdf',
+            originalName: 'a.pdf',
+            size: 1,
+            createdAt: new DateTimeImmutable('2026-08-06T12:00:00.000000+00:00'),
+            mimeType: 'application/pdf',
+        );
+
+        Assert::false($registry->optionsFor($file)->forceDownload);
+        Assert::true((new DeliveryPolicyRegistry(['docs' => new DeliveryPolicy(forceDownload: false)]))->optionsFor($file)->forceDownload);
+        Assert::same(
+            $registry->optionsForVariant($file, new DerivativeDescriptor('page', 'webp', 'image/webp'))->downloadName,
+            'a.webp',
+        );
     }
 }

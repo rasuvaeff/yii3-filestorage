@@ -17,7 +17,6 @@ use Rasuvaeff\Yii3Filestorage\Exception\StoreException;
 use Rasuvaeff\Yii3Filestorage\Id\IdGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Mime\MimeTypeDetectorInterface;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
-use Rasuvaeff\Yii3Filestorage\Policy\DeliveryOptions;
 use Rasuvaeff\Yii3Filestorage\Policy\DeliveryPolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Policy\PolicyRegistry;
 use Rasuvaeff\Yii3Filestorage\Repository\RepositoryInterface;
@@ -241,10 +240,7 @@ final readonly class Storage implements StorageInterface
             ? $store->temporaryUrl(
                 file: $file,
                 expiresAt: $expiresAt,
-                options: DeliveryOptions::fromFile(
-                    file: $file,
-                    policy: $this->deliveryPolicies->for($file->groupName),
-                ),
+                options: $this->deliveryPolicies->optionsFor($file),
             )
             : null;
     }

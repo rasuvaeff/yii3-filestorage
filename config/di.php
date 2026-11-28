@@ -17,6 +17,7 @@ use Rasuvaeff\Yii3Filestorage\Repository\ScopedFileResolverInterface;
 use Rasuvaeff\Yii3Filestorage\Store\BlobLedgerInterface;
 use Rasuvaeff\Yii3Filestorage\Id\IdGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Id\Uuid7IdGenerator;
+use Rasuvaeff\Yii3Filestorage\Mime\ActiveMediaTypes;
 use Rasuvaeff\Yii3Filestorage\Mime\ExtensionMap;
 use Rasuvaeff\Yii3Filestorage\Mime\FinfoMimeTypeDetector;
 use Rasuvaeff\Yii3Filestorage\Mime\MimeTypeDetectorInterface;
@@ -56,8 +57,16 @@ return [
         $params['rasuvaeff/yii3-filestorage']['policies'],
     ),
 
-    DeliveryPolicyRegistry::class => static fn (): DeliveryPolicyRegistry => DeliveryPolicyRegistry::fromArray(
+    // One instance for the family: `-web`'s proxy and a presigning store take
+    // it from the container, the delivery registry carries it to the facade
+    // and to `check` (review 1.0 pass 2, N4).
+    ActiveMediaTypes::class => static fn (): ActiveMediaTypes => ActiveMediaTypes::fromConfig(
+        $params['rasuvaeff/yii3-filestorage']['activeMediaTypes'],
+    ),
+
+    DeliveryPolicyRegistry::class => static fn (ActiveMediaTypes $activeMediaTypes): DeliveryPolicyRegistry => DeliveryPolicyRegistry::fromArray(
         $params['rasuvaeff/yii3-filestorage']['delivery'],
+        $activeMediaTypes,
     ),
 
     // One store in, one registry out. An application that genuinely runs

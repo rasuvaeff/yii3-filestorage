@@ -17,8 +17,9 @@ use Rasuvaeff\Yii3Filestorage\Store\DerivativeDescriptor;
  * falls back to the proxy — a weaker URL is preferable to one that serves an
  * HTML file inline from your bucket.
  *
- * `forceDownload` is true for every {@see ActiveMediaTypes} type, whatever the
- * group's policy says.
+ * `forceDownload` is true for every type on the configured
+ * {@see ActiveMediaTypes} list, whatever the group's policy says. PDF is on it
+ * unless the application lets it out (`activeMediaTypes.allowInline`).
  *
  * @api
  */
@@ -36,7 +37,12 @@ final readonly class DeliveryOptions
      */
     private function __construct(public bool $forceDownload, public string $responseMediaType, public string $downloadName) {}
 
-    public static function fromFile(File $file, DeliveryPolicy $policy): self
+    /**
+     * @param ActiveMediaTypes|null $activeMediaTypes The configured list —
+     *        {@see DeliveryPolicyRegistry::activeMediaTypes()}; null is the
+     *        default list. Prefer {@see DeliveryPolicyRegistry::optionsFor()}.
+     */
+    public static function fromFile(File $file, DeliveryPolicy $policy, ?ActiveMediaTypes $activeMediaTypes = null): self
     {
         // A filename reaches a response header, and a header cannot contain a
         // line break without becoming two headers.
@@ -45,7 +51,7 @@ final readonly class DeliveryOptions
         $mediaType = $file->mimeType ?? self::DEFAULT_MEDIA_TYPE;
 
         return new self(
-            forceDownload: self::forceDownload($policy, $mediaType),
+            forceDownload: self::forceDownload($policy, $mediaType, $activeMediaTypes),
             responseMediaType: $mediaType,
             downloadName: $name === '' ? self::DEFAULT_DOWNLOAD_NAME : $name,
         );
@@ -57,13 +63,17 @@ final readonly class DeliveryOptions
      * the rendition itself — a WebP thumbnail of a JPEG upload is served as
      * WebP, under the original's name wearing the rendition's extension.
      */
-    public static function forVariant(File $file, DeliveryPolicy $policy, DerivativeDescriptor $derivative): self
-    {
+    public static function forVariant(
+        File $file,
+        DeliveryPolicy $policy,
+        DerivativeDescriptor $derivative,
+        ?ActiveMediaTypes $activeMediaTypes = null,
+    ): self {
         $name = str_replace(["\r", "\n", "\0"], '', $file->originalName);
         $base = pathinfo($name, PATHINFO_FILENAME);
 
         return new self(
-            forceDownload: self::forceDownload($policy, $derivative->mediaType),
+            forceDownload: self::forceDownload($policy, $derivative->mediaType, $activeMediaTypes),
             responseMediaType: $derivative->mediaType,
             downloadName: ($base === '' ? self::DEFAULT_DOWNLOAD_NAME : $base) . '.' . $derivative->extension,
         );
@@ -76,8 +86,8 @@ final readonly class DeliveryOptions
      * domain is stored XSS (review 1.0 A5), and `X-Content-Type-Options` cannot
      * be set on one.
      */
-    private static function forceDownload(DeliveryPolicy $policy, string $mediaType): bool
+    private static function forceDownload(DeliveryPolicy $policy, string $mediaType, ?ActiveMediaTypes $activeMediaTypes): bool
     {
-        return $policy->forceDownload || (new ActiveMediaTypes())->contains($mediaType);
+        return $policy->forceDownload || ($activeMediaTypes ?? new ActiveMediaTypes())->contains($mediaType);
     }
 }

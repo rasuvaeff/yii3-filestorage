@@ -8,6 +8,7 @@ use Nyholm\Psr7\Factory\Psr17Factory;
 use Override;
 use Rasuvaeff\Understudy\Understudy;
 use Rasuvaeff\Yii3Filestorage\Command\CheckCommand;
+use Rasuvaeff\Yii3Filestorage\Mime\ActiveMediaTypes;
 use Rasuvaeff\Yii3Filestorage\Path\ContentAddressedKeyGeneratorInterface;
 use Rasuvaeff\Yii3Filestorage\Path\FlatSha256KeyGenerator;
 use Rasuvaeff\Yii3Filestorage\Path\PathGeneratorInterface;
@@ -426,6 +427,30 @@ final class CheckCommandTest
         );
 
         Assert::same($tester->getStatusCode(), Command::SUCCESS);
+    }
+
+    /**
+     * Review 1.0 pass 2, N4: `check` read its own copy of the list, so a type
+     * the application declared active was still allowed on a public URL. It
+     * now asks the delivery registry — the configured list, minus plugins.
+     */
+    public function theConfiguredExtraTypesAreRefusedOnDirectPublicUrls(): void
+    {
+        $tester = $this->run(
+            policies: new PolicyRegistry([
+                'assets' => new UploadPolicy(allowedMimeTypes: ['image/png', 'application/x-custom', 'application/pdf']),
+            ]),
+            deliveryPolicies: new DeliveryPolicyRegistry(
+                ['assets' => new DeliveryPolicy(allowDirectPublicUrl: true)],
+                ActiveMediaTypes::withExtra(['application/x-custom']),
+            ),
+            knownGroups: ['assets'],
+        );
+
+        Assert::same($tester->getStatusCode(), Command::FAILURE);
+        Assert::string($this->flatten($tester->getDisplay()))->contains(
+            'Group "assets" allows direct public URLs and accepts application/x-custom.',
+        );
     }
 
     /**

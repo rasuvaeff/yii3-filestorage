@@ -16,6 +16,14 @@ return [
         'integrityHashMaxBytes' => 0,
         'defaultUrlTtl' => 'PT1H',
         'extensionOverrides' => [],
+        // The family's one active-content list (Mime\ActiveMediaTypes): what is
+        // never served inline and never allowed on a permanent public URL.
+        // extra: types to add. allowInline: plugin-tier types (application/pdf)
+        // a group with forceDownload => false may show inline.
+        'activeMediaTypes' => [
+            'extra' => [],
+            'allowInline' => [],
+        ],
         // Group name => ['allowedMimeTypes' => [...], 'maxBytes' => int,
         //                'maxPixels' => int, 'requireImageDimensions' => bool,
         //                'referencesOwnedBy' => 'rows' | 'application'].
