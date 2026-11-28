@@ -174,6 +174,32 @@ final class FileSystemStoreQuarantineTest
         Assert::true(is_file($this->root . '/banners/top.png.part'));
     }
 
+    /**
+     * "Oldest path first" is string order over the whole relative path, not
+     * the order a directory walk meets them: `a-b/` sorts before `a/`, though
+     * the directory `a` is listed first.
+     */
+    public function abandonedPartialsComeInPathOrderAndTheLimitTakesTheFirst(): void
+    {
+        $this->place('a/x.jpg.part', 'stalled');
+        $this->place('a-b/y.jpg.part', 'stalled');
+        touch($this->root . '/a/x.jpg.part', $this->now->getTimestamp() - 7200);
+        touch($this->root . '/a-b/y.jpg.part', $this->now->getTimestamp() - 7200);
+
+        Assert::same($this->store->sweepAbandonedPartials($this->now, apply: false, limit: 10), ['a-b/y.jpg.part', 'a/x.jpg.part']);
+        Assert::same($this->store->sweepAbandonedPartials($this->now, apply: false, limit: 1), ['a-b/y.jpg.part']);
+    }
+
+    public function aPartialModifiedExactlyAtTheCutoffIsKept(): void
+    {
+        $this->place('docs/k/original.jpg.part', 'writing');
+        touch($this->root . '/docs/k/original.jpg.part', $this->now->getTimestamp());
+
+        Assert::same($this->store->sweepAbandonedPartials($this->now, apply: true, limit: 10), []);
+        Assert::same($this->store->sweepAbandonedPartials($this->now->modify('+1 second'), apply: true, limit: 10), ['docs/k/original.jpg.part']);
+        Assert::false(is_file($this->root . '/docs/k/original.jpg.part'));
+    }
+
     public function aStagingFileKeepsItsDirectory(): void
     {
         $this->place('docs/ab/key/original.jpg', 'original');

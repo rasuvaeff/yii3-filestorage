@@ -180,6 +180,17 @@ final class ImageDimensionsTest
     }
 
     /**
+     * A segment length is two bytes, high byte first. Misreading a length over
+     * 255 lands inside the payload, where this decoy waits.
+     */
+    public function aSegmentLongerThan255BytesIsSteppedOverWhole(): void
+    {
+        $decoy = Jpeg::segment(0xE1, str_repeat("\x00", 250) . Jpeg::sof(1, 1) . str_repeat("\x00", 30));
+
+        Assert::same($this->jpeg(Jpeg::of([$decoy, Jpeg::sof(8, 4)])), [8, 4]);
+    }
+
+    /**
      * TEM and RST0–7 carry no length field: reading two bytes after them as a
      * length would swallow the next marker.
      */
@@ -201,6 +212,8 @@ final class ImageDimensionsTest
         yield 'scan before any frame' => [Jpeg::of([Jpeg::segment(0xDA, "\x01\x01\x00\x00\x3F\x00"), Jpeg::sof(8, 4)])];
         yield 'EOI before any frame' => ["\xFF\xD8\xFF\xD9" . Jpeg::sof(8, 4)];
         yield 'a second SOI' => ["\xFF\xD8\xFF\xD8" . Jpeg::sof(8, 4)];
+        yield 'a second SOI after the frame, shaped like a segment' => [Jpeg::of([Jpeg::sof(8, 4), "\xFF\xD8\x00\x04\x00\x00"])];
+        yield 'a valid walk behind the wrong signature' => ["\x00\x00" . substr(Jpeg::of([Jpeg::sof(8, 4)]), 2)];
         yield 'length below two' => ["\xFF\xD8\xFF\xE0\x00\x01" . Jpeg::sof(8, 4)];
         yield 'length field cut short' => ["\xFF\xD8\xFF\xE0\x00"];
         yield 'segment running past the end' => ["\xFF\xD8\xFF\xE0\xFF\xF0abc" . Jpeg::sof(8, 4)];
@@ -326,6 +339,45 @@ final class ImageDimensionsTest
         yield 'unknown block' => [Gif::of(10, 10, ["\x99"])];
         yield 'descriptor cut short' => [substr(Gif::of(10, 10, [Gif::frame(10, 10)]), 0, 19 + 6)];
         yield 'zero-sized frame' => [Gif::of(10, 10, [Gif::frame(0, 10)])];
+        yield 'zero-height frame' => [Gif::of(10, 10, [Gif::frame(10, 0)])];
+        yield 'a valid body behind the wrong signature' => ['GIF00a' . substr(Gif::of(10, 10, [Gif::frame(10, 10)]), 6)];
+        yield 'an unknown block after a frame that fits' => [Gif::of(10, 10, [Gif::frame(10, 10), "\x99"])];
+    }
+
+    /**
+     * The colour tables are sized from the packed field's low three bits and
+     * present only when its top bit says so. A misread size desynchronises the
+     * walk: it either trips over a table byte or loses the frame that follows.
+     */
+    public function colourTablesAreSkippedByTheirDeclaredSize(): void
+    {
+        $frame = Gif::frame(10, 10);
+        $noGlobalTable = Gif::of(10, 10, [$frame], globalColorTable: false);
+        $fourEntryGlobalTable = 'GIF89a' . pack('vv', 10, 10) . "\x81\x00\x00" . str_repeat("\x00", 12) . $frame . ';';
+
+        Assert::same($this->gif($noGlobalTable), [10, 10]);
+        Assert::same($this->gif($fourEntryGlobalTable), [10, 10]);
+    }
+
+    /**
+     * A local colour table is skipped by its size too, so the frame after it
+     * is still read — and here that frame outgrows the screen.
+     */
+    #[DataProvider('frameBehindALocalTableProvider')]
+    public function theFrameAfterALocalColourTableIsStillChecked(string $descriptorFlags, string $table): void
+    {
+        $first = ',' . pack('vvvv', 0, 0, 10, 10) . $descriptorFlags . $table . "\x02" . "\x0A" . str_repeat("\x2A", 10) . "\x00";
+
+        Assert::null($this->gif(Gif::of(10, 10, [$first, Gif::frame(8000, 8000)])));
+    }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function frameBehindALocalTableProvider(): iterable
+    {
+        yield 'a four-entry local table' => ["\x81", str_repeat("\x00", 12)];
+        yield 'size bits without the table flag mean no table' => ["\x07", ''];
     }
 
     #[DataProvider('gifUndeterminedProvider')]
@@ -393,6 +445,15 @@ final class ImageDimensionsTest
         yield 'big-endian SHORT' => [Tiff::of([[640, 480]], type: 3), [640, 480]];
         yield 'little-endian SHORT' => [Tiff::of([[640, 480]], bigEndian: false, type: 3), [640, 480]];
         yield 'the largest page of several' => [Tiff::of([[10, 10], [5000, 4000], [20, 20]]), [5000, 4000]];
+        // Largest by area, width times height, whatever the shapes.
+        yield 'a wide page after a tall one' => [Tiff::of([[1, 100], [20, 6]]), [20, 6]];
+        yield 'a tall page after a wide one' => [Tiff::of([[100, 1], [6, 20]]), [6, 20]];
+        yield 'of two equal areas the first' => [Tiff::of([[4, 1], [2, 2]]), [4, 1]];
+        yield 'a tag before the dimensions' => [
+            'MM' . pack('nN', 42, 8) . pack('n', 3) . pack('nnNN', 254, 4, 1, 0)
+                . pack('nnNN', 256, 4, 1, 640) . pack('nnNN', 257, 4, 1, 480) . pack('N', 0),
+            [640, 480],
+        ];
     }
 
     /**
@@ -439,6 +500,10 @@ final class ImageDimensionsTest
             'MM' . pack('nN', 42, 8) . pack('n', 2) . pack('nnNN', 256, 5, 1, 10) . pack('nnNN', 257, 4, 1, 10) . pack('N', 0),
         ];
         yield 'zero width' => [Tiff::of([[0, 10]])];
+        yield 'zero height' => [Tiff::of([[10, 0]])];
+        yield 'no height tag' => ['MM' . pack('nN', 42, 8) . pack('n', 1) . pack('nnNN', 256, 4, 1, 10) . pack('N', 0)];
+        yield 'a valid chain behind an unknown byte order' => ['XX' . substr(Tiff::of([[640, 480]]), 2)];
+        yield 'a valid chain behind the BigTIFF magic' => ['MM' . pack('n', 43) . substr(Tiff::of([[640, 480]]), 4)];
         yield 'entries cut short' => [substr(Tiff::of([[640, 480]]), 0, 20)];
         yield 'an IFD chain that loops' => [
             'MM' . pack('nN', 42, 8) . pack('n', 2) . pack('nnNN', 256, 4, 1, 10) . pack('nnNN', 257, 4, 1, 10) . pack('N', 8),

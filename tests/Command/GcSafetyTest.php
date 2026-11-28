@@ -989,12 +989,69 @@ final class GcSafetyTest
 
             $dry = $this->json(['--orphans' => true], stores: $stores);
             Assert::same($dry['abandonedPartials'], 1);
+            Assert::string($this->logText($dry))->contains('would remove abandoned partial write docs/ab/cd/key/original.jpg.part');
             Assert::true(is_file($base . '/root/docs/ab/cd/key/original.jpg.part'));
 
             $json = $this->json(['--orphans' => true, '--apply' => true], stores: $stores);
             Assert::same($json['abandonedPartials'], 1);
+            Assert::string($this->logText($json))->contains('removing abandoned partial write docs/ab/cd/key/original.jpg.part');
             Assert::false(is_file($base . '/root/docs/ab/cd/key/original.jpg.part'));
             Assert::same($this->json([], stores: $stores)['abandonedPartials'], null);
+        } finally {
+            FileHelper::removeDirectory($base);
+        }
+    }
+
+    /**
+     * The partial sweep spends what is left of `--limit` across every store:
+     * a store reached with the budget used up is not asked, and one reached
+     * with some left is asked for no more than that.
+     */
+    public function abandonedPartialsShareTheLimitAcrossStores(): void
+    {
+        $base = sys_get_temp_dir() . '/gc-partials-' . bin2hex(random_bytes(6));
+
+        try {
+            $stores = new StoreRegistry([
+                $this->localStore($base, 'first', 'docs/a/original.jpg.part', 'docs/b/original.jpg.part'),
+                $this->localStore($base, 'second', 'docs/c/original.jpg.part', 'docs/d/original.jpg.part'),
+            ]);
+
+            Assert::same($this->json(['--orphans' => true, '--limit' => '2'], stores: $stores)['abandonedPartials'], 2);
+            Assert::same($this->json(['--orphans' => true, '--limit' => '3'], stores: $stores)['abandonedPartials'], 3);
+
+            $this->json(['--orphans' => true, '--apply' => true, '--limit' => '3'], stores: $stores);
+
+            Assert::false(is_file($base . '/first/docs/b/original.jpg.part'));
+            Assert::false(is_file($base . '/second/docs/c/original.jpg.part'));
+            Assert::true(is_file($base . '/second/docs/d/original.jpg.part'), 'the fourth was over the limit');
+        } finally {
+            FileHelper::removeDirectory($base);
+        }
+    }
+
+    /**
+     * Orphans come first; partial writes get only what they left of `--limit`,
+     * and nothing once they used it all.
+     */
+    public function abandonedPartialsGetWhatTheOrphansLeftOfTheLimit(): void
+    {
+        $base = sys_get_temp_dir() . '/gc-partials-' . bin2hex(random_bytes(6));
+
+        try {
+            $store = $this->localStore($base, 'local', 'docs/a/original.jpg.part', 'docs/b/original.jpg.part');
+            mkdir($base . '/local/docs/c', 0o777, recursive: true);
+            file_put_contents($base . '/local/docs/c/original.bin', 'orphan');
+            touch($base . '/local/docs/c/original.bin', $this->clock->now()->getTimestamp() - 7200);
+            $stores = new StoreRegistry([$store]);
+
+            $two = $this->json(['--orphans' => true, '--limit' => '2'], stores: $stores);
+            Assert::same($two['orphanObjects'], 1);
+            Assert::same($two['abandonedPartials'], 1);
+
+            $one = $this->json(['--orphans' => true, '--limit' => '1'], stores: $stores);
+            Assert::same($one['orphanObjects'], 1);
+            Assert::same($one['abandonedPartials'], 0);
         } finally {
             FileHelper::removeDirectory($base);
         }
@@ -1090,6 +1147,22 @@ final class GcSafetyTest
     }
 
     /**
+     * Once per store and kind: the same warning about a second store is not
+     * swallowed by the first.
+     */
+    public function oneWarningKindIsShownForEveryStoreItConcerns(): void
+    {
+        $this->repository->save($this->row('a', 'avatars/aa/a/original.jpg', group: 'avatars', store: 'gone'));
+        $this->repository->save($this->row('b', 'avatars/aa/b/original.jpg', group: 'avatars', store: 'lost'));
+        $this->clock->advance(new DateInterval('PT2H'));
+
+        $display = $this->flatten($this->run(['--apply' => true], references: new ListReferenceChecker())->getDisplay());
+
+        Assert::string($display)->contains('Store "gone" cannot quarantine objects');
+        Assert::string($display)->contains('Store "lost" cannot quarantine objects');
+    }
+
+    /**
      * Review 1.0 C14: a budget used up before the sweep printed "found 0
      * orphaned objects" about objects nobody looked at.
      */
@@ -1104,6 +1177,30 @@ final class GcSafetyTest
         Assert::true($json['orphanSweepSkipped']);
         Assert::string($this->logText($json))->contains('Orphan sweep skipped: --limit was used up');
         Assert::same($this->store->bytesAt('docs/z/original.bin'), 'orphan');
+        Assert::same(
+            [$json['orphanObjects'], $json['orphansTooNew'], $json['orphansUndated'], $json['abandonedPartials'], $json['nextCursor']],
+            [0, 0, 0, 0, null],
+        );
+    }
+
+    /**
+     * A skipped sweep resumed nothing, so the cursor it was given is the one
+     * to resume from next time — and without one there is nothing to resume.
+     */
+    public function aSkippedSweepHandsBackTheCursorItWasGiven(): void
+    {
+        $this->stored('old', 'avatars', 'avatars/aa/old/original.jpg');
+        $this->oldOrphans('docs/z/original.bin');
+        $arguments = ['--orphans' => true, '--limit' => '1', '--store' => 'memory'];
+        $references = new ListReferenceChecker();
+
+        $resumed = $this->json($arguments + ['--after' => 'docs/a'], references: $references);
+        $fresh = $this->json($arguments, references: $references);
+
+        Assert::true($resumed['orphanSweepSkipped']);
+        Assert::same($resumed['nextCursor'], ['store' => 'memory', 'after' => 'docs/a']);
+        Assert::true($fresh['orphanSweepSkipped']);
+        Assert::null($fresh['nextCursor']);
     }
 
     public function aSweepThatRanSaysItWasNotSkipped(): void
@@ -1296,6 +1393,19 @@ final class GcSafetyTest
         Assert::instanceOf($lease, BlobLease::class);
         $entry = $this->store->quarantine(ObjectSet::tree(new StoredObjectId($blob->relativePath())), $this->clock->now());
         Assert::instanceOf($entry, QuarantinedObject::class);
+    }
+
+    private function localStore(string $base, string $name, string ...$partials): FileSystemStore
+    {
+        $store = new FileSystemStore($name, $base . '/' . $name, $this->factory, quarantinePath: $base . '/' . $name . '-q');
+        foreach ($partials as $partial) {
+            $path = $base . '/' . $name . '/' . $partial;
+            mkdir(\dirname($path), 0o777, recursive: true);
+            file_put_contents($path, 'stalled');
+            touch($path, $this->clock->now()->getTimestamp() - 7200);
+        }
+
+        return $store;
     }
 
     private function flatten(string $display): string

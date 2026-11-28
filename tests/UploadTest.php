@@ -477,6 +477,41 @@ final class UploadTest
     }
 
     /**
+     * The window keeps 4096 bytes minus the extension. Control-character
+     * padding, which normalisation removes afterwards, puts the window's last
+     * bytes inside the name that survives, so the cut itself is visible: a
+     * character the window splits is dropped whole, one it ends on is kept.
+     *
+     * @param int<1, 16> $inWindow bytes of `$tail` that fall inside the window
+     */
+    #[DataProvider('windowEndProvider')]
+    public function theInputWindowDropsOnlyTheCharacterItSplits(string $tail, int $inWindow, string $expected): void
+    {
+        $given = str_repeat("\x01", 4096 - \strlen('.txt') - $inWindow) . $tail . '.txt';
+
+        Assert::same(Upload::fromStream($this->factory->createStream('x'), $given, $this->factory)->originalName, $expected);
+    }
+
+    /**
+     * @return iterable<string, array{string, int, string}>
+     */
+    public static function windowEndProvider(): iterable
+    {
+        yield 'ends on ASCII' => ['abcdef', 3, 'abc.txt'];
+        yield 'two-byte character split' => ['abéz', 3, 'ab.txt'];
+        yield 'two-byte character complete' => ['abéz', 4, 'abé.txt'];
+        yield 'lowest three-byte lead, two bytes in' => ["ab\u{0800}z", 4, 'ab.txt'];
+        yield 'three-byte character, one byte in' => ['ab€z', 3, 'ab.txt'];
+        yield 'three-byte character, two bytes in' => ['ab€z', 4, 'ab.txt'];
+        yield 'three-byte character complete' => ['ab€z', 5, 'ab€.txt'];
+        yield 'four-byte character, one byte in' => ["ab\u{1F600}z", 3, 'ab.txt'];
+        yield 'four-byte character, two bytes in' => ["ab\u{1F600}z", 4, 'ab.txt'];
+        yield 'four-byte character, three bytes in' => ["ab\u{1F600}z", 5, 'ab.txt'];
+        yield 'four-byte character complete' => ["ab\u{1F600}z", 6, "ab\u{1F600}.txt"];
+        yield 'stray continuation bytes are not a character to drop' => ["ab\x80\x80z", 4, "ab\u{FFFD}\u{FFFD}.txt"];
+    }
+
+    /**
      * Padding past the window costs the padder their own base name — never
      * memory — and the extension still survives.
      */

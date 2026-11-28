@@ -57,6 +57,13 @@ final class QuarantinedObjectTest
         Assert::true(str_starts_with(QuarantinedObject::newToken(new DateTimeImmutable('@-5')), '0000000000-'));
     }
 
+    public function theSequenceCountsUpByOne(): void
+    {
+        $first = QuarantineSequence::next();
+
+        Assert::same(QuarantineSequence::next(), ($first + 1) % 0x1000000);
+    }
+
     public function twoTokensForTheSameMomentDiffer(): void
     {
         $now = new DateTimeImmutable('@1764237600');

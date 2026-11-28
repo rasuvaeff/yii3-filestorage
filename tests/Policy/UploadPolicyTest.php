@@ -191,7 +191,9 @@ final class UploadPolicyTest
     {
         $policy = new UploadPolicy(maxPixels: 10, requireImageDimensions: true);
 
-        Expect::exception(PolicyViolationException::class)->withMessageContaining('could not be established');
+        Expect::exception(PolicyViolationException::class)->withMessageContaining(
+            'Image dimensions could not be established for image/x-exotic, and this group requires them',
+        );
 
         $policy->assertAcceptable($this->upload('not really an image'), 'image/x-exotic');
     }
@@ -338,7 +340,7 @@ final class UploadPolicyTest
         $policy = new UploadPolicy(maxPixels: 1000, requireImageDimensions: false);
 
         Expect::exception(PolicyViolationException::class)->withMessageContaining(
-            "Image dimensions could not be established for {$mediaType}",
+            "Image dimensions could not be established for {$mediaType}; a malformed header cannot be checked against the pixel limit",
         );
         $policy->assertAcceptable($this->upload('raster bytes nothing can parse'), $mediaType);
     }

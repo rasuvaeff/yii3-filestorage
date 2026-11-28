@@ -135,6 +135,45 @@ final class FileSystemStoreContentAddressableTest
         $this->store->putIfAbsent($this->unsized('hello'), $key, maxBytes: 4);
     }
 
+    /**
+     * The cap is a limit, not a ceiling to stay under: exactly that many
+     * bytes are published, and reused.
+     */
+    public function exactlyTheCapIsPublishedAndReused(): void
+    {
+        $key = $this->key('hello');
+
+        Assert::true($this->store->putIfAbsent($this->upload('hello'), $key, maxBytes: 5)->created);
+        Assert::false($this->store->putIfAbsent($this->upload('hello'), $key, maxBytes: 5)->created);
+    }
+
+    public function anEmptyObjectIsReused(): void
+    {
+        $key = $this->key('');
+        $this->store->putIfAbsent($this->upload(''), $key);
+
+        $result = $this->store->putIfAbsent($this->upload(''), $key);
+
+        Assert::false($result->created);
+        Assert::same($result->size, 0);
+    }
+
+    /**
+     * An unsized upload is counted over every chunk it is read in, not only
+     * the last one.
+     */
+    public function anUnsizedUploadLongerThanOneReadIsCountedWhole(): void
+    {
+        $content = str_repeat('x', 300_000);
+        $key = $this->key($content);
+        $this->store->putIfAbsent($this->upload($content), $key);
+
+        $result = $this->store->putIfAbsent($this->unsized($content), $key);
+
+        Assert::false($result->created);
+        Assert::same($result->size, 300_000);
+    }
+
     public function anUnsizedUploadIsCountedBeforeReuse(): void
     {
         $key = $this->key('hello');

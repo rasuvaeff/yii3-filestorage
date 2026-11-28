@@ -230,7 +230,9 @@ final class StorageTest
             $this->storage(store: $store)->add($this->upload('x'));
             Assert::true(actual: false, message: 'add() should have failed');
         } catch (AddException $e) {
-            Assert::string($e->getMessage())->contains('returned a result that is not a valid file');
+            Assert::string($e->getMessage())->contains(
+                'returned a result that is not a valid file ("../escape/original.txt"); the written object is left for filestorage:gc',
+            );
             Assert::instanceOf($e->getPrevious(), InvalidArgumentException::class);
             Assert::same($this->repository->count(), 0);
         }

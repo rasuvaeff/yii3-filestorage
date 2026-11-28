@@ -239,7 +239,9 @@ final class PublicFileSystemStoreTest
      */
     public function aQuarantineInsideTheWebRootIsRefused(): void
     {
-        Expect::exception(InvalidArgumentException::class)->withMessageContaining('is inside the web root');
+        Expect::exception(InvalidArgumentException::class)->withMessageContaining(
+            '": a deleted public file would stay downloadable for the whole retention. Move it outside',
+        );
 
         new PublicFileSystemStore(
             new FileSystemStore(
@@ -268,6 +270,39 @@ final class PublicFileSystemStoreTest
 
         Assert::same($store->webRoot(), realpath($this->root . '/public'));
         Assert::null($store->quarantineProblem());
+    }
+
+    /**
+     * Inside means under the web root's directory, not sharing its name as a
+     * string prefix: `public-quarantine` is a sibling of `public`.
+     */
+    public function aQuarantineBesideTheWebRootIsAccepted(): void
+    {
+        $store = new PublicFileSystemStore(
+            new FileSystemStore(
+                'assets',
+                $this->root . '/public/uploads',
+                $this->factory,
+                quarantinePath: $this->root . '/public-quarantine',
+            ),
+            'https://cdn.example.com/uploads',
+            webRoot: $this->root . '/public',
+        );
+
+        Assert::same($store->webRoot(), realpath($this->root . '/public'));
+    }
+
+    public function aWebRootThatIsAFileIsRefused(): void
+    {
+        file_put_contents($this->root . '/index.php', '<?php');
+
+        Expect::exception(InvalidArgumentException::class)->withMessageContaining('is not an existing directory');
+
+        new PublicFileSystemStore(
+            new FileSystemStore('assets', $this->root . '/public/uploads', $this->factory),
+            'https://cdn.example.com/uploads',
+            webRoot: $this->root . '/index.php',
+        );
     }
 
     public function aMissingWebRootIsRefused(): void

@@ -484,7 +484,9 @@ final class CheckCommandTest
 
         Assert::same($tester->getStatusCode(), Command::FAILURE);
         Assert::string($this->flatten($tester->getDisplay()))->contains(
-            'Group "assets" accepts image/svg+xml, and store "assets" serves every object it holds at a public URL',
+            'Group "assets" accepts image/svg+xml, and store "assets" serves every object it holds at a public URL '
+            . 'whatever the delivery policy says. Served from your own origin these execute as your site. Remove '
+            . 'them from allowedMimeTypes, or keep this group out of public stores.',
         );
     }
 
@@ -770,7 +772,11 @@ final class CheckCommandTest
     {
         $tester = $this->run(store: $this->publicStore());
 
-        Assert::string($this->flatten($tester->getDisplay()))->contains('serves its root publicly and owns all of it');
+        Assert::string($this->flatten($tester->getDisplay()))->contains(
+            'Store "assets" serves its root publicly and owns all of it: filestorage:gc --orphans quarantines, then '
+            . 'purges, every file under it that has no row. If anything else lives there, pass ownedPrefixes to the '
+            . 'FileSystemStore.',
+        );
     }
 
     public function aPublicStoreWhoseQuarantineCannotBeCheckedAgainstTheWebRootIsAWarning(): void
@@ -780,7 +786,10 @@ final class CheckCommandTest
             'https://cdn.example.test',
         );
 
-        Assert::string($this->flatten($this->run(store: $store)->getDisplay()))->contains('Pass webRoot to PublicFileSystemStore');
+        Assert::string($this->flatten($this->run(store: $store)->getDisplay()))->contains(
+            'Store "upload": nothing checks that its quarantine is outside the web server\'s document root, only '
+            . 'outside the store root. Pass webRoot to PublicFileSystemStore.',
+        );
     }
 
     public function aPublicStoreWithAWebRootIsNotWarnedAbout(): void
@@ -816,8 +825,9 @@ final class CheckCommandTest
         $decoded = json_decode($tester->getDisplay(), associative: true, flags: \JSON_THROW_ON_ERROR);
         Assert::true(\is_array($decoded));
         Assert::same($decoded['stores'][0]['layout'] ?? null, FlatSiblingLayout::class);
-        Assert::string($this->run(store: new InMemoryStore('memory', $this->factory, layout: new FlatSiblingLayout()))->getDisplay())
-            ->contains('FlatSiblingLayout');
+        $display = $this->run(store: new InMemoryStore('memory', $this->factory, layout: new FlatSiblingLayout()))->getDisplay();
+        Assert::string($display)->contains('FlatSiblingLayout');
+        Assert::false(str_contains($display, '\\FlatSiblingLayout'), 'the table shows the short class name');
     }
 
     public function anApplicationOwnedGroupWithoutACheckerIsAWarning(): void
@@ -831,7 +841,10 @@ final class CheckCommandTest
 
         Assert::same($tester->getStatusCode(), Command::SUCCESS);
         Assert::string($this->flatten($tester->getDisplay()))
-            ->contains('Group "avatars" hands references to the application, but no');
+            ->contains(
+                'Group "avatars" hands references to the application, but no ' . ReferenceCheckerInterface::class
+                . ' is bound, so filestorage:gc never releases its files.',
+            );
     }
 
     public function anApplicationOwnedGroupWithACheckerIsQuiet(): void
@@ -954,7 +967,11 @@ final class CheckCommandTest
         Assert::same($tester->getStatusCode(), Command::SUCCESS);
         $display = $this->flatten($tester->getDisplay());
         Assert::string($display)->contains(FlatSha256KeyGenerator::class . ' ignores the tenant');
-        Assert::string($display)->contains('only with the "global" deduplication scope');
+        Assert::string($display)->contains(
+            'A FileScopeProviderInterface is bound, so this is right only with the "global" deduplication scope; '
+            . 'rasuvaeff/yii3-filestorage-db refuses the generator under the "tenant" and "tenant-group" scopes '
+            . 'when it is built. Use a generator that keeps the scope in the key.',
+        );
     }
 
     public function aTenantlessGeneratorWithoutAScopeProviderIsNotMentioned(): void

@@ -55,8 +55,44 @@ final class LayoutCompatibilityTest
     {
         $problem = LayoutCompatibility::contentKeysProblem(new FlatSha256KeyGenerator(), new DirectoryLayout());
 
-        Assert::string((string) $problem)->contains('cannot share a store');
+        Assert::string((string) $problem)->contains(
+            'Content-addressed key generator ' . FlatSha256KeyGenerator::class . ' and layout '
+            . DirectoryLayout::class . ' cannot share a store: ',
+        );
         Assert::string((string) $problem)->contains('needs FlatSiblingLayout');
+    }
+
+    /**
+     * Over-reach in one direction is enough: deleting the first file takes
+     * the second along, though deleting the second leaves the first alone.
+     */
+    public function aLayoutThatDeletesANeighbourOneWayOnlyIsAProblem(): void
+    {
+        $layout = new class implements ObjectLayoutInterface {
+            #[Override]
+            public function derivativePath(File $file, DerivativeDescriptor $derivative): string
+            {
+                return $file->relativePath . '-' . $derivative->fileName();
+            }
+
+            #[Override]
+            public function ownerOf(StoredObjectId $object): string
+            {
+                return $object->relativePath;
+            }
+
+            #[Override]
+            public function deletion(StoredObjectId $object): ObjectSet
+            {
+                return str_contains($object->relativePath, '/abcd0')
+                    ? ObjectSet::tree(new StoredObjectId($object->directory()))
+                    : ObjectSet::tree($object);
+            }
+        };
+
+        $problem = LayoutCompatibility::contentKeysProblem(new FlatSha256KeyGenerator(), $layout);
+
+        Assert::string((string) $problem)->contains('would also remove "probe/ab/cd/abcd1111');
     }
 
     /**
@@ -94,7 +130,9 @@ final class LayoutCompatibilityTest
 
         $problem = LayoutCompatibility::contentKeysProblem(new FlatSha256KeyGenerator(), $layout);
 
-        Assert::string((string) $problem)->contains('get the same derivative path "shared/probe.webp"');
+        Assert::string((string) $problem)->contains(
+            'get the same derivative path "shared/probe.webp", so one file\'s preview would be served for the other',
+        );
     }
 
     public function aLayoutThatLeavesTheDerivativeBehindIsAProblem(): void
@@ -121,7 +159,7 @@ final class LayoutCompatibilityTest
 
         $problem = LayoutCompatibility::contentKeysProblem(new FlatSha256KeyGenerator(), $layout);
 
-        Assert::string((string) $problem)->contains('is not deleted with it');
+        Assert::string((string) $problem)->contains('is not deleted with it, or is deleted with another file');
     }
 
     public function aLayoutThatDoesNotDeleteTheKeyItselfIsAProblem(): void
@@ -240,7 +278,7 @@ final class LayoutCompatibilityTest
         };
 
         Assert::string((string) LayoutCompatibility::pathsProblem($paths, new DirectoryLayout(), new Psr17Factory()))
-            ->contains('refused a probe upload: no');
+            ->contains('Path generator ' . $paths::class . ' refused a probe upload: no');
     }
 
     /**
@@ -317,7 +355,7 @@ final class LayoutCompatibilityTest
     {
         $problem = (string) LayoutCompatibility::tenantProblem(new FlatSha256KeyGenerator(prefix: 'blobs'));
 
-        Assert::string($problem)->contains(FlatSha256KeyGenerator::class . ' ignores the tenant');
+        Assert::string($problem)->contains('Content-addressed key generator ' . FlatSha256KeyGenerator::class . ' ignores the tenant');
         Assert::string($problem)->contains('"tenant-a" and "tenant-b" both get "blobs/ab/cd/abcd');
     }
 

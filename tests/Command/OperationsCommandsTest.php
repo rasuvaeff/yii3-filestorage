@@ -926,6 +926,21 @@ final class OperationsCommandsTest
         Assert::string($deep->getDisplay())->contains('corrupt: a');
     }
 
+    /**
+     * Same length, different bytes: the size matches, so only the hash can
+     * tell, and either mismatch alone is corruption.
+     */
+    public function deepVerifyCatchesCorruptionThatKeepsTheSize(): void
+    {
+        $file = $this->storeFile('a', hash: $this->hash());
+        $this->store->corrupt($file->relativePath, 'jello');
+
+        $deep = $this->run(new VerifyCommand($this->registry(), $this->repository), ['--deep' => true]);
+
+        Assert::same($deep->getStatusCode(), Command::FAILURE);
+        Assert::string($deep->getDisplay())->contains('corrupt: a');
+    }
+
     public function verifyResumesAfterACursor(): void
     {
         $this->storeFile('a');
